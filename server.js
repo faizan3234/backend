@@ -674,18 +674,32 @@ if (missingVars.length > 0) {
 const app = express();
 
 // Production-ready CORS configuration
-const allowedOrigins = [
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:3000',
-    'http://localhost:5001',
-    'http://192.168.1.8:5173',
-    'http://192.168.1.8:5174',
-    'http://192.168.0.101:5173',
-    'https://reliv.vercel.app',
-    'https://reliv-frontend-henna.vercel.app',
-    'https://mail-request-m33c.vercel.app', // QR code domain (separate Vercel deployment)
-    process.env.FRONTEND_URL, // Add your production frontend URL
+const allowedOrigins = const allowedOrigins = [
+  // Local Development
+  "http://localhost:3000",
+  "http://localhost:5001",
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:5001",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:5174",
+
+  // Local Network
+  "http://192.168.1.8:5173",
+  "http://192.168.1.8:5174",
+  "http://192.168.0.101:5173",
+
+  // Oracle Frontend
+  "http://161.118.169.29:4173",
+
+  // Vercel Deployments
+  "https://reliv.vercel.app",
+  "https://reliv-frontend-henna.vercel.app",
+  "https://mail-request-m33c.vercel.app",
+
+  // Production URL from environment
+  process.env.FRONTEND_URL,
 ].filter(Boolean);
 
 app.use(
