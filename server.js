@@ -674,7 +674,7 @@ if (missingVars.length > 0) {
 const app = express();
 
 // Production-ready CORS configuration
-const allowedOrigins = const allowedOrigins = [
+const allowedOrigins = [
   // Local Development
   "http://localhost:3000",
   "http://localhost:5001",
