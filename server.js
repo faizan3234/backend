@@ -66,6 +66,8 @@ let reportPrice = 27; // Default fallback; actual value loaded from MongoDB on s
 // ═══════════════════════════════════════════════════════════════════════════
 const IS_CLOUD_DEPLOYMENT = process.env.RENDER || process.env.HEROKU || process.env.VERCEL;
 const BLE_BACKEND_URL = process.env.BLE_BACKEND_URL || 'http://127.0.0.1:5001';
+const PUBLIC_BACKEND_URL = 'http://80.225.243.51:10000';
+const PUBLIC_FRONTEND_URL = process.env.FRONTEND_URL || 'http://161.118.169.29:4173';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPREHENSIVE ADMIN MONITORING SYSTEM - FULL HEALTH CHECK
@@ -217,7 +219,7 @@ async function testPDFGeneration() {
 // Test QR Code generation
 async function testQRCode() {
     try {
-        const testQR = await QRCode.toDataURL('https://reliv.vercel.app/test');
+        const testQR = await QRCode.toDataURL(`${PUBLIC_FRONTEND_URL}/test`);
         if (testQR && testQR.startsWith('data:image')) {
             return { ok: true, message: 'QR generation working' };
         }
@@ -699,7 +701,7 @@ const allowedOrigins = [
   "https://mail-request-m33c.vercel.app",
 
   // Production URL from environment
-  process.env.FRONTEND_URL,
+  PUBLIC_FRONTEND_URL,
 ].filter(Boolean);
 
 app.use(
@@ -4200,6 +4202,8 @@ app.get("/", (req, res) => {
         message: "Reliv Backend is live and running hoho! 🚀",
         status: "OK",
         version: "1.0.0",
+        backendUrl: PUBLIC_BACKEND_URL,
+        frontendUrl: PUBLIC_FRONTEND_URL,
         timestamp: new Date().toISOString()
     });
 });
