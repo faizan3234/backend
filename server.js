@@ -20,6 +20,7 @@ import RELIV_LOGO_B64 from "./relivlogo-base64.js";
 // ═══════════════════════════════════════════════════════════════════════════
 import { initializeDatabase, checkDatabaseHealth } from "./src/database/db.js";
 import sessionManager from "./src/services/sessionManager.js";
+import { transactionManager } from "./src/services/transactionManager.js";
 
 // Load environment variables
 dotenv.config();
@@ -886,7 +887,8 @@ async function start() {
         log.info('Initializing local SQLite database...');
         initializeDatabase();
         sessionManager.initialize();
-        log.info('✅ Local database and session manager initialized');
+        transactionManager.initialize();
+        log.info('✅ Local database, session manager, and transaction manager initialized');
     } catch (err) {
         log.error('❌ Failed to initialize local database:', err);
         log.error('⚠️ Kiosk will NOT function properly without local database!');
@@ -3209,6 +3211,10 @@ app.put("/api/report-price", async (req, res) => {
     }
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Create Payment Order
+// GOLDEN RULE: Backend calculates amount - NEVER trust frontend
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/create-order", async (req, res) => {
     // Check if Razorpay is configured
     if (!razorpay || !razorpayAvailable) {
@@ -3219,31 +3225,83 @@ app.post("/api/create-order", async (req, res) => {
     }
 
     try {
-        const { amount } = req.body;
-        if (!amount || isNaN(amount)) {
-            return res.status(400).json({ error: "Valid amount is required" });
+        const { sessionId, serviceType, cart } = req.body;
+        
+        if (!sessionId) {
+            return res.status(400).json({ error: "Session ID is required" });
         }
+
+        if (!serviceType || !['HEALTH_CHECKUP', 'MEDICINE'].includes(serviceType)) {
+            return res.status(400).json({ 
+                error: "Valid service type is required (HEALTH_CHECKUP or MEDICINE)" 
+            });
+        }
+
+        // ✅ Get session to ensure it exists and customer data is attached
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        if (session.status !== 'CUSTOMER_ATTACHED' && session.status !== 'SERVICE_SELECTED') {
+            return res.status(400).json({ 
+                error: "Customer data must be saved before payment",
+                currentStatus: session.status
+            });
+        }
+
+        // ✅ CRITICAL: Backend creates transaction with AUTHORITATIVE amount
+        // Amount is calculated from inventory prices - frontend amount is IGNORED
+        const transaction = transactionManager.createTransaction(
+            sessionId,
+            serviceType,
+            cart || []
+        );
+
+        // Update session with service type
+        if (session.status === 'CUSTOMER_ATTACHED') {
+            sessionManager.selectService(sessionId, serviceType);
+        }
+
+        // Set payment required on session
+        sessionManager.setPaymentRequired(sessionId, transaction.amount);
+
+        // Create Razorpay order with backend-calculated amount
         const options = {
-            amount: amount * 100,
+            amount: transaction.amount,  // Already in paise
             currency: "INR",
-            receipt: `receipt_order_${Date.now()}`,
+            receipt: transaction.transaction_id,
             payment_capture: 1,
         };
+        
         const order = await razorpay.orders.create(options);
-        res.json(order);
+
+        // Store Razorpay order ID in transaction
+        transactionManager.markOrderCreated(transaction.transaction_id, order.id);
+
+        log.info(`💳 Payment order created: ${order.id} for ₹${transaction.amount / 100} (session: ${sessionId})`);
+
+        res.json({
+            orderId: order.id,
+            amount: transaction.amount,
+            currency: "INR",
+            transactionId: transaction.transaction_id,
+            sessionId: sessionId,
+        });
     } catch (err) {
         console.error("Error in /api/create-order:", err);
 
         // Send critical alert to admin (if email is available)
         if (transporter) {
             sendCriticalErrorAlert('Payment Order Creation', err, {
-                requestedAmount: req.body.amount,
+                requestedService: req.body.serviceType,
+                sessionId: req.body.sessionId,
                 endpoint: '/api/create-order',
                 timestamp: new Date().toISOString()
             }).catch(alertErr => log.error('Alert send failed:', alertErr));
         }
 
-        res.status(500).json({ error: "Server Error" });
+        res.status(500).json({ error: err.message || "Server Error" });
     }
 });
 app.get("/api/eco-stats", async (req, res) => {
@@ -3256,31 +3314,102 @@ app.get("/api/eco-stats", async (req, res) => {
     }
 });
 
-// ── Razorpay payment signature verification (HMAC-SHA256) ─────────────────
-// Must be called from client after Razorpay handler fires.
-// If signature is invalid we reject — prevents fake/replayed payments.
-app.post("/api/verify-payment", (req, res) => {
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Verify Payment (IDEMPOTENT)
+// GOLDEN RULE: Linked to transaction & session - full security checks
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/verify-payment", async (req, res) => {
     try {
         const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+        
         if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
             return res.status(400).json({ ok: false, message: "Missing payment verification fields" });
         }
+
         if (!process.env.RAZORPAY_KEY_SECRET) {
             return res.status(503).json({ ok: false, message: "Payment verification not configured" });
         }
+
+        // ✅ Step 1: Verify cryptographic signature (prevents fake payments)
         const body = `${razorpay_order_id}|${razorpay_payment_id}`;
         const expectedSignature = crypto
             .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
             .update(body)
             .digest("hex");
+        
         if (expectedSignature !== razorpay_signature) {
             log.warn(`🔴 Payment signature mismatch — possible fraud. order: ${razorpay_order_id}`);
-            return res.status(400).json({ ok: false, message: "Payment verification failed" });
+            return res.status(400).json({ ok: false, message: "Payment verification failed - invalid signature" });
         }
-        res.json({ ok: true });
+
+        // ✅ Step 2: Get transaction from database by Razorpay order ID
+        const transaction = transactionManager.getTransactionByOrderId(razorpay_order_id);
+        
+        if (!transaction) {
+            log.error(`❌ Transaction not found for order: ${razorpay_order_id}`);
+            return res.status(404).json({ ok: false, message: "Transaction not found" });
+        }
+
+        // ✅ Step 3: Check idempotency (if already verified, return success)
+        if (transaction.status === 'VERIFIED' || transaction.verified === 1) {
+            log.info(`✅ Payment already verified for transaction: ${transaction.transaction_id}`);
+            return res.json({ 
+                ok: true, 
+                already_verified: true,
+                transactionId: transaction.transaction_id
+            });
+        }
+
+        // ✅ Step 4: Fetch payment details from Razorpay API (authoritative source)
+        let payment;
+        try {
+            payment = await razorpay.payments.fetch(razorpay_payment_id);
+        } catch (err) {
+            log.error(`❌ Failed to fetch payment from Razorpay: ${err.message}`);
+            return res.status(500).json({ ok: false, message: "Failed to verify payment with provider" });
+        }
+
+        // ✅ Step 5: Validate payment details
+        // Check amount matches (CRITICAL SECURITY CHECK)
+        if (payment.amount !== transaction.amount) {
+            log.error(`❌ Amount mismatch: expected ${transaction.amount}, got ${payment.amount}`);
+            return res.status(400).json({ 
+                ok: false, 
+                message: `Amount mismatch: expected ₹${transaction.amount / 100}, got ₹${payment.amount / 100}` 
+            });
+        }
+
+        // Check payment status
+        if (payment.status !== 'captured') {
+            log.error(`❌ Payment not captured: status is ${payment.status}`);
+            return res.status(400).json({ 
+                ok: false, 
+                message: `Payment not successful: status is ${payment.status}` 
+            });
+        }
+
+        // ✅ Step 6: Mark payment as verified in transaction
+        transactionManager.verifyPayment(
+            transaction.transaction_id, 
+            razorpay_payment_id,
+            payment
+        );
+
+        // ✅ Step 7: Update session status to PAYMENT_VERIFIED
+        sessionManager.markPaymentVerified(transaction.session_id, razorpay_payment_id);
+
+        log.info(`✅ Payment verified successfully: ${razorpay_payment_id} for transaction ${transaction.transaction_id}`);
+
+        res.json({ 
+            ok: true, 
+            transactionId: transaction.transaction_id,
+            sessionId: transaction.session_id,
+            amount: transaction.amount / 100  // Return in rupees
+        });
+
     } catch (err) {
         log.error("❌ Payment verification error:", err.message);
-        res.status(500).json({ ok: false, message: "Verification error" });
+        res.status(500).json({ ok: false, message: err.message || "Verification error" });
     }
 });
 
