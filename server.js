@@ -18,6 +18,11 @@ import RELIV_LOGO_B64 from "./relivlogo-base64.js";
 // ═══════════════════════════════════════════════════════════════════════════
 // OFFLINE-FIRST LOCAL DATABASE IMPORTS
 // ═══════════════════════════════════════════════════════════════════════════
+// Complete offline-first kiosk architecture with SQLite as primary database
+// ONE QR → ONE SESSION → All operations linked to sessionId
+// Kiosk works completely offline - Internet only used via customer phone
+// Email queues when offline, MQTT uses local Mosquitto, PDFs generated locally
+// ═══════════════════════════════════════════════════════════════════════════
 import { initializeDatabase, checkDatabaseHealth } from "./src/database/db.js";
 import sessionManager from "./src/services/sessionManager.js";
 import { transactionManager } from "./src/services/transactionManager.js";
