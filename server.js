@@ -15,6 +15,12 @@ import fetch from "node-fetch";
 import mqtt from "mqtt";
 import RELIV_LOGO_B64 from "./relivlogo-base64.js";
 
+// ═══════════════════════════════════════════════════════════════════════════
+// OFFLINE-FIRST LOCAL DATABASE IMPORTS
+// ═══════════════════════════════════════════════════════════════════════════
+import { initializeDatabase, checkDatabaseHealth } from "./src/database/db.js";
+import sessionManager from "./src/services/sessionManager.js";
+
 // Load environment variables
 dotenv.config();
 
@@ -814,16 +820,21 @@ if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
 }
 const mongoUrl = process.env.MONGODB_URI;
 
-// MongoDB connection with pool and timeout options
-const client = new MongoClient(mongoUrl, {
-    maxPoolSize: 10,
-    minPoolSize: 2,
-    serverSelectionTimeoutMS: 5000,
-    socketTimeoutMS: 45000,
-    connectTimeoutMS: 10000,
-    retryWrites: true,
-    retryReads: true
-});
+// MongoDB connection with pool and timeout options (optional for offline-first operation)
+let client = null;
+if (mongoUrl) {
+    client = new MongoClient(mongoUrl, {
+        maxPoolSize: 10,
+        minPoolSize: 2,
+        serverSelectionTimeoutMS: 5000,
+        socketTimeoutMS: 45000,
+        connectTimeoutMS: 10000,
+        retryWrites: true,
+        retryReads: true
+    });
+} else {
+    log.warn('⚠️ MongoDB URI not configured - cloud sync disabled, local-only mode');
+}
 let db;
 
 // Track database connection state
@@ -868,6 +879,20 @@ async function start() {
         log.info(`🔗 CORS allowed origins: ${allowedOrigins.join(', ')}`);
     });
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INITIALIZE LOCAL SQLITE DATABASE (Offline-first architecture)
+    // ═══════════════════════════════════════════════════════════════════════════
+    try {
+        log.info('Initializing local SQLite database...');
+        initializeDatabase();
+        sessionManager.initialize();
+        log.info('✅ Local database and session manager initialized');
+    } catch (err) {
+        log.error('❌ Failed to initialize local database:', err);
+        log.error('⚠️ Kiosk will NOT function properly without local database!');
+        // Don't exit - but log critical warning
+    }
+
     // Graceful shutdown
     const gracefulShutdown = async () => {
         log.info('Received shutdown signal, closing connections...');
@@ -893,20 +918,22 @@ async function start() {
     process.on('SIGINT', gracefulShutdown);
 
     // Now try to connect to MongoDB (with retries, but don't block)
-    let retries = 5;
-    while (retries > 0) {
-        try {
-            log.info('Connecting to MongoDB Atlas...');
-            await client.connect();
-            db = client.db("reliv");
+    // MongoDB is OPTIONAL for offline-first operation
+    if (client) {
+        let retries = 5;
+        while (retries > 0) {
+            try {
+                log.info('Connecting to MongoDB Atlas...');
+                await client.connect();
+                db = client.db("reliv");
 
-            // Verify connection
-            await db.command({ ping: 1 });
-            dbConnected = true;
-            log.info('✅ Successfully connected to MongoDB Atlas');
+                // Verify connection
+                await db.command({ ping: 1 });
+                dbConnected = true;
+                log.info('✅ Successfully connected to MongoDB Atlas');
 
-            // Migrate admin auth data from files to MongoDB (one-time sync)
-            await migrateAdminDataToMongo();
+                // Migrate admin auth data from files to MongoDB (one-time sync)
+                await migrateAdminDataToMongo();
 
             // Load admin-set report price from MongoDB
             try {
@@ -939,6 +966,10 @@ async function start() {
             log.info(`Retrying in 5 seconds...`);
             await new Promise(resolve => setTimeout(resolve, 5000));
         }
+    }
+    } else {
+        log.info('ℹ️ MongoDB not configured - operating in OFFLINE-FIRST mode');
+        log.info('✅ All kiosk functions will work locally with SQLite');
     }
 }
 const DATA_DIR = process.env.DATA_DIR || "./data";
