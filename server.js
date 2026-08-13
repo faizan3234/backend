@@ -15,6 +15,17 @@ import fetch from "node-fetch";
 import mqtt from "mqtt";
 import RELIV_LOGO_B64 from "./relivlogo-base64.js";
 
+// ═══════════════════════════════════════════════════════════════════════════
+// OFFLINE-FIRST LOCAL DATABASE IMPORTS
+// ═══════════════════════════════════════════════════════════════════════════
+import { initializeDatabase, checkDatabaseHealth } from "./src/database/db.js";
+import sessionManager from "./src/services/sessionManager.js";
+import { transactionManager } from "./src/services/transactionManager.js";
+import PaymentRecoveryService from "./src/services/paymentRecovery.js";
+import PDFGenerator from "./src/services/pdfGenerator.js";
+import EmailQueueService from "./src/services/emailQueue.js";
+import InventoryManager from "./src/services/inventoryManager.js";
+
 // Load environment variables
 dotenv.config();
 
@@ -814,16 +825,21 @@ if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
 }
 const mongoUrl = process.env.MONGODB_URI;
 
-// MongoDB connection with pool and timeout options
-const client = new MongoClient(mongoUrl, {
-    maxPoolSize: 10,
-    minPoolSize: 2,
-    serverSelectionTimeoutMS: 5000,
-    socketTimeoutMS: 45000,
-    connectTimeoutMS: 10000,
-    retryWrites: true,
-    retryReads: true
-});
+// MongoDB connection with pool and timeout options (optional for offline-first operation)
+let client = null;
+if (mongoUrl) {
+    client = new MongoClient(mongoUrl, {
+        maxPoolSize: 10,
+        minPoolSize: 2,
+        serverSelectionTimeoutMS: 5000,
+        socketTimeoutMS: 45000,
+        connectTimeoutMS: 10000,
+        retryWrites: true,
+        retryReads: true
+    });
+} else {
+    log.warn('⚠️ MongoDB URI not configured - cloud sync disabled, local-only mode');
+}
 let db;
 
 // Track database connection state
@@ -868,6 +884,69 @@ async function start() {
         log.info(`🔗 CORS allowed origins: ${allowedOrigins.join(', ')}`);
     });
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INITIALIZE LOCAL SQLITE DATABASE (Offline-first architecture)
+    // ═══════════════════════════════════════════════════════════════════════════
+    let db = null;
+    try {
+        log.info('Initializing local SQLite database...');
+        db = initializeDatabase();
+        sessionManager.initialize();
+        transactionManager.initialize();
+        log.info('✅ Local database, session manager, and transaction manager initialized');
+    } catch (err) {
+        log.error('❌ Failed to initialize local database:', err);
+        log.error('⚠️ Kiosk will NOT function properly without local database!');
+        // Don't exit - but log critical warning
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INITIALIZE PDF GENERATOR & EMAIL QUEUE (Stage E)
+    // Generates reports/receipts locally, queues emails for later delivery
+    // ═══════════════════════════════════════════════════════════════════════════
+    let pdfGenerator = null;
+    let emailQueue = null;
+    let inventoryManager = null;
+    try {
+        if (db) {
+            pdfGenerator = new PDFGenerator(db);
+            emailQueue = new EmailQueueService(db, transporter);
+            inventoryManager = new InventoryManager(db);
+            
+            // Start email worker if Gmail configured
+            if (transporter) {
+                emailQueue.startWorker(1); // Process every 1 minute
+                log.info('✅ PDF generator, email queue, and inventory manager initialized (worker started)');
+            } else {
+                log.info('✅ PDF generator and inventory manager initialized (email queue waiting for Gmail config)');
+            }
+        }
+    } catch (err) {
+        log.error('❌ Failed to initialize PDF/email/inventory services:', err);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INITIALIZE PAYMENT RECOVERY SERVICE (Stage D)
+    // Recovers payments after Pi restart or network interruption
+    // ═══════════════════════════════════════════════════════════════════════════
+    let paymentRecovery = null;
+    try {
+        if (razorpay && process.env.RAZORPAY_KEY_SECRET) {
+            paymentRecovery = new PaymentRecoveryService(
+                transactionManager,
+                sessionManager,
+                razorpay,
+                process.env.RAZORPAY_KEY_SECRET
+            );
+            paymentRecovery.start(5); // Check every 5 minutes
+            log.info('✅ Payment recovery service started');
+        } else {
+            log.warn('⚠️  Payment recovery disabled - Razorpay not configured');
+        }
+    } catch (err) {
+        log.error('❌ Failed to initialize payment recovery:', err);
+    }
+
     // Graceful shutdown
     const gracefulShutdown = async () => {
         log.info('Received shutdown signal, closing connections...');
@@ -878,6 +957,14 @@ async function start() {
                 log.info('MongoDB connection closed');
             }
             if (mqttClient) mqttClient.end();
+            if (paymentRecovery) {
+                paymentRecovery.stop();
+                log.info('Payment recovery service stopped');
+            }
+            if (emailQueue) {
+                emailQueue.stopWorker();
+                log.info('Email queue worker stopped');
+            }
             log.info('MQTT connection closed');
             process.exit(0);
         });
@@ -893,20 +980,22 @@ async function start() {
     process.on('SIGINT', gracefulShutdown);
 
     // Now try to connect to MongoDB (with retries, but don't block)
-    let retries = 5;
-    while (retries > 0) {
-        try {
-            log.info('Connecting to MongoDB Atlas...');
-            await client.connect();
-            db = client.db("reliv");
+    // MongoDB is OPTIONAL for offline-first operation
+    if (client) {
+        let retries = 5;
+        while (retries > 0) {
+            try {
+                log.info('Connecting to MongoDB Atlas...');
+                await client.connect();
+                db = client.db("reliv");
 
-            // Verify connection
-            await db.command({ ping: 1 });
-            dbConnected = true;
-            log.info('✅ Successfully connected to MongoDB Atlas');
+                // Verify connection
+                await db.command({ ping: 1 });
+                dbConnected = true;
+                log.info('✅ Successfully connected to MongoDB Atlas');
 
-            // Migrate admin auth data from files to MongoDB (one-time sync)
-            await migrateAdminDataToMongo();
+                // Migrate admin auth data from files to MongoDB (one-time sync)
+                await migrateAdminDataToMongo();
 
             // Load admin-set report price from MongoDB
             try {
@@ -939,6 +1028,10 @@ async function start() {
             log.info(`Retrying in 5 seconds...`);
             await new Promise(resolve => setTimeout(resolve, 5000));
         }
+    }
+    } else {
+        log.info('ℹ️ MongoDB not configured - operating in OFFLINE-FIRST mode');
+        log.info('✅ All kiosk functions will work locally with SQLite');
     }
 }
 const DATA_DIR = process.env.DATA_DIR || "./data";
@@ -2777,35 +2870,60 @@ app.post("/api/qr-code", async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// QR SESSION TOKEN STORE — One-time opaque tokens for hiding real session IDs
-// CRITICAL: Replace with Redis or MongoDB for production.
-// In-memory storage loses all sessions on server restart and does NOT scale
-// across multiple server instances.
+// QR SESSION MANAGEMENT - GOLDEN RULE: ONE QR, ONE SESSION, EVERYTHING LINKED
+// All session endpoints now use SQLite-backed SessionManager for persistence
 // ═══════════════════════════════════════════════════════════════════════════
+
+// Legacy in-memory storage for backward compatibility (will be phased out)
 const qrSessions = new Map();
 // Each entry: { sessionId, createdAt, used: false }
 const qrPathMap = new Map();
 const QR_SESSION_TTL = 10 * 60 * 1000;
 
 function createQrPath() {
-    let qrPath;
-    do {
-        qrPath = crypto.randomBytes(8).toString("base64url");
-    } while (qrPathMap.has(qrPath));
-    return qrPath;
+    return crypto.randomBytes(16).toString('hex');
 }
 
-// Clean up expired QR session tokens every 5 minutes
+// Customer data storage (being migrated to sessions.customer_data in SQLite)
+const customerDataStore = new Map();
+
+// Clean up expired sessions every 5 minutes
 setInterval(() => {
     const now = Date.now();
+    
+    // Clean up legacy in-memory QR sessions
     for (const [token, session] of qrSessions.entries()) {
         if (now - session.createdAt > QR_SESSION_TTL) {
             qrSessions.delete(token);
         }
     }
+    
+    // Clean up orphaned paths
+    for (const [path, token] of qrPathMap.entries()) {
+        if (!qrSessions.has(token)) {
+            qrPathMap.delete(path);
+        }
+    }
+    
+    // Clean up legacy customer data store
+    const expiryTime = 30 * 60 * 1000; // 30 minutes
+    for (const [sessionId, data] of customerDataStore.entries()) {
+        if (now - data.timestamp > expiryTime) {
+            customerDataStore.delete(sessionId);
+        }
+    }
+    
+    // Expire old sessions in SQLite
+    try {
+        sessionManager.expireOldSessions();
+    } catch (err) {
+        log.error('Error expiring old sessions:', err);
+    }
 }, 5 * 60 * 1000);
 
-// Called by the kiosk when generating a QR code
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Create QR Session (GOLDEN RULE: Creates ONE session for customer)
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/create-qr-session", (req, res) => {
     res.set({
         'Cache-Control': 'no-store, no-cache, must-revalidate, private',
@@ -2813,36 +2931,38 @@ app.post("/api/create-qr-session", (req, res) => {
         'X-Content-Type-Options': 'nosniff',
     });
     try {
-        const { sessionId } = req.body;
-        if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
-
-        // Generate a cryptographically secure opaque token (full UUID — 122-bit entropy)
+        // ✅ NEW: Use SessionManager to create persistent session in SQLite
+        const session = sessionManager.createSession('RELIV-001', null);
+        
+        // Generate secure QR token and path
         const token = crypto.randomUUID();
-
+        const path = createQrPath();
+        
+        // Store QR mapping in SQLite
+        sessionManager.setQrPath(session.session_id, token, path);
+        
+        // Backward compatibility: Also store in legacy Maps (temporary)
         qrSessions.set(token, {
-            sessionId,
+            sessionId: session.session_id,
             createdAt: Date.now(),
             used: false,
         });
-
-        const path = createQrPath();
         qrPathMap.set(path, token);
-
-        // Auto-expire after 10 minutes
-        setTimeout(() => {
-            qrSessions.delete(token);
-            qrPathMap.delete(path);
-        }, QR_SESSION_TTL);
-
-        log.info(`🔑 QR session token created for session ${sessionId.slice(0, 8)}…`);
-        res.json({ path });
+        
+        log.info(`🔑 QR session created: ${session.session_id} (path: ${path.slice(0, 8)}...)`);
+        res.json({ 
+            path,
+            sessionId: session.session_id  // Include for debugging
+        });
     } catch (err) {
         console.error("Error creating QR session:", err);
         res.status(500).json({ error: "Failed to create QR session" });
     }
 });
 
-// Called by the mobile service after a phone scans an opaque QR path.
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Resolve QR Path (Returns session token from scanned QR path)
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/resolve-path", (req, res) => {
     res.set({
         'Cache-Control': 'no-store, no-cache, must-revalidate, private',
@@ -2853,9 +2973,19 @@ app.post("/api/resolve-path", (req, res) => {
         const { path } = req.body;
         if (!path) return res.status(400).json({ error: 'path required' });
 
+        // ✅ NEW: First try to get session from SQLite
+        const session = sessionManager.getSessionByQrPath(path);
+        
+        if (session) {
+            // Session found in SQLite
+            log.info(`✅ QR path resolved to session: ${session.session_id}`);
+            return res.json({ token: session.qr_token });
+        }
+        
+        // Fallback to legacy in-memory Map for backward compatibility
         const token = qrPathMap.get(path);
         if (!token) {
-            return res.status(410).json({ valid: false, message: 'Expired' });
+            return res.status(410).json({ valid: false, message: 'Expired or invalid path' });
         }
 
         res.json({ token });
@@ -2865,7 +2995,10 @@ app.post("/api/resolve-path", (req, res) => {
     }
 });
 
-// Called by the phone when it opens /h?t=<token>
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Validate Session (Called when phone opens QR link)
+// GOLDEN RULE: This validates the ONE QR scan - marks session as active
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/validate-session", (req, res) => {
     res.set({
         'Cache-Control': 'no-store, no-cache, must-revalidate, private',
@@ -2876,36 +3009,63 @@ app.post("/api/validate-session", (req, res) => {
         const { token } = req.body;
         if (!token) return res.status(400).json({ error: 'token required' });
 
-        const session = qrSessions.get(token);
+        // ✅ NEW: Get session from SQLite using QR token
+        const session = sessionManager.getSessionByQrToken(token);
 
         if (!session) {
-            return res.status(404).json({ valid: false, reason: 'not_found' });
+            // Fallback to legacy in-memory Map
+            const legacySession = qrSessions.get(token);
+            
+            if (!legacySession) {
+                return res.status(404).json({ valid: false, reason: 'not_found' });
+            }
+            
+            // Check legacy session
+            if (legacySession.used) {
+                return res.status(410).json({ valid: false, reason: 'already_used' });
+            }
+            
+            if (Date.now() - legacySession.createdAt > QR_SESSION_TTL) {
+                qrSessions.delete(token);
+                return res.status(410).json({ valid: false, reason: 'expired' });
+            }
+            
+            // Mark as used (one-time only)
+            legacySession.used = true;
+            
+            log.info(`✅ QR session validated (legacy): ${legacySession.sessionId}`);
+            return res.json({ valid: true, sessionId: legacySession.sessionId });
         }
 
+        // Validate SQLite session
         // Check if already used
-        if (session.used) {
+        if (session.qr_used) {
             return res.status(410).json({ valid: false, reason: 'already_used' });
         }
 
-        // Check if expired (10 min TTL)
-        if (Date.now() - session.createdAt > QR_SESSION_TTL) {
-            qrSessions.delete(token);
+        // Check if expired
+        if (new Date(session.expires_at) < new Date()) {
             return res.status(410).json({ valid: false, reason: 'expired' });
         }
 
-        // Mark as used (one-time only)
-        session.used = true;
+        // ✅ GOLDEN RULE: Mark QR as used (ONE-TIME scan)
+        sessionManager.markQrUsed(session.session_id);
 
-        log.info(`✅ QR session token validated for session ${session.sessionId.slice(0, 8)}…`);
-        res.json({ valid: true, sessionId: session.sessionId });
+        log.info(`✅ QR session validated: ${session.session_id}`);
+        res.json({ 
+            valid: true, 
+            sessionId: session.session_id 
+        });
     } catch (err) {
         console.error("Error validating session:", err);
         res.status(500).json({ error: "Failed to validate session" });
     }
 });
 
-// Customer data storage for QR entry
-const customerDataStore = new Map(); // In production, use Redis or database
+// ───────────────────────────────────────────────────────────────────────────
+// LEGACY: Customer data storage (will be deprecated in favor of SQLite)
+// ───────────────────────────────────────────────────────────────────────────
+// customerDataStore already declared at line 2826 - using that instance
 
 // Clean up old sessions every 5 minutes
 setInterval(() => {
@@ -2919,6 +3079,10 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000); // Run every 5 minutes
 
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Save Customer Data
+// GOLDEN RULE: Stores customer data ONCE - attached to the ONE session
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/save-customer-data", async (req, res) => {
     try {
         const { sessionId, customerData } = req.body;
@@ -2926,19 +3090,29 @@ app.post("/api/save-customer-data", async (req, res) => {
             return res.status(400).json({ error: "Session ID and customer data are required" });
         }
 
-        // Store data temporarily (in production, use proper storage)
+        // ✅ NEW: Store customer data in SQLite and transition state
+        // This also validates the session exists and enforces state machine
+        sessionManager.attachCustomer(sessionId, customerData);
+        
+        // Backward compatibility: Also store in legacy Map (temporary)
         customerDataStore.set(sessionId, {
             ...customerData,
             timestamp: Date.now()
         });
 
+        log.info(`💾 Customer data saved for session: ${sessionId}`);
         res.json({ success: true });
     } catch (err) {
         console.error("Error saving customer data:", err);
-        res.status(500).json({ error: "Failed to save customer data" });
+        res.status(500).json({ error: err.message || "Failed to save customer data" });
     }
 });
 
+
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Get Customer Data
+// GOLDEN RULE: Retrieves customer data from the ONE session (persists in SQLite)
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/get-customer-data", async (req, res) => {
     try {
         const { sessionId } = req.body;
@@ -2946,13 +3120,23 @@ app.post("/api/get-customer-data", async (req, res) => {
             return res.status(400).json({ error: "Session ID is required" });
         }
 
-        const data = customerDataStore.get(sessionId);
-        if (data) {
-            // Clean up after retrieval
-            customerDataStore.delete(sessionId);
-            res.json({ customerData: data });
+        // ✅ NEW: Get session from SQLite (includes customer_data as parsed JSON)
+        const session = sessionManager.getSession(sessionId);
+        
+        if (session && session.customer_data) {
+            // Data persists in SQLite - no need to delete
+            log.info(`📖 Customer data retrieved for session: ${sessionId}`);
+            res.json({ customerData: session.customer_data });
         } else {
-            res.json({ customerData: null });
+            // Fallback to legacy Map for backward compatibility
+            const data = customerDataStore.get(sessionId);
+            if (data) {
+                // Clean up after retrieval (legacy behavior)
+                customerDataStore.delete(sessionId);
+                res.json({ customerData: data });
+            } else {
+                res.json({ customerData: null });
+            }
         }
     } catch (err) {
         console.error("Error retrieving customer data:", err);
@@ -3087,6 +3271,10 @@ app.put("/api/report-price", async (req, res) => {
     }
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Create Payment Order
+// GOLDEN RULE: Backend calculates amount - NEVER trust frontend
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/create-order", async (req, res) => {
     // Check if Razorpay is configured
     if (!razorpay || !razorpayAvailable) {
@@ -3097,31 +3285,99 @@ app.post("/api/create-order", async (req, res) => {
     }
 
     try {
-        const { amount } = req.body;
-        if (!amount || isNaN(amount)) {
-            return res.status(400).json({ error: "Valid amount is required" });
+        const { sessionId, serviceType, cart } = req.body;
+        
+        if (!sessionId) {
+            return res.status(400).json({ error: "Session ID is required" });
         }
+
+        if (!serviceType || !['HEALTH_CHECKUP', 'MEDICINE'].includes(serviceType)) {
+            return res.status(400).json({ 
+                error: "Valid service type is required (HEALTH_CHECKUP or MEDICINE)" 
+            });
+        }
+
+        // ✅ Get session to ensure it exists and customer data is attached
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        if (session.status !== 'CUSTOMER_ATTACHED' && session.status !== 'SERVICE_SELECTED') {
+            return res.status(400).json({ 
+                error: "Customer data must be saved before payment",
+                currentStatus: session.status
+            });
+        }
+
+        // ✅ CRITICAL: Backend creates transaction with AUTHORITATIVE amount
+        // Amount is calculated from inventory prices - frontend amount is IGNORED
+        const transaction = transactionManager.createTransaction(
+            sessionId,
+            serviceType,
+            cart || []
+        );
+
+        // ✅ STAGE G: Reserve inventory for this session
+        // This prevents overselling and ensures stock availability
+        if (inventoryManager) {
+            try {
+                inventoryManager.reserveInventory(sessionId, serviceType);
+                log.info(`📦 Inventory reserved for session ${sessionId} (service: ${serviceType})`);
+            } catch (inventoryErr) {
+                // If inventory reservation fails, fail the whole order
+                log.error(`❌ Inventory reservation failed: ${inventoryErr.message}`);
+                return res.status(400).json({ 
+                    error: "Insufficient stock", 
+                    message: inventoryErr.message 
+                });
+            }
+        }
+
+        // Update session with service type
+        if (session.status === 'CUSTOMER_ATTACHED') {
+            sessionManager.selectService(sessionId, serviceType);
+        }
+
+        // Set payment required on session
+        sessionManager.setPaymentRequired(sessionId, transaction.amount);
+
+        // Create Razorpay order with backend-calculated amount
         const options = {
-            amount: amount * 100,
+            amount: transaction.amount,  // Already in paise
             currency: "INR",
-            receipt: `receipt_order_${Date.now()}`,
+            receipt: transaction.transaction_id,
             payment_capture: 1,
         };
+        
         const order = await razorpay.orders.create(options);
-        res.json(order);
+
+        // Store Razorpay order ID in transaction
+        transactionManager.markOrderCreated(transaction.transaction_id, order.id);
+
+        log.info(`💳 Payment order created: ${order.id} for ₹${transaction.amount / 100} (session: ${sessionId})`);
+
+        res.json({
+            orderId: order.id,
+            amount: transaction.amount,
+            currency: "INR",
+            transactionId: transaction.transaction_id,
+            sessionId: sessionId,
+        });
     } catch (err) {
         console.error("Error in /api/create-order:", err);
 
         // Send critical alert to admin (if email is available)
         if (transporter) {
             sendCriticalErrorAlert('Payment Order Creation', err, {
-                requestedAmount: req.body.amount,
+                requestedService: req.body.serviceType,
+                sessionId: req.body.sessionId,
                 endpoint: '/api/create-order',
                 timestamp: new Date().toISOString()
             }).catch(alertErr => log.error('Alert send failed:', alertErr));
         }
 
-        res.status(500).json({ error: "Server Error" });
+        res.status(500).json({ error: err.message || "Server Error" });
     }
 });
 app.get("/api/eco-stats", async (req, res) => {
@@ -3134,31 +3390,677 @@ app.get("/api/eco-stats", async (req, res) => {
     }
 });
 
-// ── Razorpay payment signature verification (HMAC-SHA256) ─────────────────
-// Must be called from client after Razorpay handler fires.
-// If signature is invalid we reject — prevents fake/replayed payments.
-app.post("/api/verify-payment", (req, res) => {
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Verify Payment (IDEMPOTENT)
+// GOLDEN RULE: Linked to transaction & session - full security checks
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/verify-payment", async (req, res) => {
     try {
         const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+        
         if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
             return res.status(400).json({ ok: false, message: "Missing payment verification fields" });
         }
+
         if (!process.env.RAZORPAY_KEY_SECRET) {
             return res.status(503).json({ ok: false, message: "Payment verification not configured" });
         }
+
+        // ✅ Step 1: Verify cryptographic signature (prevents fake payments)
         const body = `${razorpay_order_id}|${razorpay_payment_id}`;
         const expectedSignature = crypto
             .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
             .update(body)
             .digest("hex");
+        
         if (expectedSignature !== razorpay_signature) {
             log.warn(`🔴 Payment signature mismatch — possible fraud. order: ${razorpay_order_id}`);
-            return res.status(400).json({ ok: false, message: "Payment verification failed" });
+            return res.status(400).json({ ok: false, message: "Payment verification failed - invalid signature" });
         }
-        res.json({ ok: true });
+
+        // ✅ Step 2: Get transaction from database by Razorpay order ID
+        const transaction = transactionManager.getTransactionByOrderId(razorpay_order_id);
+        
+        if (!transaction) {
+            log.error(`❌ Transaction not found for order: ${razorpay_order_id}`);
+            return res.status(404).json({ ok: false, message: "Transaction not found" });
+        }
+
+        // ✅ Step 3: Check idempotency (if already verified, return success)
+        if (transaction.status === 'VERIFIED' || transaction.verified === 1) {
+            log.info(`✅ Payment already verified for transaction: ${transaction.transaction_id}`);
+            return res.json({ 
+                ok: true, 
+                already_verified: true,
+                transactionId: transaction.transaction_id
+            });
+        }
+
+        // ✅ Step 4: Fetch payment details from Razorpay API (authoritative source)
+        let payment;
+        try {
+            payment = await razorpay.payments.fetch(razorpay_payment_id);
+        } catch (err) {
+            log.error(`❌ Failed to fetch payment from Razorpay: ${err.message}`);
+            return res.status(500).json({ ok: false, message: "Failed to verify payment with provider" });
+        }
+
+        // ✅ Step 5: Validate payment details
+        // Check amount matches (CRITICAL SECURITY CHECK)
+        if (payment.amount !== transaction.amount) {
+            log.error(`❌ Amount mismatch: expected ${transaction.amount}, got ${payment.amount}`);
+            return res.status(400).json({ 
+                ok: false, 
+                message: `Amount mismatch: expected ₹${transaction.amount / 100}, got ₹${payment.amount / 100}` 
+            });
+        }
+
+        // Check payment status
+        if (payment.status !== 'captured') {
+            log.error(`❌ Payment not captured: status is ${payment.status}`);
+            return res.status(400).json({ 
+                ok: false, 
+                message: `Payment not successful: status is ${payment.status}` 
+            });
+        }
+
+        // ✅ Step 6: Mark payment as verified in transaction
+        transactionManager.verifyPayment(
+            transaction.transaction_id, 
+            razorpay_payment_id,
+            payment
+        );
+
+        // ✅ Step 7: Update session status to PAYMENT_VERIFIED
+        sessionManager.markPaymentVerified(transaction.session_id, razorpay_payment_id);
+
+        log.info(`✅ Payment verified successfully: ${razorpay_payment_id} for transaction ${transaction.transaction_id}`);
+
+        res.json({ 
+            ok: true, 
+            transactionId: transaction.transaction_id,
+            sessionId: transaction.session_id,
+            amount: transaction.amount / 100  // Return in rupees
+        });
+
     } catch (err) {
         log.error("❌ Payment verification error:", err.message);
-        res.status(500).json({ ok: false, message: "Verification error" });
+        res.status(500).json({ ok: false, message: err.message || "Verification error" });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SESSION-BASED PAYMENT ROUTES (Stage D - RESTful design)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/sessions/:sessionId/payment - Get payment status for session
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/sessions/:sessionId/payment", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+
+        // Get session
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ ok: false, message: "Session not found" });
+        }
+
+        // Get transaction for this session
+        const transaction = transactionManager.getTransactionBySession(sessionId);
+        
+        if (!transaction) {
+            return res.json({ 
+                ok: true, 
+                hasTransaction: false,
+                sessionStatus: session.status
+            });
+        }
+
+        res.json({
+            ok: true,
+            hasTransaction: true,
+            transaction: {
+                transactionId: transaction.transaction_id,
+                type: transaction.type,
+                amount: transaction.amount / 100, // Return in rupees
+                amountPaise: transaction.amount,
+                status: transaction.status,
+                verified: transaction.verified === 1,
+                verifiedAt: transaction.verified_at,
+                fulfilled: transaction.fulfilled === 1,
+                fulfilledAt: transaction.fulfilled_at,
+                providerOrderId: transaction.provider_order_id,
+                providerPaymentId: transaction.provider_payment_id,
+                createdAt: transaction.created_at
+            },
+            sessionStatus: session.status
+        });
+
+    } catch (err) {
+        log.error("❌ Error fetching payment status:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch payment status" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/sessions/:sessionId/payment/verify - Verify payment (session-based route)
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/sessions/:sessionId/payment/verify", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const { razorpay_payment_id, razorpay_signature } = req.body;
+        
+        if (!razorpay_payment_id || !razorpay_signature) {
+            return res.status(400).json({ ok: false, message: "Missing payment verification fields" });
+        }
+
+        if (!process.env.RAZORPAY_KEY_SECRET) {
+            return res.status(503).json({ ok: false, message: "Payment verification not configured" });
+        }
+
+        // ✅ Step 1: Get session
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ ok: false, message: "Session not found" });
+        }
+
+        // ✅ Step 2: Get transaction for this session
+        const transaction = transactionManager.getTransactionBySession(sessionId);
+        if (!transaction) {
+            return res.status(404).json({ ok: false, message: "No transaction found for this session" });
+        }
+
+        // Use the order ID from the transaction
+        const razorpay_order_id = transaction.provider_order_id;
+
+        // ✅ Step 3: Check idempotency (if already verified, return success)
+        if (transaction.status === 'VERIFIED' || transaction.verified === 1) {
+            log.info(`✅ Payment already verified for transaction: ${transaction.transaction_id}`);
+            return res.json({ 
+                ok: true, 
+                already_verified: true,
+                transactionId: transaction.transaction_id,
+                sessionId: sessionId,
+                amount: transaction.amount / 100
+            });
+        }
+
+        // ✅ Step 4: Verify cryptographic signature (prevents fake payments)
+        const body = `${razorpay_order_id}|${razorpay_payment_id}`;
+        const expectedSignature = crypto
+            .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+            .update(body)
+            .digest("hex");
+        
+        if (expectedSignature !== razorpay_signature) {
+            log.warn(`🔴 Payment signature mismatch — possible fraud. session: ${sessionId}`);
+            return res.status(400).json({ ok: false, message: "Payment verification failed - invalid signature" });
+        }
+
+        // ✅ Step 5: Fetch payment details from Razorpay API (authoritative source)
+        let payment;
+        try {
+            payment = await razorpay.payments.fetch(razorpay_payment_id);
+        } catch (err) {
+            log.error(`❌ Failed to fetch payment from Razorpay: ${err.message}`);
+            return res.status(500).json({ ok: false, message: "Failed to verify payment with provider" });
+        }
+
+        // ✅ Step 6: Validate payment details
+        // Check amount matches (CRITICAL SECURITY CHECK)
+        if (payment.amount !== transaction.amount) {
+            log.error(`❌ Amount mismatch: expected ${transaction.amount}, got ${payment.amount}`);
+            return res.status(400).json({ 
+                ok: false, 
+                message: `Amount mismatch: expected ₹${transaction.amount / 100}, got ₹${payment.amount / 100}` 
+            });
+        }
+
+        // Check payment status
+        if (payment.status !== 'captured') {
+            log.error(`❌ Payment not captured: status is ${payment.status}`);
+            return res.status(400).json({ 
+                ok: false, 
+                message: `Payment not successful: status is ${payment.status}` 
+            });
+        }
+
+        // ✅ Step 7: Mark payment as verified in transaction
+        transactionManager.verifyPayment(
+            transaction.transaction_id, 
+            razorpay_payment_id,
+            payment
+        );
+
+        // ✅ Step 8: Update session status to PAYMENT_VERIFIED
+        sessionManager.markPaymentVerified(sessionId, razorpay_payment_id);
+
+        log.info(`✅ Payment verified successfully: ${razorpay_payment_id} for session ${sessionId}`);
+
+        res.json({ 
+            ok: true, 
+            transactionId: transaction.transaction_id,
+            sessionId: sessionId,
+            amount: transaction.amount / 100  // Return in rupees
+        });
+
+    } catch (err) {
+        log.error("❌ Session payment verification error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Verification error" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/sessions/:sessionId/payment/recover - Manually trigger payment recovery
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/sessions/:sessionId/payment/recover", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+
+        if (!paymentRecovery) {
+            return res.status(503).json({ 
+                ok: false, 
+                message: "Payment recovery service not available (Razorpay not configured)" 
+            });
+        }
+
+        log.info(`🔄 Manual payment recovery requested for session: ${sessionId}`);
+
+        const result = await paymentRecovery.recoverSession(sessionId);
+
+        if (result.recovered) {
+            log.info(`✅ Successfully recovered payment for session ${sessionId}`);
+            res.json({
+                ok: true,
+                recovered: true,
+                paymentId: result.paymentId,
+                amount: result.amount
+            });
+        } else {
+            log.info(`⏳ Could not recover payment for session ${sessionId}: ${result.reason}`);
+            res.json({
+                ok: true,
+                recovered: false,
+                reason: result.reason
+            });
+        }
+
+    } catch (err) {
+        log.error(`❌ Payment recovery failed for session ${req.params.sessionId}:`, err.message);
+        res.status(500).json({ ok: false, message: err.message || "Recovery failed" });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STAGE E: REPORT & RECEIPT GENERATION (Offline-first)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/sessions/:sessionId/report - Generate health report
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/sessions/:sessionId/report", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const { healthData } = req.body;
+
+        if (!pdfGenerator) {
+            return res.status(503).json({ ok: false, message: "PDF service not available" });
+        }
+
+        // Get session
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ ok: false, message: "Session not found" });
+        }
+
+        // Get customer data
+        const customerData = session.customer_data ? 
+            (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) 
+            : {};
+
+        log.info(`📄 Generating health report for session: ${sessionId}`);
+
+        // 1. Generate PDF locally (NEVER blocks on email)
+        const { reportId, pdfPath, pdfBuffer } = await pdfGenerator.generateHealthReport(
+            sessionId,
+            customerData,
+            healthData
+        );
+
+        // 2. Queue email if customer has email (asynchronous, non-blocking)
+        if (customerData.email && emailQueue) {
+            emailQueue.queueEmail(sessionId, 'EMAIL_REPORT', {
+                pdfPath,
+                pdfBuffer,
+                reportId
+            });
+            log.info(`📧 Report email queued for ${customerData.email}`);
+        }
+
+        // 3. Update session status
+        sessionManager.updateSessionField(sessionId, 'report_status', 'READY');
+
+        // 4. Return immediately (email sends in background)
+        res.json({
+            ok: true,
+            reportId,
+            pdfPath: `/api/sessions/${sessionId}/report/download`,
+            emailQueued: !!customerData.email
+        });
+
+    } catch (err) {
+        log.error("❌ Report generation error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to generate report" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/sessions/:sessionId/report/download - Download report PDF
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/sessions/:sessionId/report/download", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+
+        if (!pdfGenerator) {
+            return res.status(503).json({ ok: false, message: "PDF service not available" });
+        }
+
+        const report = pdfGenerator.getReportBySession(sessionId);
+        
+        if (!report) {
+            return res.status(404).json({ ok: false, message: "Report not found" });
+        }
+
+        res.sendFile(report.pdf_path);
+
+    } catch (err) {
+        log.error("❌ Report download error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to download report" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/sessions/:sessionId/receipt - Generate receipt
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/sessions/:sessionId/receipt", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+
+        if (!pdfGenerator) {
+            return res.status(503).json({ ok: false, message: "PDF service not available" });
+        }
+
+        // Get session
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ ok: false, message: "Session not found" });
+        }
+
+        // Get transaction
+        const transaction = transactionManager.getTransactionBySession(sessionId);
+        if (!transaction) {
+            return res.status(404).json({ ok: false, message: "No transaction found for session" });
+        }
+
+        // Get customer data
+        const customerData = session.customer_data ? 
+            (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) 
+            : {};
+
+        log.info(`🧾 Generating receipt for session: ${sessionId}`);
+
+        // 1. Generate PDF locally
+        const { receiptId, pdfPath, pdfBuffer } = await pdfGenerator.generateReceipt(
+            sessionId,
+            customerData,
+            transaction
+        );
+
+        // 2. Queue email if customer has email
+        if (customerData.email && emailQueue) {
+            emailQueue.queueEmail(sessionId, 'EMAIL_RECEIPT', {
+                pdfPath,
+                pdfBuffer,
+                receiptId,
+                amount: transaction.amount / 100
+            });
+            log.info(`📧 Receipt email queued for ${customerData.email}`);
+        }
+
+        // 3. Update session status
+        sessionManager.updateSessionField(sessionId, 'receipt_status', 'READY');
+
+        // 4. Return immediately
+        res.json({
+            ok: true,
+            receiptId,
+            pdfPath: `/api/sessions/${sessionId}/receipt/download`,
+            emailQueued: !!customerData.email
+        });
+
+    } catch (err) {
+        log.error("❌ Receipt generation error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to generate receipt" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/sessions/:sessionId/receipt/download - Download receipt PDF
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/sessions/:sessionId/receipt/download", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+
+        if (!pdfGenerator) {
+            return res.status(503).json({ ok: false, message: "PDF service not available" });
+        }
+
+        const receipt = pdfGenerator.getReceiptBySession(sessionId);
+        
+        if (!receipt) {
+            return res.status(404).json({ ok: false, message: "Receipt not found" });
+        }
+
+        res.sendFile(receipt.pdf_path);
+
+    } catch (err) {
+        log.error("❌ Receipt download error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to download receipt" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/email-queue/stats - Get email queue statistics
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/email-queue/stats", (req, res) => {
+    try {
+        if (!emailQueue) {
+            return res.status(503).json({ ok: false, message: "Email queue not available" });
+        }
+
+        const stats = emailQueue.getQueueStats();
+        res.json({ ok: true, ...stats });
+
+    } catch (err) {
+        log.error("❌ Email queue stats error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to get stats" });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INVENTORY MANAGEMENT ROUTES (Stage G)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/inventory - Get all inventory items
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/inventory", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const items = inventoryManager.getAllInventory();
+        res.json({ ok: true, items });
+
+    } catch (err) {
+        log.error("❌ Inventory fetch error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch inventory" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/inventory/low-stock - Get low stock items
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/inventory/low-stock", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const items = inventoryManager.getLowStockItems();
+        res.json({ ok: true, items, count: items.length });
+
+    } catch (err) {
+        log.error("❌ Low stock fetch error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch low stock" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/inventory/expiring - Get expiring items
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/inventory/expiring", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const daysAhead = parseInt(req.query.days) || 30;
+        const items = inventoryManager.getExpiringItems(daysAhead);
+        res.json({ ok: true, items, count: items.length, daysAhead });
+
+    } catch (err) {
+        log.error("❌ Expiring items fetch error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch expiring items" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/inventory/:id - Get inventory item by ID
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/inventory/:id", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const item = inventoryManager.getInventoryItem(req.params.id);
+        if (!item) {
+            return res.status(404).json({ ok: false, message: "Item not found" });
+        }
+
+        res.json({ ok: true, item });
+
+    } catch (err) {
+        log.error("❌ Inventory item fetch error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch item" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/inventory/service/:serviceType - Get inventory for service
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/inventory/service/:serviceType", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const items = inventoryManager.getInventoryByService(req.params.serviceType);
+        const availability = inventoryManager.checkStockAvailability(req.params.serviceType);
+        
+        res.json({ 
+            ok: true, 
+            items,
+            available: availability.available,
+            unavailableItems: availability.unavailableItems
+        });
+
+    } catch (err) {
+        log.error("❌ Service inventory fetch error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch service inventory" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/inventory/:id/add - Add stock
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/inventory/:id/add", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const { quantity, notes } = req.body;
+        
+        if (!quantity || quantity <= 0) {
+            return res.status(400).json({ ok: false, message: "Invalid quantity" });
+        }
+
+        const item = inventoryManager.addStock(req.params.id, quantity, notes || 'Stock added');
+        res.json({ ok: true, item, message: `Added ${quantity} units` });
+
+    } catch (err) {
+        log.error("❌ Add stock error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to add stock" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/inventory/:id/adjust - Adjust stock (damage, loss, correction)
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/inventory/:id/adjust", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const { quantity, notes } = req.body;
+        
+        if (quantity === undefined || quantity === 0) {
+            return res.status(400).json({ ok: false, message: "Invalid quantity" });
+        }
+        
+        if (!notes) {
+            return res.status(400).json({ ok: false, message: "Notes required for adjustment" });
+        }
+
+        const item = inventoryManager.adjustStock(req.params.id, quantity, notes);
+        res.json({ ok: true, item, message: `Adjusted by ${quantity} units` });
+
+    } catch (err) {
+        log.error("❌ Adjust stock error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to adjust stock" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/sessions/:id/inventory - Get inventory history for session
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/sessions/:id/inventory", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const history = inventoryManager.getSessionInventoryHistory(req.params.id);
+        res.json({ ok: true, history });
+
+    } catch (err) {
+        log.error("❌ Inventory history error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch history" });
     }
 });
 
