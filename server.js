@@ -22,6 +22,8 @@ import { initializeDatabase, checkDatabaseHealth } from "./src/database/db.js";
 import sessionManager from "./src/services/sessionManager.js";
 import { transactionManager } from "./src/services/transactionManager.js";
 import PaymentRecoveryService from "./src/services/paymentRecovery.js";
+import PDFGenerator from "./src/services/pdfGenerator.js";
+import EmailQueueService from "./src/services/emailQueue.js";
 
 // Load environment variables
 dotenv.config();
@@ -884,9 +886,10 @@ async function start() {
     // ═══════════════════════════════════════════════════════════════════════════
     // INITIALIZE LOCAL SQLITE DATABASE (Offline-first architecture)
     // ═══════════════════════════════════════════════════════════════════════════
+    let db = null;
     try {
         log.info('Initializing local SQLite database...');
-        initializeDatabase();
+        db = initializeDatabase();
         sessionManager.initialize();
         transactionManager.initialize();
         log.info('✅ Local database, session manager, and transaction manager initialized');
@@ -894,6 +897,29 @@ async function start() {
         log.error('❌ Failed to initialize local database:', err);
         log.error('⚠️ Kiosk will NOT function properly without local database!');
         // Don't exit - but log critical warning
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INITIALIZE PDF GENERATOR & EMAIL QUEUE (Stage E)
+    // Generates reports/receipts locally, queues emails for later delivery
+    // ═══════════════════════════════════════════════════════════════════════════
+    let pdfGenerator = null;
+    let emailQueue = null;
+    try {
+        if (db) {
+            pdfGenerator = new PDFGenerator(db);
+            emailQueue = new EmailQueueService(db, transporter);
+            
+            // Start email worker if Gmail configured
+            if (transporter) {
+                emailQueue.startWorker(1); // Process every 1 minute
+                log.info('✅ PDF generator and email queue initialized (worker started)');
+            } else {
+                log.info('✅ PDF generator initialized (email queue waiting for Gmail config)');
+            }
+        }
+    } catch (err) {
+        log.error('❌ Failed to initialize PDF/email services:', err);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -931,6 +957,10 @@ async function start() {
             if (paymentRecovery) {
                 paymentRecovery.stop();
                 log.info('Payment recovery service stopped');
+            }
+            if (emailQueue) {
+                emailQueue.stopWorker();
+                log.info('Email queue worker stopped');
             }
             log.info('MQTT connection closed');
             process.exit(0);
@@ -3640,6 +3670,202 @@ app.post("/api/sessions/:sessionId/payment/recover", async (req, res) => {
     } catch (err) {
         log.error(`❌ Payment recovery failed for session ${req.params.sessionId}:`, err.message);
         res.status(500).json({ ok: false, message: err.message || "Recovery failed" });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STAGE E: REPORT & RECEIPT GENERATION (Offline-first)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/sessions/:sessionId/report - Generate health report
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/sessions/:sessionId/report", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const { healthData } = req.body;
+
+        if (!pdfGenerator) {
+            return res.status(503).json({ ok: false, message: "PDF service not available" });
+        }
+
+        // Get session
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ ok: false, message: "Session not found" });
+        }
+
+        // Get customer data
+        const customerData = session.customer_data ? 
+            (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) 
+            : {};
+
+        log.info(`📄 Generating health report for session: ${sessionId}`);
+
+        // 1. Generate PDF locally (NEVER blocks on email)
+        const { reportId, pdfPath, pdfBuffer } = await pdfGenerator.generateHealthReport(
+            sessionId,
+            customerData,
+            healthData
+        );
+
+        // 2. Queue email if customer has email (asynchronous, non-blocking)
+        if (customerData.email && emailQueue) {
+            emailQueue.queueEmail(sessionId, 'EMAIL_REPORT', {
+                pdfPath,
+                pdfBuffer,
+                reportId
+            });
+            log.info(`📧 Report email queued for ${customerData.email}`);
+        }
+
+        // 3. Update session status
+        sessionManager.updateSessionField(sessionId, 'report_status', 'READY');
+
+        // 4. Return immediately (email sends in background)
+        res.json({
+            ok: true,
+            reportId,
+            pdfPath: `/api/sessions/${sessionId}/report/download`,
+            emailQueued: !!customerData.email
+        });
+
+    } catch (err) {
+        log.error("❌ Report generation error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to generate report" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/sessions/:sessionId/report/download - Download report PDF
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/sessions/:sessionId/report/download", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+
+        if (!pdfGenerator) {
+            return res.status(503).json({ ok: false, message: "PDF service not available" });
+        }
+
+        const report = pdfGenerator.getReportBySession(sessionId);
+        
+        if (!report) {
+            return res.status(404).json({ ok: false, message: "Report not found" });
+        }
+
+        res.sendFile(report.pdf_path);
+
+    } catch (err) {
+        log.error("❌ Report download error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to download report" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/sessions/:sessionId/receipt - Generate receipt
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/sessions/:sessionId/receipt", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+
+        if (!pdfGenerator) {
+            return res.status(503).json({ ok: false, message: "PDF service not available" });
+        }
+
+        // Get session
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ ok: false, message: "Session not found" });
+        }
+
+        // Get transaction
+        const transaction = transactionManager.getTransactionBySession(sessionId);
+        if (!transaction) {
+            return res.status(404).json({ ok: false, message: "No transaction found for session" });
+        }
+
+        // Get customer data
+        const customerData = session.customer_data ? 
+            (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) 
+            : {};
+
+        log.info(`🧾 Generating receipt for session: ${sessionId}`);
+
+        // 1. Generate PDF locally
+        const { receiptId, pdfPath, pdfBuffer } = await pdfGenerator.generateReceipt(
+            sessionId,
+            customerData,
+            transaction
+        );
+
+        // 2. Queue email if customer has email
+        if (customerData.email && emailQueue) {
+            emailQueue.queueEmail(sessionId, 'EMAIL_RECEIPT', {
+                pdfPath,
+                pdfBuffer,
+                receiptId,
+                amount: transaction.amount / 100
+            });
+            log.info(`📧 Receipt email queued for ${customerData.email}`);
+        }
+
+        // 3. Update session status
+        sessionManager.updateSessionField(sessionId, 'receipt_status', 'READY');
+
+        // 4. Return immediately
+        res.json({
+            ok: true,
+            receiptId,
+            pdfPath: `/api/sessions/${sessionId}/receipt/download`,
+            emailQueued: !!customerData.email
+        });
+
+    } catch (err) {
+        log.error("❌ Receipt generation error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to generate receipt" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/sessions/:sessionId/receipt/download - Download receipt PDF
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/sessions/:sessionId/receipt/download", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+
+        if (!pdfGenerator) {
+            return res.status(503).json({ ok: false, message: "PDF service not available" });
+        }
+
+        const receipt = pdfGenerator.getReceiptBySession(sessionId);
+        
+        if (!receipt) {
+            return res.status(404).json({ ok: false, message: "Receipt not found" });
+        }
+
+        res.sendFile(receipt.pdf_path);
+
+    } catch (err) {
+        log.error("❌ Receipt download error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to download receipt" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/email-queue/stats - Get email queue statistics
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/email-queue/stats", (req, res) => {
+    try {
+        if (!emailQueue) {
+            return res.status(503).json({ ok: false, message: "Email queue not available" });
+        }
+
+        const stats = emailQueue.getQueueStats();
+        res.json({ ok: true, ...stats });
+
+    } catch (err) {
+        log.error("❌ Email queue stats error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to get stats" });
     }
 });
 

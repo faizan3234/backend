@@ -359,6 +359,33 @@ class SessionManager {
     }
     
     /**
+     * Update a specific session field (generic update)
+     * @param {string} sessionId
+     * @param {string} fieldName
+     * @param {any} value
+     */
+    updateSessionField(sessionId, fieldName, value) {
+        // Whitelist of allowed fields to prevent SQL injection
+        const allowedFields = [
+            'report_status', 'receipt_status', 'dispense_status',
+            'payment_status', 'status', 'qr_path', 'qr_token'
+        ];
+        
+        if (!allowedFields.includes(fieldName)) {
+            throw new Error(`Invalid field name: ${fieldName}`);
+        }
+        
+        const stmt = this.db.prepare(`
+            UPDATE sessions 
+            SET ${fieldName} = ?, 
+                updated_at = datetime('now')
+            WHERE session_id = ?
+        `);
+        
+        stmt.run(value, sessionId);
+    }
+    
+    /**
      * Expire old sessions
      * @returns {number} Number of expired sessions
      */
