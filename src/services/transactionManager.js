@@ -352,6 +352,26 @@ class TransactionManager {
     }
 
     /**
+     * Get all pending transactions that have Razorpay orders created
+     * (Used for payment recovery after Pi restart)
+     */
+    getPendingTransactionsWithOrders() {
+        const stmt = this.db.prepare(`
+            SELECT * FROM transactions 
+            WHERE status = ? 
+            AND provider_order_id IS NOT NULL
+            AND provider_order_id != ''
+            ORDER BY created_at DESC
+        `);
+        const transactions = stmt.all(TRANSACTION_STATES.PENDING);
+
+        return transactions.map(tx => ({
+            ...tx,
+            cart: tx.cart ? JSON.parse(tx.cart) : [],
+        }));
+    }
+
+    /**
      * Check if transaction is verified
      */
     isVerified(transactionId) {

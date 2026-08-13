@@ -21,6 +21,7 @@ import RELIV_LOGO_B64 from "./relivlogo-base64.js";
 import { initializeDatabase, checkDatabaseHealth } from "./src/database/db.js";
 import sessionManager from "./src/services/sessionManager.js";
 import { transactionManager } from "./src/services/transactionManager.js";
+import PaymentRecoveryService from "./src/services/paymentRecovery.js";
 
 // Load environment variables
 dotenv.config();
@@ -895,6 +896,28 @@ async function start() {
         // Don't exit - but log critical warning
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INITIALIZE PAYMENT RECOVERY SERVICE (Stage D)
+    // Recovers payments after Pi restart or network interruption
+    // ═══════════════════════════════════════════════════════════════════════════
+    let paymentRecovery = null;
+    try {
+        if (razorpay && process.env.RAZORPAY_KEY_SECRET) {
+            paymentRecovery = new PaymentRecoveryService(
+                transactionManager,
+                sessionManager,
+                razorpay,
+                process.env.RAZORPAY_KEY_SECRET
+            );
+            paymentRecovery.start(5); // Check every 5 minutes
+            log.info('✅ Payment recovery service started');
+        } else {
+            log.warn('⚠️  Payment recovery disabled - Razorpay not configured');
+        }
+    } catch (err) {
+        log.error('❌ Failed to initialize payment recovery:', err);
+    }
+
     // Graceful shutdown
     const gracefulShutdown = async () => {
         log.info('Received shutdown signal, closing connections...');
@@ -905,6 +928,10 @@ async function start() {
                 log.info('MongoDB connection closed');
             }
             if (mqttClient) mqttClient.end();
+            if (paymentRecovery) {
+                paymentRecovery.stop();
+                log.info('Payment recovery service stopped');
+            }
             log.info('MQTT connection closed');
             process.exit(0);
         });
@@ -3410,6 +3437,209 @@ app.post("/api/verify-payment", async (req, res) => {
     } catch (err) {
         log.error("❌ Payment verification error:", err.message);
         res.status(500).json({ ok: false, message: err.message || "Verification error" });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SESSION-BASED PAYMENT ROUTES (Stage D - RESTful design)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/sessions/:sessionId/payment - Get payment status for session
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/sessions/:sessionId/payment", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+
+        // Get session
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ ok: false, message: "Session not found" });
+        }
+
+        // Get transaction for this session
+        const transaction = transactionManager.getTransactionBySession(sessionId);
+        
+        if (!transaction) {
+            return res.json({ 
+                ok: true, 
+                hasTransaction: false,
+                sessionStatus: session.status
+            });
+        }
+
+        res.json({
+            ok: true,
+            hasTransaction: true,
+            transaction: {
+                transactionId: transaction.transaction_id,
+                type: transaction.type,
+                amount: transaction.amount / 100, // Return in rupees
+                amountPaise: transaction.amount,
+                status: transaction.status,
+                verified: transaction.verified === 1,
+                verifiedAt: transaction.verified_at,
+                fulfilled: transaction.fulfilled === 1,
+                fulfilledAt: transaction.fulfilled_at,
+                providerOrderId: transaction.provider_order_id,
+                providerPaymentId: transaction.provider_payment_id,
+                createdAt: transaction.created_at
+            },
+            sessionStatus: session.status
+        });
+
+    } catch (err) {
+        log.error("❌ Error fetching payment status:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch payment status" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/sessions/:sessionId/payment/verify - Verify payment (session-based route)
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/sessions/:sessionId/payment/verify", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const { razorpay_payment_id, razorpay_signature } = req.body;
+        
+        if (!razorpay_payment_id || !razorpay_signature) {
+            return res.status(400).json({ ok: false, message: "Missing payment verification fields" });
+        }
+
+        if (!process.env.RAZORPAY_KEY_SECRET) {
+            return res.status(503).json({ ok: false, message: "Payment verification not configured" });
+        }
+
+        // ✅ Step 1: Get session
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ ok: false, message: "Session not found" });
+        }
+
+        // ✅ Step 2: Get transaction for this session
+        const transaction = transactionManager.getTransactionBySession(sessionId);
+        if (!transaction) {
+            return res.status(404).json({ ok: false, message: "No transaction found for this session" });
+        }
+
+        // Use the order ID from the transaction
+        const razorpay_order_id = transaction.provider_order_id;
+
+        // ✅ Step 3: Check idempotency (if already verified, return success)
+        if (transaction.status === 'VERIFIED' || transaction.verified === 1) {
+            log.info(`✅ Payment already verified for transaction: ${transaction.transaction_id}`);
+            return res.json({ 
+                ok: true, 
+                already_verified: true,
+                transactionId: transaction.transaction_id,
+                sessionId: sessionId,
+                amount: transaction.amount / 100
+            });
+        }
+
+        // ✅ Step 4: Verify cryptographic signature (prevents fake payments)
+        const body = `${razorpay_order_id}|${razorpay_payment_id}`;
+        const expectedSignature = crypto
+            .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+            .update(body)
+            .digest("hex");
+        
+        if (expectedSignature !== razorpay_signature) {
+            log.warn(`🔴 Payment signature mismatch — possible fraud. session: ${sessionId}`);
+            return res.status(400).json({ ok: false, message: "Payment verification failed - invalid signature" });
+        }
+
+        // ✅ Step 5: Fetch payment details from Razorpay API (authoritative source)
+        let payment;
+        try {
+            payment = await razorpay.payments.fetch(razorpay_payment_id);
+        } catch (err) {
+            log.error(`❌ Failed to fetch payment from Razorpay: ${err.message}`);
+            return res.status(500).json({ ok: false, message: "Failed to verify payment with provider" });
+        }
+
+        // ✅ Step 6: Validate payment details
+        // Check amount matches (CRITICAL SECURITY CHECK)
+        if (payment.amount !== transaction.amount) {
+            log.error(`❌ Amount mismatch: expected ${transaction.amount}, got ${payment.amount}`);
+            return res.status(400).json({ 
+                ok: false, 
+                message: `Amount mismatch: expected ₹${transaction.amount / 100}, got ₹${payment.amount / 100}` 
+            });
+        }
+
+        // Check payment status
+        if (payment.status !== 'captured') {
+            log.error(`❌ Payment not captured: status is ${payment.status}`);
+            return res.status(400).json({ 
+                ok: false, 
+                message: `Payment not successful: status is ${payment.status}` 
+            });
+        }
+
+        // ✅ Step 7: Mark payment as verified in transaction
+        transactionManager.verifyPayment(
+            transaction.transaction_id, 
+            razorpay_payment_id,
+            payment
+        );
+
+        // ✅ Step 8: Update session status to PAYMENT_VERIFIED
+        sessionManager.markPaymentVerified(sessionId, razorpay_payment_id);
+
+        log.info(`✅ Payment verified successfully: ${razorpay_payment_id} for session ${sessionId}`);
+
+        res.json({ 
+            ok: true, 
+            transactionId: transaction.transaction_id,
+            sessionId: sessionId,
+            amount: transaction.amount / 100  // Return in rupees
+        });
+
+    } catch (err) {
+        log.error("❌ Session payment verification error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Verification error" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/sessions/:sessionId/payment/recover - Manually trigger payment recovery
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/sessions/:sessionId/payment/recover", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+
+        if (!paymentRecovery) {
+            return res.status(503).json({ 
+                ok: false, 
+                message: "Payment recovery service not available (Razorpay not configured)" 
+            });
+        }
+
+        log.info(`🔄 Manual payment recovery requested for session: ${sessionId}`);
+
+        const result = await paymentRecovery.recoverSession(sessionId);
+
+        if (result.recovered) {
+            log.info(`✅ Successfully recovered payment for session ${sessionId}`);
+            res.json({
+                ok: true,
+                recovered: true,
+                paymentId: result.paymentId,
+                amount: result.amount
+            });
+        } else {
+            log.info(`⏳ Could not recover payment for session ${sessionId}: ${result.reason}`);
+            res.json({
+                ok: true,
+                recovered: false,
+                reason: result.reason
+            });
+        }
+
+    } catch (err) {
+        log.error(`❌ Payment recovery failed for session ${req.params.sessionId}:`, err.message);
+        res.status(500).json({ ok: false, message: err.message || "Recovery failed" });
     }
 });
 
