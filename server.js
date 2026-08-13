@@ -2808,35 +2808,60 @@ app.post("/api/qr-code", async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// QR SESSION TOKEN STORE — One-time opaque tokens for hiding real session IDs
-// CRITICAL: Replace with Redis or MongoDB for production.
-// In-memory storage loses all sessions on server restart and does NOT scale
-// across multiple server instances.
+// QR SESSION MANAGEMENT - GOLDEN RULE: ONE QR, ONE SESSION, EVERYTHING LINKED
+// All session endpoints now use SQLite-backed SessionManager for persistence
 // ═══════════════════════════════════════════════════════════════════════════
+
+// Legacy in-memory storage for backward compatibility (will be phased out)
 const qrSessions = new Map();
 // Each entry: { sessionId, createdAt, used: false }
 const qrPathMap = new Map();
 const QR_SESSION_TTL = 10 * 60 * 1000;
 
 function createQrPath() {
-    let qrPath;
-    do {
-        qrPath = crypto.randomBytes(8).toString("base64url");
-    } while (qrPathMap.has(qrPath));
-    return qrPath;
+    return crypto.randomBytes(16).toString('hex');
 }
 
-// Clean up expired QR session tokens every 5 minutes
+// Customer data storage (being migrated to sessions.customer_data in SQLite)
+const customerDataStore = new Map();
+
+// Clean up expired sessions every 5 minutes
 setInterval(() => {
     const now = Date.now();
+    
+    // Clean up legacy in-memory QR sessions
     for (const [token, session] of qrSessions.entries()) {
         if (now - session.createdAt > QR_SESSION_TTL) {
             qrSessions.delete(token);
         }
     }
+    
+    // Clean up orphaned paths
+    for (const [path, token] of qrPathMap.entries()) {
+        if (!qrSessions.has(token)) {
+            qrPathMap.delete(path);
+        }
+    }
+    
+    // Clean up legacy customer data store
+    const expiryTime = 30 * 60 * 1000; // 30 minutes
+    for (const [sessionId, data] of customerDataStore.entries()) {
+        if (now - data.timestamp > expiryTime) {
+            customerDataStore.delete(sessionId);
+        }
+    }
+    
+    // Expire old sessions in SQLite
+    try {
+        sessionManager.expireOldSessions();
+    } catch (err) {
+        log.error('Error expiring old sessions:', err);
+    }
 }, 5 * 60 * 1000);
 
-// Called by the kiosk when generating a QR code
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Create QR Session (GOLDEN RULE: Creates ONE session for customer)
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/create-qr-session", (req, res) => {
     res.set({
         'Cache-Control': 'no-store, no-cache, must-revalidate, private',
@@ -2844,36 +2869,38 @@ app.post("/api/create-qr-session", (req, res) => {
         'X-Content-Type-Options': 'nosniff',
     });
     try {
-        const { sessionId } = req.body;
-        if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
-
-        // Generate a cryptographically secure opaque token (full UUID — 122-bit entropy)
+        // ✅ NEW: Use SessionManager to create persistent session in SQLite
+        const session = sessionManager.createSession('RELIV-001', null);
+        
+        // Generate secure QR token and path
         const token = crypto.randomUUID();
-
+        const path = createQrPath();
+        
+        // Store QR mapping in SQLite
+        sessionManager.setQrPath(session.session_id, token, path);
+        
+        // Backward compatibility: Also store in legacy Maps (temporary)
         qrSessions.set(token, {
-            sessionId,
+            sessionId: session.session_id,
             createdAt: Date.now(),
             used: false,
         });
-
-        const path = createQrPath();
         qrPathMap.set(path, token);
-
-        // Auto-expire after 10 minutes
-        setTimeout(() => {
-            qrSessions.delete(token);
-            qrPathMap.delete(path);
-        }, QR_SESSION_TTL);
-
-        log.info(`🔑 QR session token created for session ${sessionId.slice(0, 8)}…`);
-        res.json({ path });
+        
+        log.info(`🔑 QR session created: ${session.session_id} (path: ${path.slice(0, 8)}...)`);
+        res.json({ 
+            path,
+            sessionId: session.session_id  // Include for debugging
+        });
     } catch (err) {
         console.error("Error creating QR session:", err);
         res.status(500).json({ error: "Failed to create QR session" });
     }
 });
 
-// Called by the mobile service after a phone scans an opaque QR path.
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Resolve QR Path (Returns session token from scanned QR path)
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/resolve-path", (req, res) => {
     res.set({
         'Cache-Control': 'no-store, no-cache, must-revalidate, private',
@@ -2884,9 +2911,19 @@ app.post("/api/resolve-path", (req, res) => {
         const { path } = req.body;
         if (!path) return res.status(400).json({ error: 'path required' });
 
+        // ✅ NEW: First try to get session from SQLite
+        const session = sessionManager.getSessionByQrPath(path);
+        
+        if (session) {
+            // Session found in SQLite
+            log.info(`✅ QR path resolved to session: ${session.session_id}`);
+            return res.json({ token: session.qr_token });
+        }
+        
+        // Fallback to legacy in-memory Map for backward compatibility
         const token = qrPathMap.get(path);
         if (!token) {
-            return res.status(410).json({ valid: false, message: 'Expired' });
+            return res.status(410).json({ valid: false, message: 'Expired or invalid path' });
         }
 
         res.json({ token });
@@ -2896,7 +2933,10 @@ app.post("/api/resolve-path", (req, res) => {
     }
 });
 
-// Called by the phone when it opens /h?t=<token>
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Validate Session (Called when phone opens QR link)
+// GOLDEN RULE: This validates the ONE QR scan - marks session as active
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/validate-session", (req, res) => {
     res.set({
         'Cache-Control': 'no-store, no-cache, must-revalidate, private',
@@ -2907,36 +2947,63 @@ app.post("/api/validate-session", (req, res) => {
         const { token } = req.body;
         if (!token) return res.status(400).json({ error: 'token required' });
 
-        const session = qrSessions.get(token);
+        // ✅ NEW: Get session from SQLite using QR token
+        const session = sessionManager.getSessionByQrToken(token);
 
         if (!session) {
-            return res.status(404).json({ valid: false, reason: 'not_found' });
+            // Fallback to legacy in-memory Map
+            const legacySession = qrSessions.get(token);
+            
+            if (!legacySession) {
+                return res.status(404).json({ valid: false, reason: 'not_found' });
+            }
+            
+            // Check legacy session
+            if (legacySession.used) {
+                return res.status(410).json({ valid: false, reason: 'already_used' });
+            }
+            
+            if (Date.now() - legacySession.createdAt > QR_SESSION_TTL) {
+                qrSessions.delete(token);
+                return res.status(410).json({ valid: false, reason: 'expired' });
+            }
+            
+            // Mark as used (one-time only)
+            legacySession.used = true;
+            
+            log.info(`✅ QR session validated (legacy): ${legacySession.sessionId}`);
+            return res.json({ valid: true, sessionId: legacySession.sessionId });
         }
 
+        // Validate SQLite session
         // Check if already used
-        if (session.used) {
+        if (session.qr_used) {
             return res.status(410).json({ valid: false, reason: 'already_used' });
         }
 
-        // Check if expired (10 min TTL)
-        if (Date.now() - session.createdAt > QR_SESSION_TTL) {
-            qrSessions.delete(token);
+        // Check if expired
+        if (new Date(session.expires_at) < new Date()) {
             return res.status(410).json({ valid: false, reason: 'expired' });
         }
 
-        // Mark as used (one-time only)
-        session.used = true;
+        // ✅ GOLDEN RULE: Mark QR as used (ONE-TIME scan)
+        sessionManager.markQrUsed(session.session_id);
 
-        log.info(`✅ QR session token validated for session ${session.sessionId.slice(0, 8)}…`);
-        res.json({ valid: true, sessionId: session.sessionId });
+        log.info(`✅ QR session validated: ${session.session_id}`);
+        res.json({ 
+            valid: true, 
+            sessionId: session.session_id 
+        });
     } catch (err) {
         console.error("Error validating session:", err);
         res.status(500).json({ error: "Failed to validate session" });
     }
 });
 
-// Customer data storage for QR entry
-const customerDataStore = new Map(); // In production, use Redis or database
+// ───────────────────────────────────────────────────────────────────────────
+// LEGACY: Customer data storage (will be deprecated in favor of SQLite)
+// ───────────────────────────────────────────────────────────────────────────
+// customerDataStore already declared at line 2826 - using that instance
 
 // Clean up old sessions every 5 minutes
 setInterval(() => {
@@ -2950,6 +3017,10 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000); // Run every 5 minutes
 
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Save Customer Data
+// GOLDEN RULE: Stores customer data ONCE - attached to the ONE session
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/save-customer-data", async (req, res) => {
     try {
         const { sessionId, customerData } = req.body;
@@ -2957,19 +3028,29 @@ app.post("/api/save-customer-data", async (req, res) => {
             return res.status(400).json({ error: "Session ID and customer data are required" });
         }
 
-        // Store data temporarily (in production, use proper storage)
+        // ✅ NEW: Store customer data in SQLite and transition state
+        // This also validates the session exists and enforces state machine
+        sessionManager.attachCustomer(sessionId, customerData);
+        
+        // Backward compatibility: Also store in legacy Map (temporary)
         customerDataStore.set(sessionId, {
             ...customerData,
             timestamp: Date.now()
         });
 
+        log.info(`💾 Customer data saved for session: ${sessionId}`);
         res.json({ success: true });
     } catch (err) {
         console.error("Error saving customer data:", err);
-        res.status(500).json({ error: "Failed to save customer data" });
+        res.status(500).json({ error: err.message || "Failed to save customer data" });
     }
 });
 
+
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Get Customer Data
+// GOLDEN RULE: Retrieves customer data from the ONE session (persists in SQLite)
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/get-customer-data", async (req, res) => {
     try {
         const { sessionId } = req.body;
@@ -2977,13 +3058,23 @@ app.post("/api/get-customer-data", async (req, res) => {
             return res.status(400).json({ error: "Session ID is required" });
         }
 
-        const data = customerDataStore.get(sessionId);
-        if (data) {
-            // Clean up after retrieval
-            customerDataStore.delete(sessionId);
-            res.json({ customerData: data });
+        // ✅ NEW: Get session from SQLite (includes customer_data as parsed JSON)
+        const session = sessionManager.getSession(sessionId);
+        
+        if (session && session.customer_data) {
+            // Data persists in SQLite - no need to delete
+            log.info(`📖 Customer data retrieved for session: ${sessionId}`);
+            res.json({ customerData: session.customer_data });
         } else {
-            res.json({ customerData: null });
+            // Fallback to legacy Map for backward compatibility
+            const data = customerDataStore.get(sessionId);
+            if (data) {
+                // Clean up after retrieval (legacy behavior)
+                customerDataStore.delete(sessionId);
+                res.json({ customerData: data });
+            } else {
+                res.json({ customerData: null });
+            }
         }
     } catch (err) {
         console.error("Error retrieving customer data:", err);
