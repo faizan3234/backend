@@ -247,6 +247,14 @@ CREATE INDEX IF NOT EXISTS idx_receipts_transaction ON receipts(transaction_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_session ON receipts(session_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_status ON receipts(status);
 
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT OR IGNORE INTO settings (key, value) VALUES ('reportPrice', '27');
+
 -- ───────────────────────────────────────────────────────────────────────────
 -- EVENT_QUEUE - Background tasks (email, sync, etc.)
 -- ───────────────────────────────────────────────────────────────────────────
