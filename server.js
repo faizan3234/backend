@@ -24,6 +24,7 @@ import { transactionManager } from "./src/services/transactionManager.js";
 import PaymentRecoveryService from "./src/services/paymentRecovery.js";
 import PDFGenerator from "./src/services/pdfGenerator.js";
 import EmailQueueService from "./src/services/emailQueue.js";
+import InventoryManager from "./src/services/inventoryManager.js";
 
 // Load environment variables
 dotenv.config();
@@ -905,21 +906,23 @@ async function start() {
     // ═══════════════════════════════════════════════════════════════════════════
     let pdfGenerator = null;
     let emailQueue = null;
+    let inventoryManager = null;
     try {
         if (db) {
             pdfGenerator = new PDFGenerator(db);
             emailQueue = new EmailQueueService(db, transporter);
+            inventoryManager = new InventoryManager(db);
             
             // Start email worker if Gmail configured
             if (transporter) {
                 emailQueue.startWorker(1); // Process every 1 minute
-                log.info('✅ PDF generator and email queue initialized (worker started)');
+                log.info('✅ PDF generator, email queue, and inventory manager initialized (worker started)');
             } else {
-                log.info('✅ PDF generator initialized (email queue waiting for Gmail config)');
+                log.info('✅ PDF generator and inventory manager initialized (email queue waiting for Gmail config)');
             }
         }
     } catch (err) {
-        log.error('❌ Failed to initialize PDF/email services:', err);
+        log.error('❌ Failed to initialize PDF/email/inventory services:', err);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -3315,6 +3318,22 @@ app.post("/api/create-order", async (req, res) => {
             cart || []
         );
 
+        // ✅ STAGE G: Reserve inventory for this session
+        // This prevents overselling and ensures stock availability
+        if (inventoryManager) {
+            try {
+                inventoryManager.reserveInventory(sessionId, serviceType);
+                log.info(`📦 Inventory reserved for session ${sessionId} (service: ${serviceType})`);
+            } catch (inventoryErr) {
+                // If inventory reservation fails, fail the whole order
+                log.error(`❌ Inventory reservation failed: ${inventoryErr.message}`);
+                return res.status(400).json({ 
+                    error: "Insufficient stock", 
+                    message: inventoryErr.message 
+                });
+            }
+        }
+
         // Update session with service type
         if (session.status === 'CUSTOMER_ATTACHED') {
             sessionManager.selectService(sessionId, serviceType);
@@ -3866,6 +3885,182 @@ app.get("/api/email-queue/stats", (req, res) => {
     } catch (err) {
         log.error("❌ Email queue stats error:", err.message);
         res.status(500).json({ ok: false, message: err.message || "Failed to get stats" });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INVENTORY MANAGEMENT ROUTES (Stage G)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/inventory - Get all inventory items
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/inventory", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const items = inventoryManager.getAllInventory();
+        res.json({ ok: true, items });
+
+    } catch (err) {
+        log.error("❌ Inventory fetch error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch inventory" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/inventory/low-stock - Get low stock items
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/inventory/low-stock", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const items = inventoryManager.getLowStockItems();
+        res.json({ ok: true, items, count: items.length });
+
+    } catch (err) {
+        log.error("❌ Low stock fetch error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch low stock" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/inventory/expiring - Get expiring items
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/inventory/expiring", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const daysAhead = parseInt(req.query.days) || 30;
+        const items = inventoryManager.getExpiringItems(daysAhead);
+        res.json({ ok: true, items, count: items.length, daysAhead });
+
+    } catch (err) {
+        log.error("❌ Expiring items fetch error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch expiring items" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/inventory/:id - Get inventory item by ID
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/inventory/:id", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const item = inventoryManager.getInventoryItem(req.params.id);
+        if (!item) {
+            return res.status(404).json({ ok: false, message: "Item not found" });
+        }
+
+        res.json({ ok: true, item });
+
+    } catch (err) {
+        log.error("❌ Inventory item fetch error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch item" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/inventory/service/:serviceType - Get inventory for service
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/inventory/service/:serviceType", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const items = inventoryManager.getInventoryByService(req.params.serviceType);
+        const availability = inventoryManager.checkStockAvailability(req.params.serviceType);
+        
+        res.json({ 
+            ok: true, 
+            items,
+            available: availability.available,
+            unavailableItems: availability.unavailableItems
+        });
+
+    } catch (err) {
+        log.error("❌ Service inventory fetch error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch service inventory" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/inventory/:id/add - Add stock
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/inventory/:id/add", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const { quantity, notes } = req.body;
+        
+        if (!quantity || quantity <= 0) {
+            return res.status(400).json({ ok: false, message: "Invalid quantity" });
+        }
+
+        const item = inventoryManager.addStock(req.params.id, quantity, notes || 'Stock added');
+        res.json({ ok: true, item, message: `Added ${quantity} units` });
+
+    } catch (err) {
+        log.error("❌ Add stock error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to add stock" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/inventory/:id/adjust - Adjust stock (damage, loss, correction)
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/inventory/:id/adjust", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const { quantity, notes } = req.body;
+        
+        if (quantity === undefined || quantity === 0) {
+            return res.status(400).json({ ok: false, message: "Invalid quantity" });
+        }
+        
+        if (!notes) {
+            return res.status(400).json({ ok: false, message: "Notes required for adjustment" });
+        }
+
+        const item = inventoryManager.adjustStock(req.params.id, quantity, notes);
+        res.json({ ok: true, item, message: `Adjusted by ${quantity} units` });
+
+    } catch (err) {
+        log.error("❌ Adjust stock error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to adjust stock" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/sessions/:id/inventory - Get inventory history for session
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/sessions/:id/inventory", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory manager not available" });
+        }
+
+        const history = inventoryManager.getSessionInventoryHistory(req.params.id);
+        res.json({ ok: true, history });
+
+    } catch (err) {
+        log.error("❌ Inventory history error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to fetch history" });
     }
 });
 
