@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     qr_token TEXT UNIQUE,
     qr_path TEXT UNIQUE,
     qr_used INTEGER DEFAULT 0,
+    pairing_token TEXT UNIQUE, -- ONE-QR: Single-use pairing token for payment completion
+    pairing_used INTEGER DEFAULT 0,
     
     -- Timestamps
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -59,6 +61,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_qr_token ON sessions(qr_token);
 CREATE INDEX IF NOT EXISTS idx_sessions_qr_path ON sessions(qr_path);
+CREATE INDEX IF NOT EXISTS idx_sessions_pairing_token ON sessions(pairing_token);
 CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_synced ON sessions(synced_to_mongo);
 
@@ -273,6 +276,53 @@ CREATE TABLE IF NOT EXISTS payment_nonces (
 CREATE INDEX IF NOT EXISTS idx_payment_nonces_session ON payment_nonces(session_id);
 CREATE INDEX IF NOT EXISTS idx_payment_nonces_transaction ON payment_nonces(transaction_id);
 CREATE INDEX IF NOT EXISTS idx_payment_nonces_used_at ON payment_nonces(used_at);
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- FULFILLMENT_JOBS - Dispensing state machine with restart recovery
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS fulfillment_jobs (
+    job_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    transaction_id TEXT NOT NULL,
+    kit_id TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    
+    -- State machine: PENDING → IN_PROGRESS → COMPLETED / FAILED
+    state TEXT NOT NULL DEFAULT 'PENDING',
+    
+    -- MQTT integration
+    mqtt_topic TEXT,
+    mqtt_payload TEXT,
+    mqtt_published_at TEXT,
+    esp32_ack_received_at TEXT,
+    esp32_ack_payload TEXT,
+    
+    -- Retry/recovery
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    
+    -- Timestamps
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at TEXT,
+    completed_at TEXT,
+    failed_at TEXT,
+    
+    -- Error tracking
+    error_message TEXT,
+    
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id),
+    FOREIGN KEY (transaction_id) REFERENCES transactions(transaction_id),
+    FOREIGN KEY (kit_id) REFERENCES kits(kit_id),
+    
+    CHECK (state IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED')),
+    CHECK (quantity > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_state ON fulfillment_jobs(state);
+CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_session ON fulfillment_jobs(session_id);
+CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_transaction ON fulfillment_jobs(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_created ON fulfillment_jobs(created_at);
+
 -- ───────────────────────────────────────────────────────────────────────────
 -- EVENT_QUEUE - Background tasks (email, sync, etc.)
 -- ───────────────────────────────────────────────────────────────────────────

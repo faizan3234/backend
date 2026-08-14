@@ -7,13 +7,15 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "generate-keys": "node generate-keys.js"
+    "generate-keys": "node generate-keys.js",
+    "init-db": "node init-db.js"
   },
   "dependencies": {
     "express": "^4.18.2",
     "razorpay": "^2.9.2",
     "dotenv": "^16.3.1",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "better-sqlite3": "^9.2.2"
   },
   "engines": {
     "node": ">=18.0.0"

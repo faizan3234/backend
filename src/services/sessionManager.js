@@ -359,6 +359,72 @@ class SessionManager {
     }
     
     /**
+     * Set pairing token for session (ONE-QR pairing)
+     * @param {string} sessionId
+     * @param {string} pairingToken
+     */
+    setPairingToken(sessionId, pairingToken) {
+        const stmt = this.db.prepare(`
+            UPDATE sessions 
+            SET pairing_token = ?, updated_at = datetime('now')
+            WHERE session_id = ?
+        `);
+        
+        stmt.run(pairingToken, sessionId);
+        console.log(`[SessionManager] Pairing token set for session: ${sessionId}`);
+    }
+    
+    /**
+     * Get session by pairing token
+     * @param {string} pairingToken
+     * @returns {Object|null} Session object or null
+     */
+    getSessionByPairingToken(pairingToken) {
+        const stmt = this.db.prepare('SELECT * FROM sessions WHERE pairing_token = ?');
+        const session = stmt.get(pairingToken);
+        
+        if (session && session.customer_data) {
+            session.customer_data = JSON.parse(session.customer_data);
+        }
+        
+        return session;
+    }
+    
+    /**
+     * Verify and consume pairing token (one-time use)
+     * @param {string} sessionId
+     * @param {string} pairingToken
+     * @throws {Error} If token invalid or already used
+     */
+    consumePairingToken(sessionId, pairingToken) {
+        const session = this.getSession(sessionId);
+        
+        if (!session) {
+            throw new Error('Session not found');
+        }
+        
+        if (session.pairing_token !== pairingToken) {
+            throw new Error('Invalid pairing token');
+        }
+        
+        if (session.pairing_used) {
+            throw new Error('Pairing token already used');
+        }
+        
+        // Mark as used (prevents replay)
+        const stmt = this.db.prepare(`
+            UPDATE sessions 
+            SET pairing_used = 1, updated_at = datetime('now')
+            WHERE session_id = ?
+        `);
+        
+        stmt.run(sessionId);
+        console.log(`[SessionManager] ✅ Pairing token consumed for session: ${sessionId}`);
+        
+        return true;
+    }
+    
+    /**
      * Update a specific session field (generic update)
      * @param {string} sessionId
      * @param {string} fieldName
@@ -368,7 +434,7 @@ class SessionManager {
         // Whitelist of allowed fields to prevent SQL injection
         const allowedFields = [
             'report_status', 'receipt_status', 'dispense_status',
-            'payment_status', 'status', 'qr_path', 'qr_token'
+            'payment_status', 'status', 'qr_path', 'qr_token', 'pairing_token'
         ];
         
         if (!allowedFields.includes(fieldName)) {
