@@ -314,7 +314,7 @@ CREATE TABLE IF NOT EXISTS fulfillment_jobs (
     FOREIGN KEY (transaction_id) REFERENCES transactions(transaction_id),
     FOREIGN KEY (kit_id) REFERENCES kits(kit_id),
     
-    CHECK (state IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED')),
+    CHECK (state IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'MANUAL_REVIEW_REQUIRED')),
     CHECK (quantity > 0)
 );
 

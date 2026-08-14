@@ -391,7 +391,38 @@ class SessionManager {
     }
     
     /**
+     * Verify pairing token WITHOUT consuming it
+     * Use this before RSA verification to avoid burning the token on invalid requests
+     * @param {string} sessionId
+     * @param {string} pairingToken
+     * @throws {Error} If token invalid or already used
+     * @returns {boolean} True if valid
+     */
+    verifyPairingToken(sessionId, pairingToken) {
+        const session = this.getSession(sessionId);
+        
+        if (!session) {
+            throw new Error('Session not found');
+        }
+        
+        if (!session.pairing_token) {
+            throw new Error('No pairing token set for this session');
+        }
+        
+        if (session.pairing_token !== pairingToken) {
+            throw new Error('Invalid pairing token');
+        }
+        
+        if (session.pairing_used) {
+            throw new Error('Pairing token already used');
+        }
+        
+        return true;
+    }
+    
+    /**
      * Verify and consume pairing token (one-time use)
+     * IMPORTANT: Only call this AFTER all security checks (RSA, nonce, amount) have passed
      * @param {string} sessionId
      * @param {string} pairingToken
      * @throws {Error} If token invalid or already used
