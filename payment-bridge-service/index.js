@@ -42,11 +42,89 @@ let db;
 try {
   db = new Database('./bridge.db');
   db.pragma('journal_mode = WAL');
-  console.log('✅ Database connected');
+  
+  // Ensure orders table exists
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS orders (
+      order_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      transaction_id TEXT NOT NULL,
+      kiosk_id TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'INR',
+      status TEXT NOT NULL DEFAULT 'CREATED',
+      created_at INTEGER NOT NULL
+    );
+  `);
+  
+  console.log('✅ Database connected & schema verified');
 } catch (error) {
   console.error('❌ CRITICAL: Database initialization failed. Run: npm run init-db');
   process.exit(1);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUTHORITATIVE ORDER CREATION & BINDING
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /create-order
+ * 
+ * Customer HTTPS website calls this to create an authoritative Razorpay order
+ * bound to specific sessionId, transactionId, kioskId, and amount.
+ */
+app.post('/create-order', async (req, res) => {
+  try {
+    const {
+      sessionId,
+      transactionId,
+      kioskId = 'KIOSK-001',
+      amount,
+      currency = 'INR'
+    } = req.body;
+
+    if (!sessionId || !transactionId || !amount) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required parameters: sessionId, transactionId, and amount are required'
+      });
+    }
+
+    // 1. Create order on Razorpay API with embedded notes
+    const razorpayOrder = await razorpay.orders.create({
+      amount: Math.round(amount), // paise
+      currency,
+      receipt: transactionId,
+      notes: {
+        sessionId,
+        transactionId,
+        kioskId
+      }
+    });
+
+    // 2. Persist authoritative binding in Payment Bridge SQLite database
+    const stmt = db.prepare(`
+      INSERT INTO orders (order_id, session_id, transaction_id, kiosk_id, amount, currency, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'CREATED', ?)
+    `);
+    stmt.run(razorpayOrder.id, sessionId, transactionId, kioskId, Math.round(amount), currency, Date.now());
+
+    console.log(`✅ Authoritative order created: ${razorpayOrder.id}`);
+    console.log(`   Session: ${sessionId}, Transaction: ${transactionId}, Amount: ₹${amount / 100}`);
+
+    res.json({
+      success: true,
+      order: razorpayOrder
+    });
+
+  } catch (error) {
+    console.error('❌ Failed to create Razorpay order:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to create Razorpay order'
+    });
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PERSISTENT AUTHORIZATION STORAGE
@@ -238,6 +316,39 @@ app.post('/verify-payment', async (req, res) => {
         success: false,
         error: 'Order ID mismatch'
       });
+    }
+
+    // Step 4b: AUTHORITATIVE ORDER BINDING VERIFICATION (CRITICAL SECURITY)
+    // Check if the order exists in Bridge DB and verify bound sessionId, transactionId, and amount
+    const boundOrder = db.prepare('SELECT * FROM orders WHERE order_id = ?').get(razorpay_order_id);
+    if (boundOrder) {
+      if (boundOrder.session_id !== sessionId) {
+        console.error(`❌ SECURITY ATTACK: Session ID mismatch for order ${razorpay_order_id}. Bound: ${boundOrder.session_id}, Submitted: ${sessionId}`);
+        logVerification(razorpay_payment_id, sessionId, transactionId, payment.amount, 'FAILED', 'Authoritative session binding mismatch');
+        return res.status(400).json({
+          success: false,
+          error: 'Authoritative session binding mismatch. Order was created for a different session.'
+        });
+      }
+      if (boundOrder.transaction_id !== transactionId) {
+        console.error(`❌ SECURITY ATTACK: Transaction ID mismatch for order ${razorpay_order_id}. Bound: ${boundOrder.transaction_id}, Submitted: ${transactionId}`);
+        logVerification(razorpay_payment_id, sessionId, transactionId, payment.amount, 'FAILED', 'Authoritative transaction binding mismatch');
+        return res.status(400).json({
+          success: false,
+          error: 'Authoritative transaction binding mismatch. Order was created for a different transaction.'
+        });
+      }
+      if (boundOrder.amount !== payment.amount) {
+        console.error(`❌ SECURITY ATTACK: Amount mismatch for order ${razorpay_order_id}. Bound: ${boundOrder.amount}, Payment: ${payment.amount}`);
+        logVerification(razorpay_payment_id, sessionId, transactionId, payment.amount, 'FAILED', 'Authoritative amount mismatch');
+        return res.status(400).json({
+          success: false,
+          error: 'Authoritative order amount mismatch.'
+        });
+      }
+      console.log(`✅ Authoritative order binding verified for order: ${razorpay_order_id}`);
+    } else {
+      console.warn(`⚠️ Order ${razorpay_order_id} not found in Bridge DB orders table (legacy order or test key)`);
     }
 
     console.log(`✅ Payment verified with Razorpay API: ₹${payment.amount / 100}`);

@@ -36,6 +36,24 @@ db.exec(`
 
 console.log('✅ Created table: authorizations');
 
+// Create authoritative orders table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS orders (
+    order_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    transaction_id TEXT NOT NULL,
+    kiosk_id TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'INR',
+    status TEXT NOT NULL DEFAULT 'CREATED',
+    created_at INTEGER NOT NULL,
+    INDEX idx_order_session (session_id),
+    INDEX idx_order_transaction (transaction_id)
+  );
+`);
+
+console.log('✅ Created table: orders');
+
 // Create cleanup trigger for expired authorizations
 db.exec(`
   CREATE TRIGGER IF NOT EXISTS cleanup_expired_authorizations

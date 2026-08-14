@@ -202,13 +202,35 @@ class FulfillmentManager {
       return false;
     }
 
-    // Validate ACK payload matches expected job
-    if (ackData.kitId && ackData.kitId !== job.kit_id) {
-      console.error(`❌ ACK kit mismatch for job ${jobId}: expected ${job.kit_id}, got ${ackData.kitId}`);
+    // STRICT ACK VALIDATION:
+    // Mandatory fields: jobId (or topic jobId), kitId, and quantity must be present and match.
+    const ackJobId = ackData.jobId || jobId;
+    const ackKitId = ackData.kitId || ackData.kit_id;
+    const ackQuantity = ackData.quantity !== undefined ? Number(ackData.quantity) : null;
+
+    if (!ackKitId) {
+      console.error(`❌ ACK validation failed for job ${jobId}: kitId is missing in ESP32 ACK payload`);
       return false;
     }
-    if (ackData.quantity && ackData.quantity !== job.quantity) {
-      console.error(`❌ ACK quantity mismatch for job ${jobId}: expected ${job.quantity}, got ${ackData.quantity}`);
+
+    if (ackQuantity === null || isNaN(ackQuantity)) {
+      console.error(`❌ ACK validation failed for job ${jobId}: quantity is missing in ESP32 ACK payload`);
+      return false;
+    }
+
+    if (ackKitId !== job.kit_id) {
+      console.error(`❌ ACK kit mismatch for job ${jobId}: expected ${job.kit_id}, got ${ackKitId}`);
+      return false;
+    }
+
+    if (ackQuantity !== job.quantity) {
+      console.error(`❌ ACK quantity mismatch for job ${jobId}: expected ${job.quantity}, got ${ackQuantity}`);
+      return false;
+    }
+
+    // Check if ESP32 reported a physical dispense failure
+    if (ackData.status === 'FAILED' || ackData.status === 'ERROR' || ackData.success === false) {
+      console.error(`❌ ACK reported physical hardware failure for job ${jobId}: ${ackData.error || ackData.status}`);
       return false;
     }
 
