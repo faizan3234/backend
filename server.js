@@ -791,7 +791,10 @@ const RATE_LIMIT_MAX_REQUESTS = 60; // 60 requests per minute per IP
 const RATE_LIMIT_MAX_ENTRIES = 10000; // Max IPs to track (prevents memory leak)
 
 function rateLimitMiddleware(req, res, next) {
-    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+    if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || process.env.NODE_ENV === 'test') {
+        return next();
+    }
     const now = Date.now();
 
     // Prevent memory leak: if map is too large, clear oldest entries
@@ -3267,15 +3270,16 @@ async function saveCustomerDataHandler(req, res) {
             return res.status(404).json({ error: "Session not found" });
         }
 
-        if (pairingToken || session.pairing_token) {
-            try {
-                sessionManager.verifyPairingToken(sessionId, pairingToken || session.pairing_token);
-            } catch (pErr) {
-                log.warn(`⚠️ Pairing token check on customer details: ${pErr.message}`);
-                if (pairingToken && session.pairing_token && pairingToken !== session.pairing_token) {
-                    return res.status(403).json({ error: "Invalid pairing token" });
-                }
-            }
+        // 🔴 Strict mandatory pairing token validation
+        if (!pairingToken) {
+            return res.status(403).json({ error: "Pairing token is required" });
+        }
+
+        try {
+            sessionManager.verifyPairingToken(sessionId, pairingToken);
+        } catch (pErr) {
+            log.error(`❌ Pairing token verification failed on customer endpoint: ${pErr.message}`);
+            return res.status(403).json({ error: pErr.message || "Invalid or expired session pairing" });
         }
 
         sessionManager.attachCustomer(sessionId, customerData);
@@ -3530,15 +3534,16 @@ app.post("/api/create-order", async (req, res) => {
             return res.status(404).json({ error: "Session not found" });
         }
 
-        if (pairingToken || session.pairing_token) {
-            try {
-                sessionManager.verifyPairingToken(sessionId, pairingToken || session.pairing_token);
-            } catch (pErr) {
-                log.warn(`⚠️ Pairing token check on create-order: ${pErr.message}`);
-                if (pairingToken && session.pairing_token && pairingToken !== session.pairing_token) {
-                    return res.status(403).json({ error: "Invalid pairing token" });
-                }
-            }
+        // 🔴 Strict mandatory pairing token validation
+        if (!pairingToken) {
+            return res.status(403).json({ error: "Pairing token is required" });
+        }
+
+        try {
+            sessionManager.verifyPairingToken(sessionId, pairingToken);
+        } catch (pErr) {
+            log.error(`❌ Pairing token verification failed on create-order: ${pErr.message}`);
+            return res.status(403).json({ error: pErr.message || "Invalid or expired session pairing" });
         }
 
         if (session.status !== 'CUSTOMER_ATTACHED' && session.status !== 'SERVICE_SELECTED') {
@@ -3548,16 +3553,7 @@ app.post("/api/create-order", async (req, res) => {
             });
         }
 
-        // ✅ CRITICAL: Backend creates transaction with AUTHORITATIVE amount
-        // Amount is calculated from inventory prices - frontend amount is IGNORED
-        const transaction = transactionManager.createTransaction(
-            sessionId,
-            serviceType,
-            cart || []
-        );
-
-        // ✅ STAGE G: Reserve inventory for this session
-        // This prevents overselling and ensures stock availability
+        // 🟡 Reserve inventory BEFORE creating transaction (failure-safe order flow)
         if (inventoryManager) {
             try {
                 inventoryManager.reserveInventory(sessionId, serviceType);
@@ -3570,6 +3566,14 @@ app.post("/api/create-order", async (req, res) => {
                 });
             }
         }
+
+        // ✅ CRITICAL: Backend creates transaction with AUTHORITATIVE amount
+        // Amount is calculated from inventory prices - frontend amount is IGNORED
+        const transaction = transactionManager.createTransaction(
+            sessionId,
+            serviceType,
+            cart || []
+        );
 
         // Update session with service type
         if (session.status === 'CUSTOMER_ATTACHED') {

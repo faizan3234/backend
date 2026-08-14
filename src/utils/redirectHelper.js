@@ -1,13 +1,14 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  * RELIV KIOSK - REDIRECT HELPER
- * Purpose: Safe returnUrl allowlist validation & 302 URL parameter building
+ * Purpose: Strict HTTPS returnUrl allowlist validation & 302 parameter building
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
 /**
  * Validate and sanitize returnUrl to prevent open redirect vulnerabilities.
- * Append or update query parameters cleanly while excluding sensitive state.
+ * Restricts target origin strictly to the production HTTPS customer website.
+ * Rejects local IP/AP addresses like http://192.168.50.1 as returnUrl destinations.
  *
  * @param {string} rawReturnUrl - Raw returnUrl parameter from request
  * @param {Object} queryParams - Key-value map of parameters to append to URL
@@ -19,25 +20,28 @@ export function buildValidatedRedirectUrl(rawReturnUrl, queryParams = {}) {
     let targetUrl;
     try {
         if (rawReturnUrl && typeof rawReturnUrl === 'string' && rawReturnUrl.trim().length > 0) {
-            // Support relative URLs or full URLs
+            // Support relative paths or absolute URLs
             if (rawReturnUrl.startsWith('/')) {
                 targetUrl = new URL(rawReturnUrl, DEFAULT_CUSTOMER_SITE);
             } else {
                 targetUrl = new URL(rawReturnUrl);
             }
             
-            const allowedHosts = [
-                'customer.reliv.in',
-                'reliv.in',
-                'localhost',
-                '127.0.0.1',
-                '192.168.50.1'
-            ];
-            
             const hostname = targetUrl.hostname.toLowerCase();
-            const isAllowed = allowedHosts.some(host => hostname === host || hostname.endsWith('.' + host));
+            const protocol = targetUrl.protocol.toLowerCase();
             
-            if (!isAllowed) {
+            // Production rule: Must be HTTPS customer domain (customer.reliv.in or reliv.in subdomains)
+            const isProdCustomerDomain = (hostname === 'customer.reliv.in' || hostname === 'reliv.in' || hostname.endsWith('.reliv.in')) && protocol === 'https:';
+            
+            // Optional development override for local testing
+            const isDevMode = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
+            const isDevAllowed = isDevMode && (hostname === 'localhost' || hostname === '127.0.0.1');
+            
+            // Explicitly reject http://192.168.50.1 as a returnUrl destination
+            if (hostname === '192.168.50.1' || (protocol === 'http:' && !isDevAllowed)) {
+                console.warn(`[ReturnUrl] Disallowed protocol/host '${targetUrl.origin}'. Falling back to default: ${DEFAULT_CUSTOMER_SITE}`);
+                targetUrl = new URL(DEFAULT_CUSTOMER_SITE);
+            } else if (!isProdCustomerDomain && !isDevAllowed) {
                 console.warn(`[ReturnUrl] Host '${hostname}' not in allowlist. Falling back to default: ${DEFAULT_CUSTOMER_SITE}`);
                 targetUrl = new URL(DEFAULT_CUSTOMER_SITE);
             }

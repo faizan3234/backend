@@ -48,6 +48,7 @@ async function test() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 sessionId: session.sessionId,
+                pairingToken: session.pairingToken,
                 customerData: {
                     name: 'Security Test User',
                     email: 'test@security.com',
@@ -66,6 +67,7 @@ async function test() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 sessionId: session.sessionId,
+                pairingToken: session.pairingToken,
                 serviceType: 'HEALTH_CHECKUP',
                 amount: 999999  // ❌ Frontend trying to trick backend!
             })
@@ -107,6 +109,7 @@ async function test() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 sessionId: session2.sessionId,
+                pairingToken: session2.pairingToken,
                 customerData: { name: 'Cart Test', email: 'cart@test.com', phone: '8888888888' }
             })
         });
@@ -129,6 +132,7 @@ async function test() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 sessionId: session2.sessionId,
+                pairingToken: session2.pairingToken,
                 serviceType: 'MEDICINE',
                 cart: cart,
                 amount: 1  // ❌ Frontend trying to pay ₹0.01 instead of ₹250!
