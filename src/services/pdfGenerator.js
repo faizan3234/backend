@@ -53,11 +53,18 @@ class PDFGenerator {
         // Save to database
         const stmt = this.db.prepare(`
             INSERT INTO reports (
-                report_id, session_id, pdf_path, status, created_at
-            ) VALUES (?, ?, ?, ?, datetime('now'))
+                report_id, session_id, customer_data, measurements, pdf_path, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
         `);
 
-        stmt.run(reportId, sessionId, pdfPath, 'GENERATED');
+        stmt.run(
+            reportId,
+            sessionId,
+            JSON.stringify(customerData || {}),
+            JSON.stringify(healthData || {}),
+            pdfPath,
+            'GENERATED'
+        );
 
         console.log(`[PDFGenerator] ✅ Health report saved: ${pdfPath}`);
 

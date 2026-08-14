@@ -38,4 +38,6 @@ data/service-account-key.json
 *.pem
 scratch/
 data/*.db*
+reports/
+receipts/
 

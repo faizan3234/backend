@@ -22,7 +22,7 @@ import RELIV_LOGO_B64 from "./relivlogo-base64.js";
 // Kiosk works completely offline - Internet only used via customer phone
 // Email queues when offline, MQTT uses local Mosquitto, PDFs generated locally
 // ═══════════════════════════════════════════════════════════════════════════
-import { initializeDatabase, checkDatabaseHealth, transaction as dbTransaction } from "./src/database/db.js";
+import { initializeDatabase, checkDatabaseHealth, getDb, transaction as dbTransaction } from "./src/database/db.js";
 import sessionManager from "./src/services/sessionManager.js";
 import { transactionManager } from "./src/services/transactionManager.js";
 import PaymentRecoveryService from "./src/services/paymentRecovery.js";
@@ -973,10 +973,11 @@ async function start() {
     emailQueue = null;
     inventoryManager = null;
     try {
-        if (db) {
-            pdfGenerator = new PDFGenerator(db);
-            emailQueue = new EmailQueueService(db, transporter);
-            inventoryManager = new InventoryManager(db);
+        const sqliteDb = getDb();
+        if (sqliteDb) {
+            pdfGenerator = new PDFGenerator(sqliteDb);
+            emailQueue = new EmailQueueService(sqliteDb, transporter);
+            inventoryManager = new InventoryManager(sqliteDb);
             settingsManager.initialize();
             reportPrice = settingsManager.getReportPrice();
             
@@ -3652,8 +3653,12 @@ app.get("/api/sessions/:sessionId/status", async (req, res) => {
                 clientStatus = 'dispensing';
             }
         } else if (session.service_type === 'HEALTH_CHECKUP') {
-            if (session.report_status === 'READY' || session.report_status === 'EMAILED') {
+            if (session.report_status === 'FAILED') {
+                clientStatus = 'report_failed';
+            } else if (session.report_status === 'READY' || session.report_status === 'EMAILED') {
                 clientStatus = 'report_ready';
+            } else if (session.report_status === 'GENERATING') {
+                clientStatus = 'report_generating';
             } else {
                 clientStatus = 'report_queued';
             }
@@ -3910,7 +3915,10 @@ app.post("/api/sessions/:sessionId/report", async (req, res) => {
         const { healthData } = req.body;
 
         if (!pdfGenerator) {
-            return res.status(503).json({ ok: false, message: "PDF service not available" });
+            pdfGenerator = new PDFGenerator(getDb());
+        }
+        if (!emailQueue) {
+            emailQueue = new EmailQueueService(getDb());
         }
 
         // Get session
@@ -3935,7 +3943,7 @@ app.post("/api/sessions/:sessionId/report", async (req, res) => {
 
         // 2. Queue email if customer has email (asynchronous, non-blocking)
         if (customerData.email && emailQueue) {
-            emailQueue.queueEmail(sessionId, 'EMAIL_REPORT', {
+            emailQueue.queueEmail(sessionId, 'EMAIL_PENDING', {
                 pdfPath,
                 pdfBuffer,
                 reportId

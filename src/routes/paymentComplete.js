@@ -19,7 +19,9 @@ import sessionManager from '../services/sessionManager.js';
 import { transactionManager } from '../services/transactionManager.js';
 import paymentAuthVerifier from '../services/paymentAuthVerifier.js';
 import fulfillmentManager from '../services/fulfillmentManager.js';
-import { transaction as dbTransaction } from '../database/db.js';
+import PDFGenerator from '../services/pdfGenerator.js';
+import EmailQueueService from '../services/emailQueue.js';
+import { getDb, transaction as dbTransaction } from '../database/db.js';
 import { buildValidatedRedirectUrl } from '../utils/redirectHelper.js';
 
 /**
@@ -208,36 +210,73 @@ export async function handlePaymentComplete(req, res) {
         }
 
         // ───────────────────────────────────────────────────────────────────
-        // STEP 7: Start dispensing via MQTT for created fulfillment jobs
+        // STEP 7: Service Post-Processing (MQTT Dispensing or Local PDF & Email Queuing)
         // ───────────────────────────────────────────────────────────────────
-        for (const job of createdJobs) {
+        let completionStatus = 'report_queued';
+
+        if (session.service_type === 'MEDICINE') {
+            for (const job of createdJobs) {
+                try {
+                    await fulfillmentManager.startDispensing(job.job_id);
+                    console.log(`✅ Dispensing started for job: ${job.job_id}`);
+                } catch (err) {
+                    console.error(`⚠️ Dispense command publish failed for job ${job.job_id}:`, err.message);
+                }
+            }
+            completionStatus = 'dispensing';
+
+        } else if (session.service_type === 'HEALTH_CHECKUP') {
+            console.log(`📄 Generating health report PDF locally for session: ${sessionId}`);
             try {
-                await fulfillmentManager.startDispensing(job.job_id);
-                console.log(`✅ Dispensing started for job: ${job.job_id}`);
-            } catch (err) {
-                console.error(`⚠️ Dispense command publish failed for job ${job.job_id}:`, err.message);
+                const customerData = session.customer_data ? 
+                    (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) 
+                    : {};
+                const healthData = session.health_data ? 
+                    (typeof session.health_data === 'string' ? JSON.parse(session.health_data) : session.health_data) 
+                    : {};
+
+                const pdfGenerator = new PDFGenerator(getDb());
+                const { reportId, pdfPath, pdfBuffer } = await pdfGenerator.generateHealthReport(
+                    sessionId,
+                    customerData,
+                    healthData
+                );
+                console.log(`✅ Health report PDF saved locally: ${pdfPath}`);
+
+                if (customerData.email) {
+                    const emailQueue = new EmailQueueService(getDb());
+                    emailQueue.queueEmail(sessionId, 'EMAIL_PENDING', {
+                        pdfPath,
+                        pdfBuffer,
+                        reportId
+                    });
+                    console.log(`📧 Health report email queued for ${customerData.email}`);
+                }
+
+                sessionManager.updateReportStatus(sessionId, 'QUEUED');
+                sessionManager.markCompleted(sessionId);
+                completionStatus = 'report_queued';
+            } catch (pdfErr) {
+                console.error(`❌ Health report PDF generation failed for session ${sessionId}:`, pdfErr);
+                sessionManager.updateReportStatus(sessionId, 'FAILED');
+                completionStatus = 'report_failed';
             }
         }
         
         // ───────────────────────────────────────────────────────────────────
-        // STEP 8: 302 Redirect to HTTPS Customer Site
+        // STEP 8: 302 Redirect to HTTPS Customer Site with Verified Status
         // ───────────────────────────────────────────────────────────────────
         const duration = Date.now() - startTime;
         console.log(`✅ Payment completion successful (${duration}ms)`);
-        
-        // Determine status for completion step:
-        // MEDICINE -> status=dispensing (ESP32 ACK will later make it dispense_complete)
-        // HEALTH_CHECKUP -> status=report_queued
-        const status = session.service_type === 'MEDICINE' ? 'dispensing' : 'report_queued';
         
         const redirectUrl = buildValidatedRedirectUrl(returnUrl, {
             sessionId: sessionId,
             transactionId: transaction.transaction_id,
             step: 'completion',
-            status: status
+            status: completionStatus
         });
 
-        console.log(`🔀 Redirecting customer phone to HTTPS site: ${redirectUrl}`);
+        console.log(`🔀 Redirecting customer phone to HTTPS site (status=${completionStatus}): ${redirectUrl}`);
         console.log('═══════════════════════════════════════════════════════════\n');
         
         return res.redirect(302, redirectUrl);
