@@ -95,7 +95,16 @@ class PaymentAuthorizationVerifier {
    * @param {string} paymentId - Razorpay payment ID
    * @param {number} amount - Payment amount in paise
    */
-  async storeNonce(nonce, sessionId, transactionId, paymentId, amount) {
+  /**
+   * Store nonce to prevent future reuse
+   * 
+   * @param {string} nonce - Authorization nonce
+   * @param {string} sessionId - Session ID
+   * @param {string} transactionId - Transaction ID
+   * @param {string} paymentId - Razorpay payment ID
+   * @param {number} amount - Payment amount in paise
+   */
+  storeNonce(nonce, sessionId, transactionId, paymentId, amount) {
     const db = getDb();
     
     db.prepare(`
@@ -134,9 +143,10 @@ class PaymentAuthorizationVerifier {
    * @param {string} params.sessionId - Expected session ID
    * @param {string} params.transactionId - Expected transaction ID
    * @param {number} params.expectedAmount - Expected amount in paise (from backend calculation)
+   * @param {boolean} params.persistNonce - Whether to store nonce immediately (set false for external atomic transaction)
    * @returns {Promise<object>} - { success: boolean, error?: string, paymentId?: string }
    */
-  async verifyPaymentAuthorization({ authorization, signature, sessionId, transactionId, expectedAmount }) {
+  async verifyPaymentAuthorization({ authorization, signature, sessionId, transactionId, expectedAmount, persistNonce = true }) {
     const startTime = Date.now();
     
     try {
@@ -191,14 +201,16 @@ class PaymentAuthorizationVerifier {
       }
       console.log('✅ Nonce not previously used');
 
-      // Step 8: Store nonce to prevent future reuse
-      await this.storeNonce(
-        authorization.nonce,
-        authorization.sessionId,
-        authorization.transactionId,
-        authorization.paymentId,
-        authorization.amount
-      );
+      // Step 8: Store nonce to prevent future reuse (if requested)
+      if (persistNonce) {
+        this.storeNonce(
+          authorization.nonce,
+          authorization.sessionId,
+          authorization.transactionId,
+          authorization.paymentId,
+          authorization.amount
+        );
+      }
 
       const duration = Date.now() - startTime;
       console.log(`✅ Payment authorization VERIFIED (${duration}ms)`);

@@ -19,6 +19,7 @@ import sessionManager from '../services/sessionManager.js';
 import { transactionManager } from '../services/transactionManager.js';
 import paymentAuthVerifier from '../services/paymentAuthVerifier.js';
 import fulfillmentManager from '../services/fulfillmentManager.js';
+import { transaction as dbTransaction } from '../database/db.js';
 
 /**
  * POST /payment-complete
@@ -111,8 +112,10 @@ export async function handlePaymentComplete(req, res) {
         // ───────────────────────────────────────────────────────────────────
         // STEP 5: Verify payment authorization (CRITICAL SECURITY)
         //         Uses correct object parameter signature.
-        //         Checks: RSA signature, nonce, expiry, sessionId,
-        //         transactionId, amount (backend-calculated)
+        //         Checks: RSA signature, nonce (not used), expiry, sessionId,
+        //         transactionId, amount (backend-calculated).
+        //         NOTE: persistNonce = false so nonce insertion is deferred
+        //         to the atomic SQLite transaction below!
         // ───────────────────────────────────────────────────────────────────
         try {
             const verificationResult = await paymentAuthVerifier.verifyPaymentAuthorization({
@@ -120,7 +123,8 @@ export async function handlePaymentComplete(req, res) {
                 signature,
                 sessionId,
                 transactionId: transaction.transaction_id,
-                expectedAmount: transaction.amount  // Backend-calculated amount
+                expectedAmount: transaction.amount, // Backend-calculated amount
+                persistNonce: false // Defer nonce insertion to atomic transaction below
             });
             
             if (!verificationResult.success) {
@@ -145,107 +149,95 @@ export async function handlePaymentComplete(req, res) {
         }
         
         // ───────────────────────────────────────────────────────────────────
-        // STEP 6: ATOMICALLY consume pairing token
-        //         Only NOW, after all cryptographic checks have passed.
-        //         This prevents attackers from burning the token with
-        //         fake/invalid authorizations.
+        // STEP 6: ATOMIC SQLITE DATABASE TRANSACTION
+        //         All database mutations occur inside a single atomic SQLite
+        //         transaction:
+        //           1. Store nonce (replay protection)
+        //           2. Consume pairing token (one-time pairing)
+        //           3. Record payment verification in transactions table
+        //           4. Update session status to PAYMENT_VERIFIED
+        //           5. Create fulfillment job(s) in fulfillment_jobs table
+        //
+        //         If ANY step fails, SQLite automatically rolls back ALL steps.
+        //         The pairing token and nonce remain untouched and unburned!
         // ───────────────────────────────────────────────────────────────────
+        const createdJobs = [];
         try {
-            sessionManager.consumePairingToken(sessionId, pairingToken);
-            console.log('✅ Pairing token atomically consumed');
-        } catch (err) {
-            // Race condition: token was consumed between verify and consume
-            console.error('❌ Failed to consume pairing token (race condition?):', err.message);
-            return res.status(409).send(generateErrorPage(
-                'Payment already processed.',
-                'This session has already completed payment.'
-            ));
-        }
-        
-        // ───────────────────────────────────────────────────────────────────
-        // STEP 7: Mark payment as verified in database
-        //         CRITICAL: This MUST succeed before proceeding to
-        //         fulfillment. Never dispense without DB persistence.
-        // ───────────────────────────────────────────────────────────────────
-        try {
-            // Build proper paymentDetails object as expected by verifyPayment()
-            const paymentDetails = {
-                id: authorization.paymentId,
-                amount: authorization.amount,
-                status: 'captured',  // Payment Bridge already verified this with Razorpay API
-                order_id: authorization.orderId
-            };
-            
-            transactionManager.verifyPayment(
-                transaction.transaction_id,
-                authorization.paymentId,
-                paymentDetails
-            );
-            
-            sessionManager.markPaymentVerified(sessionId, authorization.paymentId);
-            
-            console.log('✅ Payment verified and recorded in SQLite');
-            
-        } catch (err) {
-            console.error('❌ CRITICAL: Failed to persist payment verification:', err);
-            console.error('   ⛔ REFUSING to proceed to fulfillment without DB persistence');
-            return res.status(500).send(generateErrorPage(
-                'Payment processing error.',
-                'Your payment was verified but could not be recorded. Please contact support with your payment reference.'
-            ));
-        }
-        
-        // ───────────────────────────────────────────────────────────────────
-        // STEP 8: Create fulfillment job (if applicable)
-        //         Only for MEDICINE service type requiring physical dispensing
-        // ───────────────────────────────────────────────────────────────────
-        if (session.service_type === 'MEDICINE' || session.service_type === 'HEALTH_CHECKUP') {
-            try {
+            dbTransaction(() => {
+                // 1. Store Nonce
+                paymentAuthVerifier.storeNonce(
+                    authorization.nonce,
+                    sessionId,
+                    transaction.transaction_id,
+                    authorization.paymentId,
+                    authorization.amount
+                );
+
+                // 2. Consume Pairing Token
+                sessionManager.consumePairingToken(sessionId, pairingToken);
+
+                // 3. Record Payment Verification
+                const paymentDetails = {
+                    id: authorization.paymentId,
+                    amount: authorization.amount,
+                    status: 'captured', // Payment Bridge verified this with Razorpay API
+                    order_id: authorization.orderId
+                };
+                
+                transactionManager.verifyPayment(
+                    transaction.transaction_id,
+                    authorization.paymentId,
+                    paymentDetails
+                );
+
+                // 4. Update Session Status
+                sessionManager.markPaymentVerified(sessionId, authorization.paymentId);
+
+                // 5. Create Fulfillment Job(s) (if MEDICINE or HEALTH_CHECKUP)
                 if (session.service_type === 'MEDICINE') {
-                    // Parse cart to get kit_id and quantity
                     const cart = transaction.cart ? (typeof transaction.cart === 'string' ? JSON.parse(transaction.cart) : transaction.cart) : [];
-                    
                     if (cart.length > 0) {
                         for (const item of cart) {
-                            const { kit_id, quantity } = item;
-                            
-                            // Create fulfillment job (idempotent)
-                            const job = await fulfillmentManager.createJob(
+                            const job = fulfillmentManager.createJob(
                                 sessionId,
                                 transaction.transaction_id,
-                                kit_id,
-                                quantity
+                                item.kit_id,
+                                item.quantity
                             );
-                            
-                            console.log(`✅ Fulfillment job created: ${job.job_id}`);
-                            
-                            // Start dispensing (only publishes if PENDING)
-                            await fulfillmentManager.startDispensing(job.job_id);
-                            
-                            console.log(`✅ Dispensing started for job: ${job.job_id}`);
+                            createdJobs.push(job);
                         }
-                        
                         sessionManager.markFulfillment(sessionId);
-                        
-                    } else {
-                        console.warn('⚠️  No items in cart, skipping fulfillment');
                     }
-                    
                 } else if (session.service_type === 'HEALTH_CHECKUP') {
-                    // Health checkup doesn't require physical dispensing
                     sessionManager.updateReportStatus(sessionId, 'GENERATING');
-                    console.log('✅ Health checkup - generating report');
                 }
-                
+            });
+
+            console.log('✅ Atomic payment completion transaction committed to SQLite');
+
+        } catch (err) {
+            console.error('❌ CRITICAL: Atomic payment completion transaction failed (ROLLED BACK):', err);
+            return res.status(500).send(generateErrorPage(
+                'Payment processing error.',
+                'Your payment verification could not be saved to local database. The transaction was safely rolled back. Please try again.'
+            ));
+        }
+
+        // ───────────────────────────────────────────────────────────────────
+        // STEP 7: Start dispensing via MQTT for created fulfillment jobs
+        // ───────────────────────────────────────────────────────────────────
+        for (const job of createdJobs) {
+            try {
+                await fulfillmentManager.startDispensing(job.job_id);
+                console.log(`✅ Dispensing started for job: ${job.job_id}`);
             } catch (err) {
-                console.error('❌ Fulfillment creation failed:', err);
-                // Payment was verified and persisted. Fulfillment failure is logged
-                // but does not undo payment. Job can be recovered on restart.
+                console.error(`⚠️ Dispense command publish failed for job ${job.job_id}:`, err.message);
+                // Job remains PENDING in SQLite, can be retried automatically or via recovery
             }
         }
         
         // ───────────────────────────────────────────────────────────────────
-        // STEP 9: Return success page to customer browser
+        // STEP 8: Return success page to customer browser
         // ───────────────────────────────────────────────────────────────────
         const duration = Date.now() - startTime;
         console.log(`✅ Payment completion successful (${duration}ms)`);

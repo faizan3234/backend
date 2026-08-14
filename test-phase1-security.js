@@ -680,6 +680,48 @@ section('18. Duplicate Payment Idempotency');
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
+// TEST 19: ATOMIC TRANSACTION ROLLBACK ON FAILURE
+// ═══════════════════════════════════════════════════════════════════════════
+section('19. Atomic Transaction Rollback on Failure');
+
+(() => {
+    const { session, pairingToken } = createTestSession();
+    const transaction = createTestTransaction(session.session_id, 10000);
+    const db = getDb();
+    const nonce = `test_nonce_${Date.now()}`;
+    
+    // Perform atomic transaction that throws inside
+    let rollbackOccurred = false;
+    try {
+        const { transaction: dbTransaction } = require ? { transaction: (fn) => getDb().transaction(fn)() } : {};
+        getDb().transaction(() => {
+            // 1. Store Nonce
+            paymentAuthVerifier.storeNonce(nonce, session.session_id, transaction.transaction_id, 'pay_rollback_test', 10000);
+            
+            // 2. Consume Pairing Token
+            sessionManager.consumePairingToken(session.session_id, pairingToken);
+            
+            // 3. Intentionally throw error (simulating DB constraint failure or crash)
+            throw new Error('Simulated DB Failure');
+        })();
+    } catch (err) {
+        if (err.message.includes('Simulated DB Failure')) {
+            rollbackOccurred = true;
+        }
+    }
+    
+    assert(rollbackOccurred, 'Atomic transaction caught simulated DB failure');
+    
+    // Verify Nonce was NOT saved (rolled back)
+    const nonceInDb = db.prepare('SELECT * FROM payment_nonces WHERE nonce = ?').get(nonce);
+    assert(!nonceInDb, 'Nonce correctly rolled back (not saved in DB)');
+    
+    // Verify Pairing Token was NOT consumed (rolled back)
+    const sessAfterRollback = sessionManager.getSession(session.session_id);
+    assert(sessAfterRollback.pairing_used === 0, 'Pairing token correctly rolled back (pairing_used remains 0)');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
 // RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 
