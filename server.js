@@ -22,7 +22,7 @@ import RELIV_LOGO_B64 from "./relivlogo-base64.js";
 // Kiosk works completely offline - Internet only used via customer phone
 // Email queues when offline, MQTT uses local Mosquitto, PDFs generated locally
 // ═══════════════════════════════════════════════════════════════════════════
-import { initializeDatabase, checkDatabaseHealth } from "./src/database/db.js";
+import { initializeDatabase, checkDatabaseHealth, transaction as dbTransaction } from "./src/database/db.js";
 import sessionManager from "./src/services/sessionManager.js";
 import { transactionManager } from "./src/services/transactionManager.js";
 import PaymentRecoveryService from "./src/services/paymentRecovery.js";
@@ -3553,41 +3553,42 @@ app.post("/api/create-order", async (req, res) => {
             });
         }
 
-        // 🟡 Reserve inventory BEFORE creating transaction (failure-safe order flow)
-        if (inventoryManager) {
-            try {
-                inventoryManager.reserveInventory(sessionId, serviceType);
-                log.info(`📦 Inventory reserved for session ${sessionId} (service: ${serviceType})`);
-            } catch (inventoryErr) {
-                log.error(`❌ Inventory reservation failed: ${inventoryErr.message}`);
-                return res.status(400).json({ 
-                    error: "Insufficient stock", 
-                    message: inventoryErr.message 
-                });
-            }
+        // 🟡 Execute inventory reservation + transaction creation + session state transitions atomically
+        let transaction;
+        let localOrderId;
+        try {
+            dbTransaction(() => {
+                // 1. Reserve inventory for session
+                if (inventoryManager) {
+                    inventoryManager.reserveInventory(sessionId, serviceType);
+                }
+
+                // 2. Create transaction with AUTHORITATIVE backend-calculated amount
+                transaction = transactionManager.createTransaction(
+                    sessionId,
+                    serviceType,
+                    cart || []
+                );
+
+                // 3. Update session service type
+                if (session.status === 'CUSTOMER_ATTACHED') {
+                    sessionManager.selectService(sessionId, serviceType);
+                }
+
+                // 4. Set payment required & pending on session
+                sessionManager.setPaymentRequired(sessionId, transaction.amount);
+                localOrderId = `order_${transaction.transaction_id}`;
+                transactionManager.markOrderCreated(transaction.transaction_id, localOrderId);
+                sessionManager.markPaymentPending(sessionId, localOrderId);
+            });
+            log.info(`📦 Inventory reserved & transaction created atomically: ${localOrderId} for ₹${transaction.amount / 100} (session: ${sessionId})`);
+        } catch (orderErr) {
+            log.error(`❌ Atomic order creation failed: ${orderErr.message}`);
+            return res.status(400).json({ 
+                error: "Order creation failed", 
+                message: orderErr.message 
+            });
         }
-
-        // ✅ CRITICAL: Backend creates transaction with AUTHORITATIVE amount
-        // Amount is calculated from inventory prices - frontend amount is IGNORED
-        const transaction = transactionManager.createTransaction(
-            sessionId,
-            serviceType,
-            cart || []
-        );
-
-        // Update session with service type
-        if (session.status === 'CUSTOMER_ATTACHED') {
-            sessionManager.selectService(sessionId, serviceType);
-        }
-
-        // Set payment required on session
-        sessionManager.setPaymentRequired(sessionId, transaction.amount);
-
-        const localOrderId = `order_${transaction.transaction_id}`;
-        transactionManager.markOrderCreated(transaction.transaction_id, localOrderId);
-        sessionManager.markPaymentPending(sessionId, localOrderId);
-
-        log.info(`💳 Local payment order created: ${localOrderId} for ₹${transaction.amount / 100} (session: ${sessionId})`);
 
         const isFormSubmit = req.headers['content-type']?.includes('form') || req.is('application/x-www-form-urlencoded');
 
