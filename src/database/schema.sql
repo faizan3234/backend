@@ -273,7 +273,6 @@ CREATE TABLE IF NOT EXISTS payment_nonces (
 CREATE INDEX IF NOT EXISTS idx_payment_nonces_session ON payment_nonces(session_id);
 CREATE INDEX IF NOT EXISTS idx_payment_nonces_transaction ON payment_nonces(transaction_id);
 CREATE INDEX IF NOT EXISTS idx_payment_nonces_used_at ON payment_nonces(used_at);
-
 -- ───────────────────────────────────────────────────────────────────────────
 -- EVENT_QUEUE - Background tasks (email, sync, etc.)
 -- ───────────────────────────────────────────────────────────────────────────
