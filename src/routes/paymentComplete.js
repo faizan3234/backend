@@ -245,7 +245,7 @@ export async function handlePaymentComplete(req, res) {
 
                 if (customerData.email) {
                     const emailQueue = new EmailQueueService(getDb());
-                    emailQueue.queueEmail(sessionId, 'EMAIL_PENDING', {
+                    emailQueue.queueEmail(sessionId, 'EMAIL_REPORT', {
                         pdfPath,
                         pdfBuffer,
                         reportId

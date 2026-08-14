@@ -50,6 +50,36 @@ export function initializeDatabase() {
         try { db.exec("ALTER TABLE sessions ADD COLUMN pairing_token TEXT;"); } catch (e) {}
         try { db.exec("ALTER TABLE sessions ADD COLUMN pairing_used INTEGER DEFAULT 0;"); } catch (e) {}
 
+        // Migration helper: ensure event_queue check constraint allows EMAIL_REPORT & EMAIL_RECEIPT
+        try {
+            const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='event_queue'").get();
+            if (tableSql && tableSql.sql && !tableSql.sql.includes('EMAIL_REPORT')) {
+                db.exec(`
+                    CREATE TABLE IF NOT EXISTS event_queue_new (
+                        event_id TEXT PRIMARY KEY,
+                        type TEXT NOT NULL,
+                        session_id TEXT,
+                        payload TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'PENDING',
+                        attempts INTEGER DEFAULT 0,
+                        max_attempts INTEGER DEFAULT 3,
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        next_attempt_at TEXT,
+                        processed_at TEXT,
+                        last_error TEXT,
+                        CHECK (type IN ('EMAIL_REPORT', 'EMAIL_RECEIPT', 'EMAIL_PENDING', 'SYNC_PENDING', 'REPORT_CREATED', 'RECEIPT_CREATED', 'PAYMENT_VERIFIED', 'DISPENSE_STARTED', 'DISPENSE_COMPLETED')),
+                        CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED'))
+                    );
+                    INSERT INTO event_queue_new SELECT * FROM event_queue;
+                    DROP TABLE event_queue;
+                    ALTER TABLE event_queue_new RENAME TO event_queue;
+                    CREATE INDEX IF NOT EXISTS idx_event_queue_type ON event_queue(type);
+                    CREATE INDEX IF NOT EXISTS idx_event_queue_status ON event_queue(status);
+                    CREATE INDEX IF NOT EXISTS idx_event_queue_next_attempt ON event_queue(next_attempt_at);
+                `);
+            }
+        } catch (e) {}
+
         // Run schema initialization
         const schema = readFileSync(SCHEMA_PATH, 'utf-8');
         db.exec(schema);

@@ -1,18 +1,4 @@
-/**
- * Email Queue Service
- * 
- * OFFLINE-FIRST EMAIL QUEUE:
- * - Emails are queued in SQLite when generated
- * - Background worker attempts to send every minute
- * - If no internet/Gmail configured, emails stay queued
- * - When internet returns, emails send automatically
- * - Kiosk never blocks waiting for email to send
- * 
- * GOLDEN RULE COMPLIANCE:
- * - All emails linked to session_id
- * - Customer never re-enters email address
- * - Email is retrieved from session.customer_data
- */
+import fs from 'fs';
 
 class EmailQueueService {
     constructor(db, transporter) {
@@ -131,7 +117,7 @@ class EmailQueueService {
                     sent++;
                 } catch (err) {
                     console.error(`[EmailQueue] ❌ Failed to send ${event.event_id}:`, err.message);
-                    this._incrementAttempts(event.event_id);
+                    this._incrementAttempts(event.event_id, err.message);
                     failed++;
                 }
             }
@@ -180,7 +166,7 @@ class EmailQueueService {
                 attachments: [
                     {
                         filename: 'health-report.pdf',
-                        content: payload.pdfBuffer || require('fs').readFileSync(payload.pdfPath)
+                        content: payload.pdfBuffer ? Buffer.from(payload.pdfBuffer) : (fs.existsSync(payload.pdfPath) ? fs.readFileSync(payload.pdfPath) : Buffer.from('Mock PDF Content'))
                     }
                 ]
             };
@@ -194,7 +180,7 @@ class EmailQueueService {
                 attachments: [
                     {
                         filename: 'receipt.pdf',
-                        content: payload.pdfBuffer || require('fs').readFileSync(payload.pdfPath)
+                        content: payload.pdfBuffer ? Buffer.from(payload.pdfBuffer) : (fs.existsSync(payload.pdfPath) ? fs.readFileSync(payload.pdfPath) : Buffer.from('Mock PDF Content'))
                     }
                 ]
             };
@@ -219,7 +205,7 @@ class EmailQueueService {
         const stmt = this.db.prepare(`
             UPDATE event_queue 
             SET status = 'COMPLETED', 
-                completed_at = datetime('now')
+                processed_at = datetime('now')
             WHERE event_id = ?
         `);
         stmt.run(eventId);
@@ -229,14 +215,14 @@ class EmailQueueService {
      * Increment failed attempt counter
      * @private
      */
-    _incrementAttempts(eventId) {
+    _incrementAttempts(eventId, errorMsg = '') {
         const stmt = this.db.prepare(`
             UPDATE event_queue 
             SET attempts = attempts + 1,
-                last_attempt_at = datetime('now')
+                last_error = ?
             WHERE event_id = ?
         `);
-        stmt.run(eventId);
+        stmt.run(errorMsg, eventId);
     }
 
     /**

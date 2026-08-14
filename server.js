@@ -3943,7 +3943,7 @@ app.post("/api/sessions/:sessionId/report", async (req, res) => {
 
         // 2. Queue email if customer has email (asynchronous, non-blocking)
         if (customerData.email && emailQueue) {
-            emailQueue.queueEmail(sessionId, 'EMAIL_PENDING', {
+            emailQueue.queueEmail(sessionId, 'EMAIL_REPORT', {
                 pdfPath,
                 pdfBuffer,
                 reportId
