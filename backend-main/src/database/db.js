@@ -1,0 +1,160 @@
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * RELIV KIOSK - LOCAL DATABASE MODULE
+ * Purpose: SQLite database connection and initialization for offline-first operation
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+import Database from 'better-sqlite3';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// ───────────────────────────────────────────────────────────────────────────
+// Database Configuration
+// ───────────────────────────────────────────────────────────────────────────
+const DB_PATH = process.env.DB_PATH || join(process.cwd(), 'data', 'kiosk.db');
+const SCHEMA_PATH = join(__dirname, 'schema.sql');
+
+let db = null;
+
+/**
+ * Initialize the SQLite database
+ * - Creates database file if it doesn't exist
+ * - Runs schema migrations
+ * - Enables WAL mode for better concurrency
+ * - Sets up foreign key constraints
+ */
+export function initializeDatabase() {
+    try {
+        console.log(`[DB] Initializing database at: ${DB_PATH}`);
+        
+        // Open database connection
+        db = new Database(DB_PATH, {
+            verbose: process.env.NODE_ENV === 'development' ? console.log : null
+        });
+        
+        // Enable WAL mode for better concurrency and crash recovery
+        db.pragma('journal_mode = WAL');
+        
+        // Enable foreign key constraints
+        db.pragma('foreign_keys = ON');
+        
+        // Set reasonable cache size (2MB)
+        db.pragma('cache_size = -2000');
+        
+        // Run schema initialization
+        const schema = readFileSync(SCHEMA_PATH, 'utf-8');
+        db.exec(schema);
+        
+        // Verify schema version
+        const versionRow = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get();
+        const currentVersion = versionRow ? versionRow.version : 0;
+        
+        console.log(`[DB] ✅ Database initialized successfully (schema v${currentVersion})`);
+        console.log(`[DB] SQLite version: ${db.pragma('user_version', { simple: true })}`);
+        
+        // Return database instance
+        return db;
+        
+    } catch (err) {
+        console.error('[DB] ❌ Failed to initialize database:', err);
+        throw err;
+    }
+}
+
+/**
+ * Get the database instance
+ * @returns {Database} SQLite database instance
+ */
+export function getDb() {
+    if (!db) {
+        throw new Error('Database not initialized. Call initializeDatabase() first.');
+    }
+    return db;
+}
+
+/**
+ * Close the database connection
+ */
+export function closeDatabase() {
+    if (db) {
+        db.close();
+        db = null;
+        console.log('[DB] Database connection closed');
+    }
+}
+
+/**
+ * Run database health check
+ * @returns {Object} Health status
+ */
+export function checkDatabaseHealth() {
+    try {
+        if (!db) {
+            return { ok: false, message: 'Database not initialized' };
+        }
+        
+        // Test basic query
+        const result = db.prepare('SELECT 1 as test').get();
+        
+        // Check WAL mode
+        const walMode = db.pragma('journal_mode', { simple: true });
+        
+        // Get database stats
+        const stats = db.prepare(`
+            SELECT 
+                (SELECT COUNT(*) FROM sessions) as total_sessions,
+                (SELECT COUNT(*) FROM transactions) as total_transactions,
+                (SELECT COUNT(*) FROM inventory) as total_inventory
+        `).get();
+        
+        return {
+            ok: true,
+            message: 'Database healthy',
+            walMode,
+            stats
+        };
+        
+    } catch (err) {
+        return {
+            ok: false,
+            message: err.message
+        };
+    }
+}
+
+/**
+ * Execute a transaction with automatic rollback on error
+ * @param {Function} callback - Function to execute within transaction
+ * @returns {*} Result from callback
+ */
+export function transaction(callback) {
+    const db = getDb();
+    const txn = db.transaction(callback);
+    return txn();
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Graceful shutdown handler
+// ───────────────────────────────────────────────────────────────────────────
+process.on('SIGINT', () => {
+    closeDatabase();
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    closeDatabase();
+    process.exit(0);
+});
+
+export default {
+    initializeDatabase,
+    getDb,
+    closeDatabase,
+    checkDatabaseHealth,
+    transaction
+};
