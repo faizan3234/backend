@@ -32,6 +32,46 @@ import paymentAuthVerifier from "./src/services/paymentAuthVerifier.js";
 import InventoryManager from "./src/services/inventoryManager.js";
 import settingsManager from "./src/services/settingsManager.js";
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔐 STAGE I: SECURE PAYMENT ARCHITECTURE (Post-Stage H Security Fix)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ✅ CRITICAL SECURITY FIX: Payment verification now uses asymmetric cryptography
+//
+// OLD (INSECURE):
+//   Customer Phone → Claims "payment success" → Pi trusts it → FRAUD RISK
+//
+// NEW (SECURE):
+//   Razorpay → Payment Bridge (verifies with API) → Signs with RSA private key 🔐
+//   → Customer Phone (untrusted transport) → Pi verifies with public key 🔓
+//   → Cryptographically proven payment → DISPENSE
+//
+// PAYMENT FLOW:
+//   1. Customer pays via Razorpay (phone has Internet)
+//   2. Phone → Payment Bridge Service (cloud/VPS with Internet)
+//   3. Payment Bridge verifies with Razorpay API
+//   4. Payment Bridge signs authorization with PRIVATE KEY 🔐
+//   5. Phone → Pi /api/sessions/:sessionId/payment/verify (local Wi-Fi)
+//   6. Pi verifies with PUBLIC KEY 🔓 (offline, no Internet)
+//   7. Pi checks: signature, nonce, expiry, sessionId, transactionId, amount
+//   8. Pi dispenses only if cryptographically valid
+//
+// SECURITY:
+//   - Pi has NO Internet access (Golden Rule)
+//   - Pi has ONLY public key (cannot create fake authorizations)
+//   - Payment Bridge has private key (signs after Razorpay verification)
+//   - Replay attacks prevented (nonce tracking in payment_nonces table)
+//   - Time-bound (5-minute expiry)
+//   - Amount verified (backend-calculated, not phone input)
+//
+// ENDPOINTS (Production):
+//   ✅ POST /api/sessions/:sessionId/payment/verify - Secure verification
+//   ⛔ POST /api/verify-payment - REMOVED (insecure, trusted phone)
+//   ⛔ POST /api/sessions/:sessionId/payment/recover - DISABLED (requires Internet)
+//
+// See: docs/STAGE_I_PAYMENT_SECURITY.md
+// ═══════════════════════════════════════════════════════════════════════════
+
 let pdfGenerator = null;
 let emailQueue = null;
 let inventoryManager = null;
@@ -3416,97 +3456,15 @@ app.get("/api/eco-stats", async (req, res) => {
 // ENDPOINT: Verify Payment (IDEMPOTENT)
 // GOLDEN RULE: Linked to transaction & session - full security checks
 // ───────────────────────────────────────────────────────────────────────────
-app.post("/api/verify-payment", async (req, res) => {
-    try {
-        const { razorpay_order_id, razorpay_payment_id, razorpay_signature, amount, status } = req.body;
-        
-        if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-            return res.status(400).json({ ok: false, message: "Missing payment verification fields" });
-        }
-
-        if (!process.env.RAZORPAY_KEY_SECRET) {
-            return res.status(503).json({ ok: false, message: "Payment verification not configured" });
-        }
-
-        // ✅ Step 1: Verify cryptographic signature (prevents fake payments)
-        const body = `${razorpay_order_id}|${razorpay_payment_id}`;
-        const expectedSignature = crypto
-            .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-            .update(body)
-            .digest("hex");
-        
-        if (expectedSignature !== razorpay_signature) {
-            log.warn(`🔴 Payment signature mismatch — possible fraud. order: ${razorpay_order_id}`);
-            return res.status(400).json({ ok: false, message: "Payment verification failed - invalid signature" });
-        }
-
-        // ✅ Step 2: Get transaction from database by Razorpay order ID
-        const transaction = transactionManager.getTransactionByOrderId(razorpay_order_id);
-        
-        if (!transaction) {
-            log.error(`❌ Transaction not found for order: ${razorpay_order_id}`);
-            return res.status(404).json({ ok: false, message: "Transaction not found" });
-        }
-
-        // ✅ Step 3: Check idempotency (if already verified, return success)
-        if (transaction.status === 'VERIFIED' || transaction.verified === 1) {
-            log.info(`✅ Payment already verified for transaction: ${transaction.transaction_id}`);
-            return res.json({ 
-                ok: true, 
-                already_verified: true,
-                transactionId: transaction.transaction_id
-            });
-        }
-
-        const payment = {
-            id: razorpay_payment_id,
-            amount: Number(amount ?? transaction.amount),
-            status: status || 'captured'
-        };
-
-        // ✅ Step 5: Validate payment details
-        // Check amount matches (CRITICAL SECURITY CHECK)
-        if (payment.amount !== transaction.amount) {
-            log.error(`❌ Amount mismatch: expected ${transaction.amount}, got ${payment.amount}`);
-            return res.status(400).json({ 
-                ok: false, 
-                message: `Amount mismatch: expected ₹${transaction.amount / 100}, got ₹${payment.amount / 100}` 
-            });
-        }
-
-        // Check payment status
-        if (payment.status !== 'captured') {
-            log.error(`❌ Payment not captured: status is ${payment.status}`);
-            return res.status(400).json({ 
-                ok: false, 
-                message: `Payment not successful: status is ${payment.status}` 
-            });
-        }
-
-        // ✅ Step 6: Mark payment as verified in transaction
-        transactionManager.verifyPayment(
-            transaction.transaction_id, 
-            razorpay_payment_id,
-            payment
-        );
-
-        // ✅ Step 7: Update session status to PAYMENT_VERIFIED
-        sessionManager.markPaymentVerified(transaction.session_id, razorpay_payment_id);
-
-        log.info(`✅ Payment verified successfully: ${razorpay_payment_id} for transaction ${transaction.transaction_id}`);
-
-        res.json({ 
-            ok: true, 
-            transactionId: transaction.transaction_id,
-            sessionId: transaction.session_id,
-            amount: transaction.amount / 100  // Return in rupees
-        });
-
-    } catch (err) {
-        log.error("❌ Payment verification error:", err.message);
-        res.status(500).json({ ok: false, message: err.message || "Verification error" });
-    }
-});
+// ═══════════════════════════════════════════════════════════════════════════
+// ⛔ DEPRECATED PAYMENT ROUTE - DO NOT USE
+// This route is INSECURE - it trusts customer phone input without cryptographic proof
+// Use /api/sessions/:sessionId/payment/verify instead (Payment Bridge architecture)
+// ═══════════════════════════════════════════════════════════════════════════
+// REMOVED in Stage I - Payment Security Fix
+// Old route: POST /api/verify-payment
+// Reason: No cryptographic verification, trusts customer phone
+// Replacement: POST /api/sessions/:sessionId/payment/verify (with Payment Bridge)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SESSION-BASED PAYMENT ROUTES (Stage D - RESTful design)
@@ -3680,54 +3638,30 @@ app.post("/api/sessions/:sessionId/payment/verify", async (req, res) => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// POST /api/sessions/:sessionId/payment/recover - Manually trigger payment recovery
+// ⛔ PAYMENT RECOVERY - REQUIRES INTERNET (NOT COMPATIBLE WITH OFFLINE PI)
 // ───────────────────────────────────────────────────────────────────────────
+// POST /api/sessions/:sessionId/payment/recover
+//
+// ❌ PROBLEM: This endpoint requires Pi to contact Razorpay API (Internet)
+// ❌ GOLDEN RULE VIOLATION: Raspberry Pi must have ZERO Internet access
+//
+// ALTERNATIVE: Payment recovery should be handled by:
+// 1. Payment Bridge Service (has Internet, can query Razorpay)
+// 2. Admin dashboard (cloud-based with Razorpay access)
+// 3. Manual intervention via Payment Bridge
+//
+// This endpoint is DISABLED in offline-first architecture.
+// If you need payment recovery, use the Payment Bridge Service instead.
+// ───────────────────────────────────────────────────────────────────────────
+/*
 app.post("/api/sessions/:sessionId/payment/recover", async (req, res) => {
-    try {
-        const { sessionId } = req.params;
-
-        if (!paymentRecovery) {
-            return res.status(503).json({ 
-                ok: false, 
-                message: "Payment recovery service not available (Razorpay not configured)" 
-            });
-
-            app.post("/api/payment/create-order", async (req, res) => {
-                return app._router.handle({ ...req, url: "/api/create-order" }, res);
-            });
-
-            app.post("/api/payment/verify", async (req, res) => {
-                return app._router.handle({ ...req, url: "/api/verify-payment" }, res);
-            });
-
-        }
-
-        log.info(`🔄 Manual payment recovery requested for session: ${sessionId}`);
-
-        const result = await paymentRecovery.recoverSession(sessionId);
-
-        if (result.recovered) {
-            log.info(`✅ Successfully recovered payment for session ${sessionId}`);
-            res.json({
-                ok: true,
-                recovered: true,
-                paymentId: result.paymentId,
-                amount: result.amount
-            });
-        } else {
-            log.info(`⏳ Could not recover payment for session ${sessionId}: ${result.reason}`);
-            res.json({
-                ok: true,
-                recovered: false,
-                reason: result.reason
-            });
-        }
-
-    } catch (err) {
-        log.error(`❌ Payment recovery failed for session ${req.params.sessionId}:`, err.message);
-        res.status(500).json({ ok: false, message: err.message || "Recovery failed" });
-    }
+    // DISABLED - Requires Internet access from Pi
+    return res.status(503).json({
+        ok: false,
+        message: "Payment recovery from Pi is disabled in offline-first architecture. Use Payment Bridge Service for recovery."
+    });
 });
+*/
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STAGE E: REPORT & RECEIPT GENERATION (Offline-first)
