@@ -157,6 +157,7 @@ class EmailQueueService {
         let mailOptions;
 
         if (event.type === 'EMAIL_REPORT') {
+            const pdfBuffer = this._getPdfBuffer(payload, 'Health Report');
             mailOptions = {
                 from: process.env.GMAIL_USER,
                 to: toEmail,
@@ -166,11 +167,12 @@ class EmailQueueService {
                 attachments: [
                     {
                         filename: 'health-report.pdf',
-                        content: payload.pdfBuffer ? Buffer.from(payload.pdfBuffer) : (fs.existsSync(payload.pdfPath) ? fs.readFileSync(payload.pdfPath) : Buffer.from('Mock PDF Content'))
+                        content: pdfBuffer
                     }
                 ]
             };
         } else if (event.type === 'EMAIL_RECEIPT') {
+            const pdfBuffer = this._getPdfBuffer(payload, 'Receipt');
             mailOptions = {
                 from: process.env.GMAIL_USER,
                 to: toEmail,
@@ -180,7 +182,7 @@ class EmailQueueService {
                 attachments: [
                     {
                         filename: 'receipt.pdf',
-                        content: payload.pdfBuffer ? Buffer.from(payload.pdfBuffer) : (fs.existsSync(payload.pdfPath) ? fs.readFileSync(payload.pdfPath) : Buffer.from('Mock PDF Content'))
+                        content: pdfBuffer
                     }
                 ]
             };
@@ -195,6 +197,21 @@ class EmailQueueService {
         this._markSent(event.event_id);
 
         console.log(`[EmailQueue] ✅ Email sent: ${event.event_id} to ${toEmail}`);
+    }
+
+    /**
+     * Retrieve PDF buffer from payload or filesystem
+     * Throws an error if real PDF is unavailable (never substitutes fake content)
+     * @private
+     */
+    _getPdfBuffer(payload, pdfType = 'PDF') {
+        if (payload?.pdfBuffer) {
+            return Buffer.from(payload.pdfBuffer);
+        }
+        if (payload?.pdfPath && fs.existsSync(payload.pdfPath)) {
+            return fs.readFileSync(payload.pdfPath);
+        }
+        throw new Error(`Real ${pdfType} attachment file not found at path: ${payload?.pdfPath || 'undefined'}`);
     }
 
     /**
