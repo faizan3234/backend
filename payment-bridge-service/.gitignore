@@ -1,0 +1,27 @@
+# Payment Bridge Service .gitignore
+
+# Environment variables
+.env
+
+# Private key (NEVER commit this)
+private-key.pem
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Public key can be committed (it's public)
+# public-key.pem can be included in the repo

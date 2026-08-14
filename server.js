@@ -28,6 +28,7 @@ import { transactionManager } from "./src/services/transactionManager.js";
 import PaymentRecoveryService from "./src/services/paymentRecovery.js";
 import PDFGenerator from "./src/services/pdfGenerator.js";
 import EmailQueueService from "./src/services/emailQueue.js";
+import paymentAuthVerifier from "./src/services/paymentAuthVerifier.js";
 import InventoryManager from "./src/services/inventoryManager.js";
 import settingsManager from "./src/services/settingsManager.js";
 
@@ -3564,18 +3565,35 @@ app.get("/api/sessions/:sessionId/payment", async (req, res) => {
 // ───────────────────────────────────────────────────────────────────────────
 // POST /api/sessions/:sessionId/payment/verify - Verify payment (session-based route)
 // ───────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/sessions/:sessionId/payment/verify - SECURE payment verification
+// 
+// ✅ NEW ARCHITECTURE (Post-Stage H Payment Security Fix):
+// 1. Customer pays via Razorpay (phone has Internet)
+// 2. Razorpay callback → Customer phone
+// 3. Phone → Payment Bridge Service (cloud/VPS with Internet)
+// 4. Payment Bridge verifies with Razorpay API
+// 5. Payment Bridge signs authorization with PRIVATE KEY 🔐
+// 6. Phone → THIS ENDPOINT (local Wi-Fi, no Internet)
+// 7. Pi verifies with PUBLIC KEY 🔓 (OFFLINE)
+// 8. Pi dispenses if verification succeeds
+//
+// SECURITY: Asymmetric cryptography prevents payment fraud even if Pi is compromised
+// ───────────────────────────────────────────────────────────────────────────
 app.post("/api/sessions/:sessionId/payment/verify", async (req, res) => {
     try {
         const { sessionId } = req.params;
-        const { razorpay_payment_id, razorpay_signature, amount, status } = req.body;
+        const { authorization, signature } = req.body;
         
-        if (!razorpay_payment_id || !razorpay_signature) {
-            return res.status(400).json({ ok: false, message: "Missing payment verification fields" });
+        // Validate request
+        if (!authorization || !signature) {
+            return res.status(400).json({ 
+                ok: false, 
+                message: "Missing payment authorization or signature" 
+            });
         }
 
-        if (!process.env.RAZORPAY_KEY_SECRET) {
-            return res.status(503).json({ ok: false, message: "Payment verification not configured" });
-        }
+        log.info(`🔐 Payment authorization received for session: ${sessionId}`);
 
         // ✅ Step 1: Get session
         const session = sessionManager.getSession(sessionId);
@@ -3589,9 +3607,6 @@ app.post("/api/sessions/:sessionId/payment/verify", async (req, res) => {
             return res.status(404).json({ ok: false, message: "No transaction found for this session" });
         }
 
-        // Use the order ID from the transaction
-        const razorpay_order_id = transaction.provider_order_id;
-
         // ✅ Step 3: Check idempotency (if already verified, return success)
         if (transaction.status === 'VERIFIED' || transaction.verified === 1) {
             log.info(`✅ Payment already verified for transaction: ${transaction.transaction_id}`);
@@ -3604,60 +3619,58 @@ app.post("/api/sessions/:sessionId/payment/verify", async (req, res) => {
             });
         }
 
-        // ✅ Step 4: Verify cryptographic signature (prevents fake payments)
-        const body = `${razorpay_order_id}|${razorpay_payment_id}`;
-        const expectedSignature = crypto
-            .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-            .update(body)
-            .digest("hex");
-        
-        if (expectedSignature !== razorpay_signature) {
-            log.warn(`🔴 Payment signature mismatch — possible fraud. session: ${sessionId}`);
-            return res.status(400).json({ ok: false, message: "Payment verification failed - invalid signature" });
+        // ✅ Step 4-10: Verify payment authorization using asymmetric cryptography
+        // This includes:
+        // - Signature verification (public key)
+        // - Nonce check (replay protection)
+        // - Expiry check (5-minute window)
+        // - Session ID verification
+        // - Transaction ID verification
+        // - Amount verification (CRITICAL)
+        const verificationResult = await paymentAuthVerifier.verifyPaymentAuthorization({
+            authorization,
+            signature,
+            sessionId,
+            transactionId: transaction.transaction_id,
+            expectedAmount: transaction.amount // Backend-calculated amount
+        });
+
+        if (!verificationResult.success) {
+            log.warn(`❌ Payment authorization verification failed: ${verificationResult.error}`);
+            return res.status(400).json({ 
+                ok: false, 
+                message: verificationResult.error || "Payment verification failed"
+            });
         }
 
+        log.info(`✅ Payment authorization cryptographically verified`);
+
+        // ✅ Step 11: Mark payment as verified in transaction
         const payment = {
-            id: razorpay_payment_id,
-            amount: Number(amount ?? transaction.amount),
-            status: status || 'captured'
+            id: verificationResult.paymentId,
+            amount: verificationResult.amount,
+            status: 'captured', // Payment Bridge already verified this with Razorpay API
+            order_id: verificationResult.orderId
         };
 
-        // ✅ Step 6: Validate payment details
-        // Check amount matches (CRITICAL SECURITY CHECK)
-        if (payment.amount !== transaction.amount) {
-            log.error(`❌ Amount mismatch: expected ${transaction.amount}, got ${payment.amount}`);
-            return res.status(400).json({ 
-                ok: false, 
-                message: `Amount mismatch: expected ₹${transaction.amount / 100}, got ₹${payment.amount / 100}` 
-            });
-        }
-
-        // Check payment status
-        if (payment.status !== 'captured') {
-            log.error(`❌ Payment not captured: status is ${payment.status}`);
-            return res.status(400).json({ 
-                ok: false, 
-                message: `Payment not successful: status is ${payment.status}` 
-            });
-        }
-
-        // ✅ Step 7: Mark payment as verified in transaction
         transactionManager.verifyPayment(
             transaction.transaction_id, 
-            razorpay_payment_id,
+            verificationResult.paymentId,
             payment
         );
 
-        // ✅ Step 8: Update session status to PAYMENT_VERIFIED
-        sessionManager.markPaymentVerified(sessionId, razorpay_payment_id);
+        // ✅ Step 12: Update session status to PAYMENT_VERIFIED
+        sessionManager.markPaymentVerified(sessionId, verificationResult.paymentId);
 
-        log.info(`✅ Payment verified successfully: ${razorpay_payment_id} for session ${sessionId}`);
+        log.info(`✅ Payment VERIFIED securely: ${verificationResult.paymentId} for session ${sessionId}`);
+        log.info(`   Amount: ₹${transaction.amount / 100} (cryptographically verified)`);
 
         res.json({ 
             ok: true, 
             transactionId: transaction.transaction_id,
             sessionId: sessionId,
-            amount: transaction.amount / 100  // Return in rupees
+            amount: transaction.amount / 100,  // Return in rupees
+            paymentId: verificationResult.paymentId
         });
 
     } catch (err) {

@@ -256,6 +256,24 @@ CREATE TABLE IF NOT EXISTS settings (
 INSERT OR IGNORE INTO settings (key, value) VALUES ('reportPrice', '27');
 
 -- ───────────────────────────────────────────────────────────────────────────
+-- PAYMENT_NONCES - Replay attack prevention for payment authorizations
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS payment_nonces (
+    nonce TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    transaction_id TEXT NOT NULL,
+    payment_id TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    used_at TEXT NOT NULL DEFAULT (datetime('now')),
+    
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id),
+    FOREIGN KEY (transaction_id) REFERENCES transactions(transaction_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_nonces_session ON payment_nonces(session_id);
+CREATE INDEX IF NOT EXISTS idx_payment_nonces_transaction ON payment_nonces(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_payment_nonces_used_at ON payment_nonces(used_at);
+-- ───────────────────────────────────────────────────────────────────────────
 -- EVENT_QUEUE - Background tasks (email, sync, etc.)
 -- ───────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS event_queue (
