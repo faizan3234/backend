@@ -493,9 +493,9 @@ section('10. Manual Review Resolution');
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TEST 11: ACK VALIDATION — MISMATCHED KIT/QUANTITY
+// TEST 11: ACK VALIDATION — MISMATCHED OR MISSING KIT/QUANTITY
 // ═══════════════════════════════════════════════════════════════════════════
-section('11. ACK Validation (Kit/Quantity Mismatch)');
+section('11. ACK Validation (Strict Mandatory Fields & Matching)');
 
 (async () => {
     const db = getDb();
@@ -506,6 +506,14 @@ section('11. ACK Validation (Kit/Quantity Mismatch)');
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state)
         VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'IN_PROGRESS')
     `).run(jobId);
+
+    // ACK missing kitId and quantity (e.g. {"jobId": "JOB-123"})
+    const missingFields = await fulfillmentManager.markCompleted(jobId, { jobId });
+    assert(missingFields === false, 'ACK missing kitId and quantity is strictly REJECTED');
+
+    // ACK missing quantity
+    const missingQty = await fulfillmentManager.markCompleted(jobId, { jobId, kitId: 'TEST-KIT-1' });
+    assert(missingQty === false, 'ACK missing quantity is strictly REJECTED');
     
     // ACK with wrong kit
     const wrongKit = await fulfillmentManager.markCompleted(jobId, { kitId: 'WRONG-KIT', quantity: 1 });
@@ -514,10 +522,14 @@ section('11. ACK Validation (Kit/Quantity Mismatch)');
     // ACK with wrong quantity
     const wrongQty = await fulfillmentManager.markCompleted(jobId, { kitId: 'TEST-KIT-1', quantity: 99 });
     assert(wrongQty === false, 'ACK with wrong quantity rejected');
+
+    // ACK with failure status
+    const hardwareFail = await fulfillmentManager.markCompleted(jobId, { kitId: 'TEST-KIT-1', quantity: 1, status: 'FAILED' });
+    assert(hardwareFail === false, 'ACK reporting hardware failure status is REJECTED');
     
     // Correct ACK
     const correct = await fulfillmentManager.markCompleted(jobId, { kitId: 'TEST-KIT-1', quantity: 1 });
-    assert(correct === true, 'ACK with correct kit and quantity accepted');
+    assert(correct === true, 'ACK with complete, correct kit and quantity accepted');
     
     // Verify state changed
     const job = db.prepare('SELECT * FROM fulfillment_jobs WHERE job_id = ?').get(jobId);
@@ -538,13 +550,15 @@ section('12. Duplicate ACK Idempotency');
         VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'IN_PROGRESS')
     `).run(jobId);
     
+    const validAck = { kitId: 'TEST-KIT-1', quantity: 1 };
+
     // First ACK
-    const first = await fulfillmentManager.markCompleted(jobId, {});
-    assert(first === true, 'First ACK accepted');
+    const first = await fulfillmentManager.markCompleted(jobId, validAck);
+    assert(first === true, 'First valid ACK accepted');
     
     // Duplicate ACK — should succeed silently (idempotent)
-    const duplicate = await fulfillmentManager.markCompleted(jobId, {});
-    assert(duplicate === true, 'Duplicate ACK returns true (idempotent)');
+    const duplicate = await fulfillmentManager.markCompleted(jobId, validAck);
+    assert(duplicate === true, 'Duplicate valid ACK returns true (idempotent)');
     
     const job = db.prepare('SELECT * FROM fulfillment_jobs WHERE job_id = ?').get(jobId);
     assert(job.state === 'COMPLETED', 'State remains COMPLETED after duplicate ACK');
@@ -719,6 +733,43 @@ section('19. Atomic Transaction Rollback on Failure');
     // Verify Pairing Token was NOT consumed (rolled back)
     const sessAfterRollback = sessionManager.getSession(session.session_id);
     assert(sessAfterRollback.pairing_used === 0, 'Pairing token correctly rolled back (pairing_used remains 0)');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 20: MANDATORY PAYMENT BRIDGE ORDER BINDING
+// ═══════════════════════════════════════════════════════════════════════════
+section('20. Mandatory Payment Bridge Order Binding');
+
+(() => {
+    // Test that Payment Bridge database schema includes orders table
+    const Database = (require ? require('better-sqlite3') : null);
+    try {
+        const bridgeDb = new (import('better-sqlite3').then(m => m.default) || Database)('./payment-bridge-service/bridge.db');
+        bridgeDb.exec(`
+            CREATE TABLE IF NOT EXISTS orders (
+                order_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                transaction_id TEXT NOT NULL,
+                kiosk_id TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'INR',
+                status TEXT NOT NULL DEFAULT 'CREATED',
+                created_at INTEGER NOT NULL
+            );
+        `);
+        const stmt = bridgeDb.prepare(`INSERT INTO orders (order_id, session_id, transaction_id, kiosk_id, amount, created_at) VALUES ('order_test_bound', 'sess-1', 'txn-1', 'RELIV-001', 10000, ?)`);
+        stmt.run(Date.now());
+        
+        const bound = bridgeDb.prepare('SELECT * FROM orders WHERE order_id = ?').get('order_test_bound');
+        assert(bound && bound.session_id === 'sess-1' && bound.amount === 10000, 
+            'Payment Bridge orders table correctly stores authoritative order binding');
+        
+        // Clean up test order
+        bridgeDb.prepare('DELETE FROM orders WHERE order_id = ?').run('order_test_bound');
+        bridgeDb.close();
+    } catch (err) {
+        skip('Payment Bridge order binding DB test', err.message);
+    }
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════

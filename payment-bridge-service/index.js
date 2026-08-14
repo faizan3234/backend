@@ -319,37 +319,50 @@ app.post('/verify-payment', async (req, res) => {
     }
 
     // Step 4b: AUTHORITATIVE ORDER BINDING VERIFICATION (CRITICAL SECURITY)
-    // Check if the order exists in Bridge DB and verify bound sessionId, transactionId, and amount
+    // Check if the order exists in Bridge DB and verify bound sessionId, transactionId, kioskId, and amount
     const boundOrder = db.prepare('SELECT * FROM orders WHERE order_id = ?').get(razorpay_order_id);
-    if (boundOrder) {
-      if (boundOrder.session_id !== sessionId) {
-        console.error(`❌ SECURITY ATTACK: Session ID mismatch for order ${razorpay_order_id}. Bound: ${boundOrder.session_id}, Submitted: ${sessionId}`);
-        logVerification(razorpay_payment_id, sessionId, transactionId, payment.amount, 'FAILED', 'Authoritative session binding mismatch');
-        return res.status(400).json({
-          success: false,
-          error: 'Authoritative session binding mismatch. Order was created for a different session.'
-        });
-      }
-      if (boundOrder.transaction_id !== transactionId) {
-        console.error(`❌ SECURITY ATTACK: Transaction ID mismatch for order ${razorpay_order_id}. Bound: ${boundOrder.transaction_id}, Submitted: ${transactionId}`);
-        logVerification(razorpay_payment_id, sessionId, transactionId, payment.amount, 'FAILED', 'Authoritative transaction binding mismatch');
-        return res.status(400).json({
-          success: false,
-          error: 'Authoritative transaction binding mismatch. Order was created for a different transaction.'
-        });
-      }
-      if (boundOrder.amount !== payment.amount) {
-        console.error(`❌ SECURITY ATTACK: Amount mismatch for order ${razorpay_order_id}. Bound: ${boundOrder.amount}, Payment: ${payment.amount}`);
-        logVerification(razorpay_payment_id, sessionId, transactionId, payment.amount, 'FAILED', 'Authoritative amount mismatch');
-        return res.status(400).json({
-          success: false,
-          error: 'Authoritative order amount mismatch.'
-        });
-      }
-      console.log(`✅ Authoritative order binding verified for order: ${razorpay_order_id}`);
-    } else {
-      console.warn(`⚠️ Order ${razorpay_order_id} not found in Bridge DB orders table (legacy order or test key)`);
+    if (!boundOrder) {
+      console.error(`❌ SECURITY REJECTION: Order ${razorpay_order_id} not found in Payment Bridge orders database.`);
+      logVerification(razorpay_payment_id, sessionId, transactionId, payment.amount, 'FAILED', 'Order binding not found in Bridge DB');
+      return res.status(400).json({
+        success: false,
+        error: 'Order binding not found in Payment Bridge database. Razorpay orders must be created via Payment Bridge /create-order endpoint.'
+      });
     }
+
+    if (boundOrder.session_id !== sessionId) {
+      console.error(`❌ SECURITY ATTACK: Session ID mismatch for order ${razorpay_order_id}. Bound: ${boundOrder.session_id}, Submitted: ${sessionId}`);
+      logVerification(razorpay_payment_id, sessionId, transactionId, payment.amount, 'FAILED', 'Authoritative session binding mismatch');
+      return res.status(400).json({
+        success: false,
+        error: 'Authoritative session binding mismatch. Order was created for a different session.'
+      });
+    }
+    if (boundOrder.transaction_id !== transactionId) {
+      console.error(`❌ SECURITY ATTACK: Transaction ID mismatch for order ${razorpay_order_id}. Bound: ${boundOrder.transaction_id}, Submitted: ${transactionId}`);
+      logVerification(razorpay_payment_id, sessionId, transactionId, payment.amount, 'FAILED', 'Authoritative transaction binding mismatch');
+      return res.status(400).json({
+        success: false,
+        error: 'Authoritative transaction binding mismatch. Order was created for a different transaction.'
+      });
+    }
+    if (boundOrder.kiosk_id && boundOrder.kiosk_id !== kioskId) {
+      console.error(`❌ SECURITY ATTACK: Kiosk ID mismatch for order ${razorpay_order_id}. Bound: ${boundOrder.kiosk_id}, Submitted: ${kioskId}`);
+      logVerification(razorpay_payment_id, sessionId, transactionId, payment.amount, 'FAILED', 'Authoritative kiosk binding mismatch');
+      return res.status(400).json({
+        success: false,
+        error: 'Authoritative kiosk binding mismatch.'
+      });
+    }
+    if (boundOrder.amount !== payment.amount) {
+      console.error(`❌ SECURITY ATTACK: Amount mismatch for order ${razorpay_order_id}. Bound: ${boundOrder.amount}, Payment: ${payment.amount}`);
+      logVerification(razorpay_payment_id, sessionId, transactionId, payment.amount, 'FAILED', 'Authoritative amount mismatch');
+      return res.status(400).json({
+        success: false,
+        error: 'Authoritative order amount mismatch.'
+      });
+    }
+    console.log(`✅ Authoritative order binding verified for order: ${razorpay_order_id}`);
 
     console.log(`✅ Payment verified with Razorpay API: ₹${payment.amount / 100}`);
 
