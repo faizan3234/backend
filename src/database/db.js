@@ -46,6 +46,10 @@ export function initializeDatabase() {
         // Set reasonable cache size (2MB)
         db.pragma('cache_size = -2000');
         
+        // Migration helper: ensure pairing columns exist in sessions table if database was created prior
+        try { db.exec("ALTER TABLE sessions ADD COLUMN pairing_token TEXT;"); } catch (e) {}
+        try { db.exec("ALTER TABLE sessions ADD COLUMN pairing_used INTEGER DEFAULT 0;"); } catch (e) {}
+
         // Run schema initialization
         const schema = readFileSync(SCHEMA_PATH, 'utf-8');
         db.exec(schema);

@@ -41,14 +41,21 @@ const VALID_TRANSITIONS = {
 // ───────────────────────────────────────────────────────────────────────────
 class SessionManager {
     constructor() {
-        this.db = null;
+        this._db = null;
+    }
+
+    get db() {
+        if (!this._db) {
+            this._db = getDb();
+        }
+        return this._db;
     }
     
     /**
      * Initialize the session manager with database connection
      */
     initialize() {
-        this.db = getDb();
+        this._db = getDb();
         console.log('[SessionManager] Initialized');
     }
     

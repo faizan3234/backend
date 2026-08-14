@@ -82,30 +82,35 @@ export class InventoryManager {
    * Get items by service type
    */
   getInventoryByService(serviceType) {
-    const items = this.db.prepare(`
-      SELECT 
-        i.id,
-        i.name,
-        i.description,
-        i.category,
-        i.stock_quantity,
-        i.reserved_quantity,
-        (i.stock_quantity - i.reserved_quantity) as available_quantity,
-        i.unit_price,
-        i.min_stock_level,
-        i.max_stock_level,
-        i.expiry_date,
-        sim.quantity as required_quantity,
-        sim.included,
-        sim.created_at,
-        sim.updated_at
-      FROM service_inventory_map sim
-      JOIN inventory i ON sim.inventory_id = i.id
-      WHERE sim.service_type = ?
-      ORDER BY i.category, i.name
-    `).all(serviceType);
+    try {
+      const items = this.db.prepare(`
+        SELECT 
+          i.id,
+          i.name,
+          i.description,
+          i.category,
+          i.stock_quantity,
+          i.reserved_quantity,
+          (i.stock_quantity - i.reserved_quantity) as available_quantity,
+          i.unit_price,
+          i.min_stock_level,
+          i.max_stock_level,
+          i.expiry_date,
+          sim.quantity as required_quantity,
+          sim.included,
+          sim.created_at,
+          sim.updated_at
+        FROM service_inventory_map sim
+        JOIN inventory i ON sim.inventory_id = i.id
+        WHERE sim.service_type = ?
+        ORDER BY i.category, i.name
+      `).all(serviceType);
 
-    return items;
+      return items;
+    } catch (err) {
+      console.warn(`[InventoryManager] getInventoryByService error: ${err.message}`);
+      return [];
+    }
   }
 
   /**
@@ -131,6 +136,12 @@ export class InventoryManager {
    * Called when payment is initiated
    */
   reserveInventory(sessionId, serviceType) {
+    const items = this.getInventoryByService(serviceType);
+    if (!items || items.length === 0) {
+      console.log(`[InventoryManager] No inventory mapping for service: ${serviceType}`);
+      return true;
+    }
+
     const availability = this.checkStockAvailability(serviceType);
     
     if (!availability.available) {

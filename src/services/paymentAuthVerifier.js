@@ -30,7 +30,8 @@ class PaymentAuthorizationVerifier {
     const publicKeyPaths = [
       './config/payment-verification-public-key.pem',
       '../config/payment-verification-public-key.pem',
-      './payment-verification-public-key.pem'
+      './payment-verification-public-key.pem',
+      './public-key.pem'
     ];
 
     for (const path of publicKeyPaths) {

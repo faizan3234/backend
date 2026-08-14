@@ -33,3 +33,9 @@ data/service-account-key.json
 *.njsproj
 *.sln
 *.sw?
+
+# Security keys & temporary files
+*.pem
+scratch/
+data/*.db*
+

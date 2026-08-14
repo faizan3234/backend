@@ -30,10 +30,12 @@ import crypto from 'crypto';
 
 class FulfillmentManager {
   constructor() {
-    this.db = getDb();
-    
     // MQTT will be injected by server.js
     this.mqttClient = null;
+  }
+
+  get db() {
+    return getDb();
   }
 
   /**

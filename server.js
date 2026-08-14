@@ -33,6 +33,7 @@ import InventoryManager from "./src/services/inventoryManager.js";
 import settingsManager from "./src/services/settingsManager.js";
 import fulfillmentManager from "./src/services/fulfillmentManager.js";
 import { handlePaymentComplete } from "./src/routes/paymentComplete.js";
+import { buildValidatedRedirectUrl } from "./src/utils/redirectHelper.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 🔐 STAGE I: SECURE PAYMENT ARCHITECTURE (Post-Stage H Security Fix)
@@ -2600,6 +2601,13 @@ mqttClient.on("message", (topic, message) => {
                         transactionManager.markFulfilled(job.transaction_id);
                         log.info(`✅ Transaction ${job.transaction_id} marked FULFILLED after ESP32 ACK`);
                         
+                        // Update session dispense status to COMPLETED after valid ESP32 hardware ACK
+                        try {
+                            sessionManager.updateDispenseStatus(job.session_id, 'COMPLETED');
+                        } catch (dispErr) {
+                            log.warn(`⚠️ Could not update dispense_status: ${dispErr.message}`);
+                        }
+
                         // Also complete the session if all jobs for this session are done
                         const sessionJobs = fulfillmentManager.getSessionJobs(job.session_id);
                         const allCompleted = sessionJobs.every(j => j.state === 'COMPLETED');
@@ -3092,7 +3100,9 @@ function createQrSessionHandler(req, res) {
         res.json({ 
             path,
             sessionId: session.session_id,  // Include for debugging
-            pairingToken  // Customer URL/HTTPS site needs this for payment completion
+            pairingToken, // Customer URL/HTTPS site needs this for payment completion
+            kioskId: session.kiosk_id || 'RELIV-001',
+            kioskUrl: 'http://192.168.50.1' // Standardized local AP address for location independence
         });
     } catch (err) {
         console.error("Error creating QR session:", err);
@@ -3235,23 +3245,61 @@ setInterval(() => {
 
 async function saveCustomerDataHandler(req, res) {
     try {
-        const { sessionId, customerData } = req.body;
-        if (!sessionId || !customerData) {
-            return res.status(400).json({ error: "Session ID and customer data are required" });
+        const sessionId = req.params?.sessionId || req.body.sessionId;
+        const pairingToken = req.body.pairingToken;
+        const returnUrl = req.body.returnUrl;
+        
+        const rawCustomer = req.body.customerData || req.body;
+        const customerData = {
+            name: rawCustomer.name || '',
+            age: rawCustomer.age || null,
+            gender: rawCustomer.gender || '',
+            email: rawCustomer.email || '',
+            phone: rawCustomer.phone || ''
+        };
+
+        if (!sessionId) {
+            return res.status(400).json({ error: "Session ID is required" });
         }
 
-        // ✅ NEW: Store customer data in SQLite and transition state
-        // This also validates the session exists and enforces state machine
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        if (pairingToken || session.pairing_token) {
+            try {
+                sessionManager.verifyPairingToken(sessionId, pairingToken || session.pairing_token);
+            } catch (pErr) {
+                log.warn(`⚠️ Pairing token check on customer details: ${pErr.message}`);
+                if (pairingToken && session.pairing_token && pairingToken !== session.pairing_token) {
+                    return res.status(403).json({ error: "Invalid pairing token" });
+                }
+            }
+        }
+
         sessionManager.attachCustomer(sessionId, customerData);
         
-        // Backward compatibility: Also store in legacy Map (temporary)
         customerDataStore.set(sessionId, {
             ...customerData,
             timestamp: Date.now()
         });
 
         log.info(`💾 Customer data saved for session: ${sessionId}`);
-        res.json({ success: true });
+
+        const isFormSubmit = req.headers['content-type']?.includes('form') || req.is('application/x-www-form-urlencoded');
+
+        if (returnUrl || isFormSubmit) {
+            const redirectUrl = buildValidatedRedirectUrl(returnUrl, {
+                sessionId: sessionId,
+                kioskId: session.kiosk_id || 'RELIV-001',
+                step: 'service'
+            });
+            log.info(`🔀 302 Redirecting customer to service step: ${redirectUrl}`);
+            return res.redirect(302, redirectUrl);
+        }
+
+        res.json({ success: true, sessionId, step: 'service' });
     } catch (err) {
         console.error("Error saving customer data:", err);
         res.status(500).json({ error: err.message || "Failed to save customer data" });
@@ -3264,7 +3312,6 @@ async function saveCustomerDataHandler(req, res) {
 // ───────────────────────────────────────────────────────────────────────────
 app.post("/api/save-customer-data", saveCustomerDataHandler);
 app.post("/api/sessions/:sessionId/customer", async (req, res) => {
-    req.body = { sessionId: req.params.sessionId, customerData: req.body.customerData || req.body };
     return saveCustomerDataHandler(req, res);
 });
 
@@ -3465,7 +3512,7 @@ app.put("/api/report-price", async (req, res) => {
 // ───────────────────────────────────────────────────────────────────────────
 app.post("/api/create-order", async (req, res) => {
     try {
-        const { sessionId, serviceType, cart } = req.body;
+        const { sessionId, pairingToken, serviceType, cart, returnUrl } = req.body;
         
         if (!sessionId) {
             return res.status(400).json({ error: "Session ID is required" });
@@ -3481,6 +3528,17 @@ app.post("/api/create-order", async (req, res) => {
         const session = sessionManager.getSession(sessionId);
         if (!session) {
             return res.status(404).json({ error: "Session not found" });
+        }
+
+        if (pairingToken || session.pairing_token) {
+            try {
+                sessionManager.verifyPairingToken(sessionId, pairingToken || session.pairing_token);
+            } catch (pErr) {
+                log.warn(`⚠️ Pairing token check on create-order: ${pErr.message}`);
+                if (pairingToken && session.pairing_token && pairingToken !== session.pairing_token) {
+                    return res.status(403).json({ error: "Invalid pairing token" });
+                }
+            }
         }
 
         if (session.status !== 'CUSTOMER_ATTACHED' && session.status !== 'SERVICE_SELECTED') {
@@ -3505,7 +3563,6 @@ app.post("/api/create-order", async (req, res) => {
                 inventoryManager.reserveInventory(sessionId, serviceType);
                 log.info(`📦 Inventory reserved for session ${sessionId} (service: ${serviceType})`);
             } catch (inventoryErr) {
-                // If inventory reservation fails, fail the whole order
                 log.error(`❌ Inventory reservation failed: ${inventoryErr.message}`);
                 return res.status(400).json({ 
                     error: "Insufficient stock", 
@@ -3527,6 +3584,19 @@ app.post("/api/create-order", async (req, res) => {
         sessionManager.markPaymentPending(sessionId, localOrderId);
 
         log.info(`💳 Local payment order created: ${localOrderId} for ₹${transaction.amount / 100} (session: ${sessionId})`);
+
+        const isFormSubmit = req.headers['content-type']?.includes('form') || req.is('application/x-www-form-urlencoded');
+
+        if (returnUrl || isFormSubmit) {
+            const redirectUrl = buildValidatedRedirectUrl(returnUrl, {
+                sessionId: sessionId,
+                transactionId: transaction.transaction_id,
+                amount: transaction.amount,
+                step: 'payment'
+            });
+            log.info(`🔀 302 Redirecting customer to payment step: ${redirectUrl}`);
+            return res.redirect(302, redirectUrl);
+        }
 
         res.json({
             orderId: localOrderId,
@@ -3550,6 +3620,55 @@ app.post("/api/create-order", async (req, res) => {
         }
 
         res.status(500).json({ error: err.message || "Server Error" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Get Session Status (Polling for customer phone)
+// ───────────────────────────────────────────────────────────────────────────
+app.get("/api/sessions/:sessionId/status", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const session = sessionManager.getSession(sessionId);
+        
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        const transaction = transactionManager.getTransactionBySession(sessionId);
+        const sessionJobs = fulfillmentManager.getSessionJobs(sessionId);
+        const allJobsCompleted = sessionJobs.length > 0 && sessionJobs.every(j => j.state === 'COMPLETED');
+        
+        let clientStatus = session.status;
+        if (session.service_type === 'MEDICINE') {
+            if (session.status === 'COMPLETED' || allJobsCompleted || (transaction && transaction.fulfilled === 1)) {
+                clientStatus = 'dispense_complete';
+            } else if (session.status === 'FULFILLMENT' || sessionJobs.some(j => j.state === 'IN_PROGRESS' || j.state === 'PENDING')) {
+                clientStatus = 'dispensing';
+            }
+        } else if (session.service_type === 'HEALTH_CHECKUP') {
+            if (session.report_status === 'READY' || session.report_status === 'EMAILED') {
+                clientStatus = 'report_ready';
+            } else {
+                clientStatus = 'report_queued';
+            }
+        }
+
+        res.json({
+            ok: true,
+            sessionId: session.session_id,
+            status: clientStatus,
+            sessionStatus: session.status,
+            dispenseStatus: session.dispense_status || (allJobsCompleted ? 'COMPLETED' : 'IN_PROGRESS'),
+            reportStatus: session.report_status,
+            serviceType: session.service_type,
+            fulfilled: transaction ? transaction.fulfilled === 1 : false,
+            jobsCount: sessionJobs.length,
+            jobsCompleted: sessionJobs.filter(j => j.state === 'COMPLETED').length
+        });
+    } catch (err) {
+        log.error("❌ Error fetching session status:", err.message);
+        res.status(500).json({ error: err.message || "Failed to fetch session status" });
     }
 });
 app.get("/api/eco-stats", async (req, res) => {

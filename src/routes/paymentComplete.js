@@ -20,22 +20,21 @@ import { transactionManager } from '../services/transactionManager.js';
 import paymentAuthVerifier from '../services/paymentAuthVerifier.js';
 import fulfillmentManager from '../services/fulfillmentManager.js';
 import { transaction as dbTransaction } from '../database/db.js';
+import { buildValidatedRedirectUrl } from '../utils/redirectHelper.js';
 
 /**
  * POST /payment-complete
  * 
  * Receives signed payment authorization from customer browser
  * 
- * Request Body:
+ * Request Body / Form Data:
  * {
  *   sessionId: string,
  *   authorization: string (JSON stringified),
  *   signature: string (base64),
- *   pairingToken: string
+ *   pairingToken: string,
+ *   returnUrl?: string
  * }
- * 
- * OR Form Data:
- * sessionId=...&authorization=...&signature=...&pairingToken=...
  */
 export async function handlePaymentComplete(req, res) {
     const startTime = Date.now();
@@ -46,7 +45,8 @@ export async function handlePaymentComplete(req, res) {
             sessionId,
             authorization: authorizationStr,
             signature,
-            pairingToken
+            pairingToken,
+            returnUrl
         } = req.body;
         
         console.log('\n═══════════════════════════════════════════════════════════');
@@ -54,6 +54,7 @@ export async function handlePaymentComplete(req, res) {
         console.log('═══════════════════════════════════════════════════════════');
         console.log(`Session: ${sessionId}`);
         console.log(`Pairing Token: ${pairingToken?.substring(0, 16)}...`);
+        console.log(`Return URL: ${returnUrl || '(default)'}`);
         
         // ───────────────────────────────────────────────────────────────────
         // STEP 1: Validate input parameters
@@ -83,8 +84,6 @@ export async function handlePaymentComplete(req, res) {
         
         // ───────────────────────────────────────────────────────────────────
         // STEP 3: Verify pairing token WITHOUT consuming it
-        //         If someone submits a fake request, the token survives
-        //         for the legitimate request to use later.
         // ───────────────────────────────────────────────────────────────────
         try {
             sessionManager.verifyPairingToken(sessionId, pairingToken);
@@ -111,11 +110,6 @@ export async function handlePaymentComplete(req, res) {
         
         // ───────────────────────────────────────────────────────────────────
         // STEP 5: Verify payment authorization (CRITICAL SECURITY)
-        //         Uses correct object parameter signature.
-        //         Checks: RSA signature, nonce (not used), expiry, sessionId,
-        //         transactionId, amount (backend-calculated).
-        //         NOTE: persistNonce = false so nonce insertion is deferred
-        //         to the atomic SQLite transaction below!
         // ───────────────────────────────────────────────────────────────────
         try {
             const verificationResult = await paymentAuthVerifier.verifyPaymentAuthorization({
@@ -150,16 +144,6 @@ export async function handlePaymentComplete(req, res) {
         
         // ───────────────────────────────────────────────────────────────────
         // STEP 6: ATOMIC SQLITE DATABASE TRANSACTION
-        //         All database mutations occur inside a single atomic SQLite
-        //         transaction:
-        //           1. Store nonce (replay protection)
-        //           2. Consume pairing token (one-time pairing)
-        //           3. Record payment verification in transactions table
-        //           4. Update session status to PAYMENT_VERIFIED
-        //           5. Create fulfillment job(s) in fulfillment_jobs table
-        //
-        //         If ANY step fails, SQLite automatically rolls back ALL steps.
-        //         The pairing token and nonce remain untouched and unburned!
         // ───────────────────────────────────────────────────────────────────
         const createdJobs = [];
         try {
@@ -232,18 +216,31 @@ export async function handlePaymentComplete(req, res) {
                 console.log(`✅ Dispensing started for job: ${job.job_id}`);
             } catch (err) {
                 console.error(`⚠️ Dispense command publish failed for job ${job.job_id}:`, err.message);
-                // Job remains PENDING in SQLite, can be retried automatically or via recovery
             }
         }
         
         // ───────────────────────────────────────────────────────────────────
-        // STEP 8: Return success page to customer browser
+        // STEP 8: 302 Redirect to HTTPS Customer Site
         // ───────────────────────────────────────────────────────────────────
         const duration = Date.now() - startTime;
         console.log(`✅ Payment completion successful (${duration}ms)`);
+        
+        // Determine status for completion step:
+        // MEDICINE -> status=dispensing (ESP32 ACK will later make it dispense_complete)
+        // HEALTH_CHECKUP -> status=report_queued
+        const status = session.service_type === 'MEDICINE' ? 'dispensing' : 'report_queued';
+        
+        const redirectUrl = buildValidatedRedirectUrl(returnUrl, {
+            sessionId: sessionId,
+            transactionId: transaction.transaction_id,
+            step: 'completion',
+            status: status
+        });
+
+        console.log(`🔀 Redirecting customer phone to HTTPS site: ${redirectUrl}`);
         console.log('═══════════════════════════════════════════════════════════\n');
         
-        res.send(generateSuccessPage(session, transaction));
+        return res.redirect(302, redirectUrl);
         
     } catch (err) {
         console.error('❌ Payment completion error:', err);
