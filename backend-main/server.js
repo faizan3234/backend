@@ -31,6 +31,8 @@ import EmailQueueService from "./src/services/emailQueue.js";
 import paymentAuthVerifier from "./src/services/paymentAuthVerifier.js";
 import InventoryManager from "./src/services/inventoryManager.js";
 import settingsManager from "./src/services/settingsManager.js";
+import fulfillmentManager from "./src/services/fulfillmentManager.js";
+import { handlePaymentComplete } from "./src/routes/paymentComplete.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 🔐 STAGE I: SECURE PAYMENT ARCHITECTURE (Post-Stage H Security Fix)
@@ -920,7 +922,39 @@ async function start() {
         db = initializeDatabase();
         sessionManager.initialize();
         transactionManager.initialize();
-        log.info('✅ Local database, session manager, and transaction manager initialized');
+        
+        // ✅ PHASE 1: Initialize fulfillment manager with MQTT client
+        fulfillmentManager.setMqttClient(mqttClient);
+        log.info('✅ Local database, session manager, transaction manager, and fulfillment manager initialized');
+        
+        // ✅ PHASE 1: Recover pending/in-progress fulfillment jobs after restart
+        // IN_PROGRESS jobs → MANUAL_REVIEW_REQUIRED (never auto-retry uncertain physical ops)
+        // PENDING jobs → ready for retry
+        try {
+            const recoveredJobs = await fulfillmentManager.recoverPendingJobs();
+            if (recoveredJobs.length > 0) {
+                log.info(`🔄 ${recoveredJobs.length} PENDING fulfillment jobs recovered, retrying...`);
+                for (const job of recoveredJobs) {
+                    try {
+                        await fulfillmentManager.startDispensing(job.job_id);
+                        log.info(`   ✅ Retried job: ${job.job_id}`);
+                    } catch (retryErr) {
+                        log.error(`   ❌ Failed to retry job ${job.job_id}: ${retryErr.message}`);
+                    }
+                }
+            }
+            
+            // Log any jobs needing manual review
+            const manualReviewJobs = fulfillmentManager.getManualReviewJobs();
+            if (manualReviewJobs.length > 0) {
+                log.warn(`⚠️  ${manualReviewJobs.length} fulfillment job(s) need MANUAL REVIEW:`);
+                for (const job of manualReviewJobs) {
+                    log.warn(`   Job: ${job.job_id}, Kit: ${job.kit_id}, Qty: ${job.quantity}`);
+                }
+            }
+        } catch (recoveryErr) {
+            log.error('❌ Fulfillment recovery failed:', recoveryErr);
+        }
     } catch (err) {
         log.error('❌ Failed to initialize local database:', err);
         log.error('⚠️ Kiosk will NOT function properly without local database!');
@@ -2511,6 +2545,12 @@ mqttClient.on("connect", () => {
         if (err) log.error('MQTT subscribe error (kiosk/sensor/#):', err);
         else log.debug('Subscribed to kiosk/sensor/#');
     });
+    // ✅ PHASE 1: Subscribe to ESP32 dispense ACK topic
+    // ESP32 publishes confirmation to reliv/dispense/confirm/<jobId> after dispensing
+    mqttClient.subscribe("reliv/dispense/confirm/#", { qos: 1 }, (err) => {
+        if (err) log.error('MQTT subscribe error (reliv/dispense/confirm/#):', err);
+        else log.info('✅ Subscribed to reliv/dispense/confirm/# (ESP32 ACK)');
+    });
 });
 
 mqttClient.on("error", (err) => {
@@ -2525,9 +2565,63 @@ mqttClient.on("offline", () => {
     log.warn("⚠️ MQTT offline");
 });
 
-// MQTT message handler for sensor data
+// MQTT message handler for sensor data AND dispense ACK
 mqttClient.on("message", (topic, message) => {
     log.debug(`📡 MQTT [${topic}]: ${message.toString()}`);
+    
+    // ✅ PHASE 1: Handle ESP32 dispense ACK
+    // Topic format: reliv/dispense/confirm/<jobId>
+    if (topic.startsWith('reliv/dispense/confirm/')) {
+        const jobId = topic.split('/').pop();
+        
+        if (!jobId || jobId.length === 0) {
+            log.error('❌ ESP32 ACK received with empty jobId');
+            return;
+        }
+        
+        let ackData = {};
+        try {
+            ackData = JSON.parse(message.toString());
+        } catch (err) {
+            log.warn(`⚠️ ESP32 ACK payload not valid JSON for job ${jobId}, using empty object`);
+        }
+        
+        log.info(`📦 ESP32 dispense ACK received for job: ${jobId}`);
+        
+        // Validate ACK and mark job completed
+        try {
+            const completed = fulfillmentManager.markCompleted(jobId, ackData);
+            
+            if (completed) {
+                // Mark transaction as FULFILLED only after valid ESP32 ACK
+                const job = fulfillmentManager.getJobStatus(jobId);
+                if (job && job.transaction_id) {
+                    try {
+                        transactionManager.markFulfilled(job.transaction_id);
+                        log.info(`✅ Transaction ${job.transaction_id} marked FULFILLED after ESP32 ACK`);
+                        
+                        // Also complete the session if all jobs for this session are done
+                        const sessionJobs = fulfillmentManager.getSessionJobs(job.session_id);
+                        const allCompleted = sessionJobs.every(j => j.state === 'COMPLETED');
+                        if (allCompleted) {
+                            try {
+                                sessionManager.markCompleted(job.session_id);
+                                log.info(`✅ Session ${job.session_id} marked COMPLETED (all jobs done)`);
+                            } catch (sessErr) {
+                                log.error(`⚠️ Failed to mark session completed: ${sessErr.message}`);
+                            }
+                        }
+                    } catch (txErr) {
+                        log.error(`⚠️ Failed to mark transaction fulfilled: ${txErr.message}`);
+                    }
+                }
+            }
+        } catch (err) {
+            log.error(`❌ Failed to process ESP32 ACK for job ${jobId}:`, err.message);
+        }
+        
+        return; // Don't process further as sensor data
+    }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2979,6 +3073,13 @@ function createQrSessionHandler(req, res) {
         // Store QR mapping in SQLite
         sessionManager.setQrPath(session.session_id, token, path);
         
+        // ✅ PHASE 1: Generate cryptographically random pairing token
+        // This token links the customer phone to this specific kiosk session.
+        // It will be included in the QR/customer URL and verified during payment completion.
+        const pairingToken = crypto.randomBytes(32).toString('hex');
+        sessionManager.setPairingToken(session.session_id, pairingToken);
+        log.info(`🔗 Pairing token generated for session: ${session.session_id}`);
+        
         // Backward compatibility: Also store in legacy Maps (temporary)
         qrSessions.set(token, {
             sessionId: session.session_id,
@@ -2990,7 +3091,8 @@ function createQrSessionHandler(req, res) {
         log.info(`🔑 QR session created: ${session.session_id} (path: ${path.slice(0, 8)}...)`);
         res.json({ 
             path,
-            sessionId: session.session_id  // Include for debugging
+            sessionId: session.session_id,  // Include for debugging
+            pairingToken  // Customer URL/HTTPS site needs this for payment completion
         });
     } catch (err) {
         console.error("Error creating QR session:", err);
@@ -3003,6 +3105,14 @@ function createQrSessionHandler(req, res) {
 // ───────────────────────────────────────────────────────────────────────────
 app.post("/api/create-qr-session", createQrSessionHandler);
 app.post("/api/sessions/create", createQrSessionHandler);
+
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Payment Complete (Phase 1 — Payment Bridge → Pi local completion)
+// Customer browser submits signed authorization from Payment Bridge to Pi.
+// Pi verifies RSA signature locally (offline), creates fulfillment job.
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/payment-complete", handlePaymentComplete);
+app.post("/api/payment-complete", handlePaymentComplete);
 
 // ───────────────────────────────────────────────────────────────────────────
 // ENDPOINT: Resolve QR Path (Returns session token from scanned QR path)

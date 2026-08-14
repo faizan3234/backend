@@ -16,7 +16,7 @@
 
 import crypto from 'crypto';
 import sessionManager from '../services/sessionManager.js';
-import transactionManager from '../services/transactionManager.js';
+import { transactionManager } from '../services/transactionManager.js';
 import paymentAuthVerifier from '../services/paymentAuthVerifier.js';
 import fulfillmentManager from '../services/fulfillmentManager.js';
 
@@ -72,11 +72,22 @@ export async function handlePaymentComplete(req, res) {
         }
         
         // ───────────────────────────────────────────────────────────────────
-        // STEP 2: Verify pairing token (ONE-QR security)
+        // STEP 2: Get session (validate exists + not expired)
+        // ───────────────────────────────────────────────────────────────────
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            console.error('❌ Session not found:', sessionId);
+            return res.status(404).send(generateErrorPage('Session not found.'));
+        }
+        
+        // ───────────────────────────────────────────────────────────────────
+        // STEP 3: Verify pairing token WITHOUT consuming it
+        //         If someone submits a fake request, the token survives
+        //         for the legitimate request to use later.
         // ───────────────────────────────────────────────────────────────────
         try {
-            sessionManager.consumePairingToken(sessionId, pairingToken);
-            console.log('✅ Pairing token verified and consumed');
+            sessionManager.verifyPairingToken(sessionId, pairingToken);
+            console.log('✅ Pairing token verified (not yet consumed)');
         } catch (err) {
             console.error('❌ Pairing token verification failed:', err.message);
             return res.status(403).send(generateErrorPage(
@@ -86,16 +97,9 @@ export async function handlePaymentComplete(req, res) {
         }
         
         // ───────────────────────────────────────────────────────────────────
-        // STEP 3: Get session and transaction
+        // STEP 4: Get transaction
         // ───────────────────────────────────────────────────────────────────
-        const session = sessionManager.getSession(sessionId);
-        if (!session) {
-            console.error('❌ Session not found:', sessionId);
-            return res.status(404).send(generateErrorPage('Session not found.'));
-        }
-        
-        // Get transaction
-        const transaction = transactionManager.getTransactionBySessionId(sessionId);
+        const transaction = transactionManager.getTransactionBySession(sessionId);
         if (!transaction) {
             console.error('❌ Transaction not found for session:', sessionId);
             return res.status(404).send(generateErrorPage('Transaction not found.'));
@@ -105,17 +109,21 @@ export async function handlePaymentComplete(req, res) {
         console.log(`Expected Amount: ₹${transaction.amount / 100}`);
         
         // ───────────────────────────────────────────────────────────────────
-        // STEP 4: Verify payment authorization (CRITICAL SECURITY)
+        // STEP 5: Verify payment authorization (CRITICAL SECURITY)
+        //         Uses correct object parameter signature.
+        //         Checks: RSA signature, nonce, expiry, sessionId,
+        //         transactionId, amount (backend-calculated)
         // ───────────────────────────────────────────────────────────────────
         try {
-            const verificationResult = await paymentAuthVerifier.verifyPaymentAuthorization(
+            const verificationResult = await paymentAuthVerifier.verifyPaymentAuthorization({
                 authorization,
                 signature,
                 sessionId,
-                transaction.transaction_id
-            );
+                transactionId: transaction.transaction_id,
+                expectedAmount: transaction.amount  // Backend-calculated amount
+            });
             
-            if (!verificationResult.valid) {
+            if (!verificationResult.success) {
                 console.error('❌ Payment authorization verification failed:', verificationResult.error);
                 return res.status(403).send(generateErrorPage(
                     'Payment verification failed.',
@@ -137,13 +145,41 @@ export async function handlePaymentComplete(req, res) {
         }
         
         // ───────────────────────────────────────────────────────────────────
-        // STEP 5: Mark payment as verified
+        // STEP 6: ATOMICALLY consume pairing token
+        //         Only NOW, after all cryptographic checks have passed.
+        //         This prevents attackers from burning the token with
+        //         fake/invalid authorizations.
         // ───────────────────────────────────────────────────────────────────
         try {
+            sessionManager.consumePairingToken(sessionId, pairingToken);
+            console.log('✅ Pairing token atomically consumed');
+        } catch (err) {
+            // Race condition: token was consumed between verify and consume
+            console.error('❌ Failed to consume pairing token (race condition?):', err.message);
+            return res.status(409).send(generateErrorPage(
+                'Payment already processed.',
+                'This session has already completed payment.'
+            ));
+        }
+        
+        // ───────────────────────────────────────────────────────────────────
+        // STEP 7: Mark payment as verified in database
+        //         CRITICAL: This MUST succeed before proceeding to
+        //         fulfillment. Never dispense without DB persistence.
+        // ───────────────────────────────────────────────────────────────────
+        try {
+            // Build proper paymentDetails object as expected by verifyPayment()
+            const paymentDetails = {
+                id: authorization.paymentId,
+                amount: authorization.amount,
+                status: 'captured',  // Payment Bridge already verified this with Razorpay API
+                order_id: authorization.orderId
+            };
+            
             transactionManager.verifyPayment(
                 transaction.transaction_id,
                 authorization.paymentId,
-                authorization.orderId
+                paymentDetails
             );
             
             sessionManager.markPaymentVerified(sessionId, authorization.paymentId);
@@ -151,28 +187,30 @@ export async function handlePaymentComplete(req, res) {
             console.log('✅ Payment verified and recorded in SQLite');
             
         } catch (err) {
-            console.error('❌ Failed to mark payment as verified:', err);
-            // Continue anyway - verification succeeded even if DB update failed
+            console.error('❌ CRITICAL: Failed to persist payment verification:', err);
+            console.error('   ⛔ REFUSING to proceed to fulfillment without DB persistence');
+            return res.status(500).send(generateErrorPage(
+                'Payment processing error.',
+                'Your payment was verified but could not be recorded. Please contact support with your payment reference.'
+            ));
         }
         
         // ───────────────────────────────────────────────────────────────────
-        // STEP 6: Create fulfillment job (if applicable)
+        // STEP 8: Create fulfillment job (if applicable)
+        //         Only for MEDICINE service type requiring physical dispensing
         // ───────────────────────────────────────────────────────────────────
         if (session.service_type === 'MEDICINE' || session.service_type === 'HEALTH_CHECKUP') {
             try {
-                // For MEDICINE, need to get kit from transaction cart
-                // For HEALTH_CHECKUP, might not need physical dispensing
-                
                 if (session.service_type === 'MEDICINE') {
                     // Parse cart to get kit_id and quantity
-                    const cart = transaction.cart ? JSON.parse(transaction.cart) : [];
+                    const cart = transaction.cart ? (typeof transaction.cart === 'string' ? JSON.parse(transaction.cart) : transaction.cart) : [];
                     
                     if (cart.length > 0) {
                         for (const item of cart) {
                             const { kit_id, quantity } = item;
                             
                             // Create fulfillment job (idempotent)
-                            const job = fulfillmentManager.createJob(
+                            const job = await fulfillmentManager.createJob(
                                 sessionId,
                                 transaction.transaction_id,
                                 kit_id,
@@ -181,7 +219,7 @@ export async function handlePaymentComplete(req, res) {
                             
                             console.log(`✅ Fulfillment job created: ${job.job_id}`);
                             
-                            // Start dispensing
+                            // Start dispensing (only publishes if PENDING)
                             await fulfillmentManager.startDispensing(job.job_id);
                             
                             console.log(`✅ Dispensing started for job: ${job.job_id}`);
@@ -195,20 +233,19 @@ export async function handlePaymentComplete(req, res) {
                     
                 } else if (session.service_type === 'HEALTH_CHECKUP') {
                     // Health checkup doesn't require physical dispensing
-                    // Just generate report
                     sessionManager.updateReportStatus(sessionId, 'GENERATING');
                     console.log('✅ Health checkup - generating report');
                 }
                 
             } catch (err) {
                 console.error('❌ Fulfillment creation failed:', err);
-                // Don't fail the whole request - payment was already verified
-                // Mark for manual review
+                // Payment was verified and persisted. Fulfillment failure is logged
+                // but does not undo payment. Job can be recovered on restart.
             }
         }
         
         // ───────────────────────────────────────────────────────────────────
-        // STEP 7: Return success page to customer browser
+        // STEP 9: Return success page to customer browser
         // ───────────────────────────────────────────────────────────────────
         const duration = Date.now() - startTime;
         console.log(`✅ Payment completion successful (${duration}ms)`);

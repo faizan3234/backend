@@ -6,9 +6,9 @@ import crypto from 'crypto';
  * 
  * Manages the complete dispensing lifecycle with:
  * - Idempotent fulfillment (prevent double-dispense)
- * - State tracking (PENDING → IN_PROGRESS → COMPLETED / FAILED)
+ * - State tracking (PENDING → IN_PROGRESS → COMPLETED / FAILED / MANUAL_REVIEW_REQUIRED)
  * - Restart recovery (Pi can crash and recover safely)
- * - Retry logic (max 3 attempts)
+ * - Retry logic (max 3 attempts for PENDING jobs only)
  * - MQTT integration (local Mosquitto → ESP32)
  * 
  * CRITICAL: This prevents the double-dispense attack where:
@@ -20,7 +20,12 @@ import crypto from 'crypto';
  * 
  * State Transitions:
  *   PENDING → IN_PROGRESS → COMPLETED ✅
- *           → IN_PROGRESS → FAILED ❌ (after 3 attempts)
+ *           → IN_PROGRESS → FAILED ❌ (after max attempts from PENDING)
+ *           → IN_PROGRESS (at restart) → MANUAL_REVIEW_REQUIRED ⚠️
+ *
+ * SAFETY RULE: IN_PROGRESS jobs are NEVER automatically retried.
+ * After a Pi restart, IN_PROGRESS → MANUAL_REVIEW_REQUIRED.
+ * Only PENDING jobs may be published to MQTT.
  */
 
 class FulfillmentManager {
@@ -120,8 +125,10 @@ class FulfillmentManager {
       throw new Error(`Fulfillment job not found: ${jobId}`);
     }
 
-    if (job.state !== 'PENDING' && job.state !== 'IN_PROGRESS') {
-      console.warn(`⚠️ Cannot start dispensing for job in state: ${job.state}`);
+    // SAFETY: Only PENDING jobs may be published to MQTT.
+    // IN_PROGRESS jobs must NEVER be republished — the physical state is uncertain.
+    if (job.state !== 'PENDING') {
+      console.warn(`⚠️ Cannot start dispensing for job in state: ${job.state} (only PENDING allowed)`);
       return false;
     }
 
@@ -183,9 +190,26 @@ class FulfillmentManager {
       return false;
     }
 
+    // Idempotent: already completed
     if (job.state === 'COMPLETED') {
-      console.log(`⚠️ Job already completed: ${jobId}`);
+      console.log(`⚠️ Job already completed (duplicate ACK): ${jobId}`);
       return true;
+    }
+
+    // Only IN_PROGRESS jobs can be completed
+    if (job.state !== 'IN_PROGRESS') {
+      console.warn(`⚠️ Cannot mark job as completed from state: ${job.state}`);
+      return false;
+    }
+
+    // Validate ACK payload matches expected job
+    if (ackData.kitId && ackData.kitId !== job.kit_id) {
+      console.error(`❌ ACK kit mismatch for job ${jobId}: expected ${job.kit_id}, got ${ackData.kitId}`);
+      return false;
+    }
+    if (ackData.quantity && ackData.quantity !== job.quantity) {
+      console.error(`❌ ACK quantity mismatch for job ${jobId}: expected ${job.quantity}, got ${ackData.quantity}`);
+      return false;
     }
 
     this.db.prepare(`
@@ -252,30 +276,52 @@ class FulfillmentManager {
   /**
    * Recover pending/in-progress jobs after Pi restart
    * 
-   * This is CRITICAL for preventing double-dispense:
-   * 1. Find IN_PROGRESS jobs (may have been dispensed before crash)
-   * 2. Check attempts
-   * 3. If < max_attempts, retry
-   * 4. If >= max_attempts, mark FAILED
+   * CRITICAL SAFETY RULES:
+   * - PENDING jobs: Safe to retry (MQTT was never published)
+   * - IN_PROGRESS jobs: UNSAFE to retry (physical dispense may have occurred)
+   *   → These MUST go to MANUAL_REVIEW_REQUIRED
+   * - NEVER automatically retry an uncertain physical operation
    * 
-   * @returns {Promise<Array>} - Recovered jobs
+   * @returns {Promise<Array>} - PENDING jobs ready for retry
    */
   async recoverPendingJobs() {
-    console.log('🔄 Recovering pending fulfillment jobs after restart...');
+    console.log('🔄 Recovering fulfillment jobs after restart...');
     
-    const pendingJobs = this.db.prepare(`
+    // Handle IN_PROGRESS jobs first — these are UNSAFE
+    const inProgressJobs = this.db.prepare(`
       SELECT * FROM fulfillment_jobs
-      WHERE state IN ('PENDING', 'IN_PROGRESS')
+      WHERE state = 'IN_PROGRESS'
       ORDER BY created_at ASC
     `).all();
 
-    if (pendingJobs.length === 0) {
+    if (inProgressJobs.length > 0) {
+      console.warn(`⚠️  Found ${inProgressJobs.length} IN_PROGRESS jobs — marking for MANUAL REVIEW`);
+      console.warn('   These jobs may have dispensed before Pi crashed. DO NOT auto-retry.');
+      
+      for (const job of inProgressJobs) {
+        this.db.prepare(`
+          UPDATE fulfillment_jobs
+          SET state = 'MANUAL_REVIEW_REQUIRED',
+              error_message = 'Pi restarted while job was IN_PROGRESS. Physical dispense state uncertain. Manual verification required before retry.'
+          WHERE job_id = ?
+        `).run(job.job_id);
+        
+        console.warn(`   ⚠️  Job ${job.job_id} → MANUAL_REVIEW_REQUIRED (kit: ${job.kit_id}, qty: ${job.quantity})`);
+      }
+    }
+
+    // Handle PENDING jobs — these are safe to retry
+    const pendingJobs = this.db.prepare(`
+      SELECT * FROM fulfillment_jobs
+      WHERE state = 'PENDING'
+      ORDER BY created_at ASC
+    `).all();
+
+    if (pendingJobs.length === 0 && inProgressJobs.length === 0) {
       console.log('   No pending jobs to recover');
       return [];
     }
 
-    console.log(`   Found ${pendingJobs.length} pending/in-progress jobs`);
-    
     const recovered = [];
     
     for (const job of pendingJobs) {
@@ -284,20 +330,67 @@ class FulfillmentManager {
         await this.markFailed(job.job_id, 'Max retry attempts exceeded after restart');
         console.log(`   ❌ Job ${job.job_id} failed (max attempts)`);
       } else {
-        // Reset to PENDING for retry
-        this.db.prepare(`
-          UPDATE fulfillment_jobs
-          SET state = 'PENDING'
-          WHERE job_id = ?
-        `).run(job.job_id);
-        
-        console.log(`   🔄 Job ${job.job_id} reset to PENDING (attempt ${job.attempts + 1}/${job.max_attempts})`);
+        console.log(`   🔄 Job ${job.job_id} ready for retry (attempt ${job.attempts + 1}/${job.max_attempts})`);
         recovered.push(job);
       }
     }
     
-    console.log(`✅ Recovery complete: ${recovered.length} jobs ready for retry`);
+    console.log(`✅ Recovery complete: ${recovered.length} PENDING jobs ready, ${inProgressJobs.length} jobs need manual review`);
     return recovered;
+  }
+
+  /**
+   * Get all jobs requiring manual review
+   * @returns {Array} - Jobs in MANUAL_REVIEW_REQUIRED state
+   */
+  getManualReviewJobs() {
+    return this.db.prepare(`
+      SELECT * FROM fulfillment_jobs
+      WHERE state = 'MANUAL_REVIEW_REQUIRED'
+      ORDER BY created_at ASC
+    `).all();
+  }
+
+  /**
+   * Manually resolve a job after physical verification
+   * Admin confirms whether the kit was actually dispensed or not
+   * @param {string} jobId - Job ID
+   * @param {string} resolution - 'COMPLETED' or 'PENDING' (to retry)
+   * @returns {boolean} - Success
+   */
+  resolveManualReview(jobId, resolution) {
+    const job = this.db.prepare('SELECT * FROM fulfillment_jobs WHERE job_id = ?').get(jobId);
+    
+    if (!job) {
+      throw new Error(`Job not found: ${jobId}`);
+    }
+
+    if (job.state !== 'MANUAL_REVIEW_REQUIRED') {
+      throw new Error(`Job ${jobId} is not in MANUAL_REVIEW_REQUIRED state (current: ${job.state})`);
+    }
+
+    if (resolution === 'COMPLETED') {
+      this.db.prepare(`
+        UPDATE fulfillment_jobs
+        SET state = 'COMPLETED',
+            completed_at = datetime('now'),
+            error_message = 'Manually confirmed as dispensed after review'
+        WHERE job_id = ?
+      `).run(jobId);
+      console.log(`✅ Job ${jobId} manually marked COMPLETED`);
+    } else if (resolution === 'PENDING') {
+      this.db.prepare(`
+        UPDATE fulfillment_jobs
+        SET state = 'PENDING',
+            error_message = 'Manually confirmed NOT dispensed - safe to retry'
+        WHERE job_id = ?
+      `).run(jobId);
+      console.log(`🔄 Job ${jobId} reset to PENDING for retry`);
+    } else {
+      throw new Error(`Invalid resolution: ${resolution}. Must be 'COMPLETED' or 'PENDING'`);
+    }
+
+    return true;
   }
 
   /**
@@ -348,6 +441,11 @@ class FulfillmentManager {
     
     if (!job) {
       throw new Error(`Job not found: ${jobId}`);
+    }
+
+    if (job.state !== 'PENDING') {
+      console.warn(`⚠️ Cannot retry job ${jobId}: state is ${job.state} (must be PENDING)`);
+      return false;
     }
 
     if (job.attempts >= job.max_attempts) {
