@@ -2745,23 +2745,26 @@ function requireDatabase(req, res, next) {
     next();
 }
 
-app.get("/api/kits", async (req, res) => {
-    if (!dbConnected || !db) {
-        return res.status(503).json({
-            message: "Database temporarily unavailable",
-            kits: [] // Return empty array so frontend doesn't break
-        });
-    }
-
+app.get("/api/kits", (req, res) => {
     try {
-        const kits = await db.collection("kits")
-            .find({})
-            .sort({ id: 1 })
-            .toArray();
-        res.json(kits);
+        const kits = inventoryManager ? inventoryManager.getAllInventory() : [];
+
+        const formattedKits = kits.map(kit => ({
+            ...kit,
+            id: kit.kit_id || kit.id,
+            kit_id: kit.kit_id || kit.id,
+            unit_price: kit.price ?? kit.unit_price,
+            stock_quantity: kit.quantity ?? kit.stock_quantity
+        }));
+
+        res.json(formattedKits);
     } catch (err) {
-        console.error("Error fetching kits:", err);
-        res.status(500).json({ message: "Failed to fetch kits" });
+        console.error("Error fetching local inventory:", err);
+
+        res.status(500).json({
+            message: "Failed to fetch local inventory",
+            kits: []
+        });
     }
 });
 
