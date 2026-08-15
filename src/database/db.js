@@ -129,7 +129,7 @@ export function closeDatabase() {
 export function checkDatabaseHealth() {
     try {
         if (!db) {
-            return { ok: false, message: 'Database not initialized' };
+            return { ok: false, healthy: false, error: 'Database not initialized', message: 'Database not initialized' };
         }
         
         // Test basic query
@@ -148,6 +148,7 @@ export function checkDatabaseHealth() {
         
         return {
             ok: true,
+            healthy: true,
             message: 'Database healthy',
             walMode,
             stats
@@ -156,6 +157,8 @@ export function checkDatabaseHealth() {
     } catch (err) {
         return {
             ok: false,
+            healthy: false,
+            error: err.message,
             message: err.message
         };
     }
