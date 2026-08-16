@@ -25,7 +25,7 @@ import RELIV_LOGO_B64 from "./relivlogo-base64.js";
 import { initializeDatabase, checkDatabaseHealth, getDb, transaction as dbTransaction } from "./src/database/db.js";
 import sessionManager from "./src/services/sessionManager.js";
 import { transactionManager } from "./src/services/transactionManager.js";
-import PaymentRecoveryService from "./src/services/paymentRecovery.js";
+
 import PDFGenerator from "./src/services/pdfGenerator.js";
 import EmailQueueService from "./src/services/emailQueue.js";
 import paymentAuthVerifier from "./src/services/paymentAuthVerifier.js";
@@ -1011,31 +1011,7 @@ async function start() {
         log.error('❌ Failed to initialize PDF/email/inventory services:', err);
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // INITIALIZE PAYMENT RECOVERY SERVICE (Stage D)
-    // Recovers payments after Pi restart or network interruption
-    // ═══════════════════════════════════════════════════════════════════════════
-    let paymentRecovery = null;
-    try {
-        if (
-            typeof razorpay !== 'undefined' &&
-            razorpay &&
-            process.env.RAZORPAY_KEY_SECRET
-        ) {
-            paymentRecovery = new PaymentRecoveryService(
-                transactionManager,
-                sessionManager,
-                razorpay,
-                process.env.RAZORPAY_KEY_SECRET
-            );
-            paymentRecovery.start(5); // Check every 5 minutes
-            log.info('✅ Payment recovery service started');
-        } else {
-            log.warn('⚠️  Payment recovery disabled - Razorpay not configured');
-        }
-    } catch (err) {
-        log.error('❌ Failed to initialize payment recovery:', err);
-    }
+
 
     // Graceful shutdown
     const gracefulShutdown = async () => {
@@ -1047,10 +1023,7 @@ async function start() {
                 log.info('MongoDB connection closed');
             }
             if (mqttClient) mqttClient.end();
-            if (paymentRecovery) {
-                paymentRecovery.stop();
-                log.info('Payment recovery service stopped');
-            }
+
             if (emailQueue) {
                 emailQueue.stopWorker();
                 log.info('Email queue worker stopped');
