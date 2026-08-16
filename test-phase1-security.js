@@ -20,6 +20,7 @@
  */
 
 import crypto from 'crypto';
+import Database from 'better-sqlite3';
 import { initializeDatabase, getDb } from './src/database/db.js';
 import sessionManager from './src/services/sessionManager.js';
 import { transactionManager } from './src/services/transactionManager.js';
@@ -453,6 +454,16 @@ section('10. Manual Review Resolution');
 (() => {
     const db = getDb();
     
+    db.prepare(`
+        INSERT OR IGNORE INTO inventory (kit_id, name, price, quantity) VALUES ('TEST-KIT-1', 'Test Kit', 100, 10)
+    `).run();
+    db.prepare(`
+        INSERT OR IGNORE INTO sessions (session_id, status, expires_at) VALUES ('test-session', 'FULFILLMENT', datetime('now', '+1 hour'))
+    `).run();
+    db.prepare(`
+        INSERT OR IGNORE INTO transactions (transaction_id, session_id, type, amount, status) VALUES ('test-txn', 'test-session', 'MEDICINE', 100, 'VERIFIED')
+    `).run();
+
     // Create a MANUAL_REVIEW_REQUIRED job
     const jobId = `JOB-TEST-${Date.now()}-REVIEW`;
     db.prepare(`
@@ -707,7 +718,6 @@ section('19. Atomic Transaction Rollback on Failure');
     // Perform atomic transaction that throws inside
     let rollbackOccurred = false;
     try {
-        const { transaction: dbTransaction } = require ? { transaction: (fn) => getDb().transaction(fn)() } : {};
         getDb().transaction(() => {
             // 1. Store Nonce
             paymentAuthVerifier.storeNonce(nonce, session.session_id, transaction.transaction_id, 'pay_rollback_test', 10000);
@@ -742,9 +752,8 @@ section('20. Mandatory Payment Bridge Order Binding');
 
 (() => {
     // Test that Payment Bridge database schema includes orders table
-    const Database = (require ? require('better-sqlite3') : null);
     try {
-        const bridgeDb = new (import('better-sqlite3').then(m => m.default) || Database)('./payment-bridge-service/bridge.db');
+        const bridgeDb = new Database('./payment-bridge-service/bridge.db');
         bridgeDb.exec(`
             CREATE TABLE IF NOT EXISTS orders (
                 order_id TEXT PRIMARY KEY,
@@ -800,10 +809,10 @@ setTimeout(() => {
     
     // Cleanup test database
     try {
-        const { unlinkSync } = await import('fs');
-        unlinkSync('./data/test-phase1.db');
-        unlinkSync('./data/test-phase1.db-wal');
-        unlinkSync('./data/test-phase1.db-shm');
+        const fs = require('fs');
+        if (fs.existsSync('./data/test-phase1.db')) fs.unlinkSync('./data/test-phase1.db');
+        if (fs.existsSync('./data/test-phase1.db-wal')) fs.unlinkSync('./data/test-phase1.db-wal');
+        if (fs.existsSync('./data/test-phase1.db-shm')) fs.unlinkSync('./data/test-phase1.db-shm');
     } catch { /* ignore cleanup errors */ }
     
     process.exit(testsFailed > 0 ? 1 : 0);

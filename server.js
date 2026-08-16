@@ -125,9 +125,25 @@ process.on('uncaughtException', (error) => {
 // ═══════════════════════════════════════════════════════════════════════════
 let reportPrice = 27; // Default fallback; actual value loaded from SQLite on startup
 
-// ═══════════════════════════════════════════════════════════════════════════
-// DEPLOYMENT DETECTION
-// ═══════════════════════════════════════════════════════════════════════════
+// ============================================================
+// RELIV KIOSK NETWORK CONFIGURATION
+// ============================================================
+const KIOSK_ID = process.env.KIOSK_ID || 'RELIV-001';
+const KIOSK_HOST = process.env.KIOSK_HOST || '192.168.50.1';
+const KIOSK_PORT = Number(
+    process.env.KIOSK_PORT || process.env.PORT || 5000
+);
+const KIOSK_BASE_URL = `http://${KIOSK_HOST}:${KIOSK_PORT}`;
+const PORT = Number(process.env.PORT || KIOSK_PORT || 5000);
+
+if (!Number.isInteger(KIOSK_PORT) || KIOSK_PORT < 1 || KIOSK_PORT > 65535) {
+    throw new Error(`Invalid KIOSK_PORT: ${KIOSK_PORT}`);
+}
+
+if (!KIOSK_HOST) {
+    throw new Error('KIOSK_HOST is required');
+}
+
 const IS_CLOUD_DEPLOYMENT = process.env.RENDER || process.env.HEROKU || process.env.VERCEL;
 const BLE_BACKEND_URL = process.env.BLE_BACKEND_URL || 'http://127.0.0.1:5001';
 
@@ -735,6 +751,11 @@ const app = express();
 
 // Production-ready CORS configuration
 const allowedOrigins = [
+  // Local Kiosk Base URL
+  KIOSK_BASE_URL,
+  "http://192.168.50.1:5000",
+  "http://192.168.50.1",
+
   // Local Development
   "http://localhost:3000",
   "http://localhost:5001",
@@ -749,9 +770,6 @@ const allowedOrigins = [
   "http://192.168.1.8:5173",
   "http://192.168.1.8:5174",
   "http://192.168.0.101:5173",
-
-  // Oracle Frontend
-  "http://161.118.169.29:4173",
 
   // Vercel Deployments
   "https://reliv.vercel.app",
@@ -908,9 +926,9 @@ async function reconnectDB() {
 // Unified startup function: Start server first, then connect DB (non-blocking)
 async function start() {
     // Start HTTP server IMMEDIATELY (don't wait for DB)
-    const PORT = process.env.PORT || 5000;
     const HOST = process.env.HOST || '0.0.0.0';
 
+    log.info(`📡 Kiosk URL: ${KIOSK_BASE_URL}`);
     const server = app.listen(PORT, HOST, () => {
         log.info(`🚀 Reliv Backend Server running on ${HOST}:${PORT}`);
         log.info(`📡 Environment: ${isDev ? 'Development' : 'Production'}`);
@@ -3108,8 +3126,8 @@ function createQrSessionHandler(req, res) {
             path,
             sessionId: session.session_id,  // Include for debugging
             pairingToken, // Customer URL/HTTPS site needs this for payment completion
-            kioskId: session.kiosk_id || 'RELIV-001',
-            kioskUrl: 'http://192.168.50.1' // Standardized local AP address for location independence
+            kioskId: session.kiosk_id || KIOSK_ID,
+            kioskUrl: KIOSK_BASE_URL
         });
     } catch (err) {
         console.error("Error creating QR session:", err);

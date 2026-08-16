@@ -38,6 +38,7 @@ data/service-account-key.json
 *.pem
 scratch/
 data/*.db*
+payment-bridge-service/*.db*
 reports/
 receipts/
 
