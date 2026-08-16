@@ -13,7 +13,6 @@
 import { initializeDatabase } from './src/database/db.js';
 import sessionManager from './src/services/sessionManager.js';
 import { transactionManager } from './src/services/transactionManager.js';
-import PaymentRecoveryService from './src/services/paymentRecovery.js';
 
 console.log('═══════════════════════════════════════════════════════════════');
 console.log('  STAGE D: Payment Verification & Recovery Tests');

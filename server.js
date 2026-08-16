@@ -153,7 +153,7 @@ const BLE_BACKEND_URL = process.env.BLE_BACKEND_URL || 'http://127.0.0.1:5001';
 const ADMIN_ALERT_EMAIL = 'khanfaizan3234@gmail.com'; // Email for system health alerts
 const CLOUD_DEPENDENCY_JUSTIFICATION = [
     { dependency: 'MongoDB', remainingReferences: 'Admin auth, analytics, historical report APIs', justification: 'Optional admin features only; kiosk flow runs on SQLite and tolerates MongoDB outage.' },
-    { dependency: 'Razorpay SDK', remainingReferences: 'PaymentRecoveryService only', justification: 'Optional post-restart recovery path; customer payment verification in kiosk routes uses local signature verification without SDK calls.' },
+    { dependency: 'Razorpay SDK', remainingReferences: 'test-stage-d.js (offline test only), src/services/paymentRecovery.js (kept, not active on Pi)', justification: 'Pi does NOT use Razorpay directly. Payment verification is handled by Payment Bridge → RSA signature → Pi local verification. PaymentRecoveryService is not loaded at runtime.' },
     { dependency: 'Direct email', remainingReferences: 'Admin alerts and legacy marketing/reminder helpers', justification: 'Non-blocking operational notifications; customer kiosk deliverables are queued locally.' },
     { dependency: 'Cloud APIs', remainingReferences: 'Google Drive and external marketing/report history utilities', justification: 'Ancillary features only; offline kiosk flow does not require them.' }
 ];
