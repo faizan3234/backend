@@ -3552,36 +3552,94 @@ app.post("/api/create-order", async (req, res) => {
             });
         }
 
+        // ============================================================
+        // CREATE-ORDER CART NORMALIZATION
+        // Accept cart from browser form POST or JSON API safely.
+        // Frontend may send:
+        //   [{ kit_id, quantity }]          ← JSON API
+        //   [{ id, quantity }]              ← legacy alias
+        //   [{ kit_id, cartQuantity }]      ← frontend alias
+        // Form POST sends cart as a JSON string; JSON body parser gives an array.
+        // ============================================================
+        let normalizedCart = [];
+
+        try {
+            let rawCart = cart;
+
+            // Form POST sends cart as a JSON string — parse it.
+            if (typeof rawCart === 'string') {
+                rawCart = rawCart.trim();
+                rawCart = rawCart.length > 0 ? JSON.parse(rawCart) : [];
+            }
+
+            if (!Array.isArray(rawCart)) {
+                rawCart = [];
+            }
+
+            normalizedCart = rawCart
+                .map((item) => {
+                    if (!item || typeof item !== 'object') return null;
+
+                    const kitId = String(
+                        item.kit_id ?? item.id ?? item.inventory_id ?? ''
+                    ).trim();
+
+                    const quantity = Number(
+                        item.quantity ?? item.cartQuantity ?? 0
+                    );
+
+                    if (!kitId || !Number.isFinite(quantity) || quantity <= 0) {
+                        return null;
+                    }
+
+                    return {
+                        kit_id:   kitId,
+                        quantity: Math.floor(quantity),
+                        ...(item.name ? { name: String(item.name) } : {})
+                    };
+                })
+                .filter(Boolean);
+
+        } catch (cartParseError) {
+            log.error(`[CREATE ORDER] Invalid cart JSON: ${cartParseError.message}`);
+            return res.status(400).json({
+                error:   "Invalid cart",
+                message: "The cart data sent by the customer is invalid."
+            });
+        }
+
+        log.info(`[CREATE ORDER] raw cart: ${
+            typeof cart === 'string' ? cart : JSON.stringify(cart)
+        }`);
+        log.info(`[CREATE ORDER] normalized cart: ${JSON.stringify(normalizedCart)}`);
+
+        // MEDICINE orders MUST contain at least one valid item.
+        if (serviceType === 'MEDICINE' && normalizedCart.length === 0) {
+            log.error('[CREATE ORDER] MEDICINE order rejected: normalized cart is empty');
+            return res.status(400).json({
+                error:   "Order creation failed",
+                message: "MEDICINE orders require at least one cart item"
+            });
+        }
+
+        // Per-item validation (kit_id presence already guaranteed above; quantity
+        // is already a positive integer after Math.floor + filter).
+        if (serviceType === 'MEDICINE') {
+            for (const item of normalizedCart) {
+                if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+                    return res.status(400).json({
+                        error:   "Order creation failed",
+                        message: `Invalid quantity for ${item.kit_id}`
+                    });
+                }
+            }
+        }
+
+
         // 🟡 Execute inventory reservation + transaction creation + session state transitions atomically
         let transaction;
         let localOrderId;
         try {
-            // ----------------------------------------------------------------
-            // Normalize frontend cartQuantity → quantity BEFORE entering the
-            // SQLite transaction. Frontend field naming must never leak into
-            // backend business logic.
-            // ----------------------------------------------------------------
-            const rawCart = Array.isArray(cart) ? cart : [];
-            const normalizedCart = rawCart.map(item => ({
-                kit_id: item.kit_id || item.id || item.inventory_id,
-                quantity: Number(item.quantity ?? item.cartQuantity ?? 1)
-            }));
-
-            // Validate each cart item before touching the DB
-            if (serviceType === 'MEDICINE') {
-                if (normalizedCart.length === 0) {
-                    throw new Error('MEDICINE orders require at least one cart item');
-                }
-                for (const item of normalizedCart) {
-                    if (!item.kit_id) {
-                        throw new Error('Cart item is missing kit_id');
-                    }
-                    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
-                        throw new Error(`Invalid quantity for ${item.kit_id}`);
-                    }
-                }
-            }
-
             dbTransaction(() => {
                 // ------------------------------------------------------------
                 // 1. Create transaction FIRST
