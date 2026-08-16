@@ -1017,7 +1017,11 @@ async function start() {
     // ═══════════════════════════════════════════════════════════════════════════
     let paymentRecovery = null;
     try {
-        if (razorpay && process.env.RAZORPAY_KEY_SECRET) {
+        if (
+            typeof razorpay !== 'undefined' &&
+            razorpay &&
+            process.env.RAZORPAY_KEY_SECRET
+        ) {
             paymentRecovery = new PaymentRecoveryService(
                 transactionManager,
                 sessionManager,
