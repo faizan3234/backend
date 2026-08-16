@@ -3556,36 +3556,91 @@ app.post("/api/create-order", async (req, res) => {
         let transaction;
         let localOrderId;
         try {
-            dbTransaction(() => {
-                // 1. Reserve inventory for session
-                if (inventoryManager) {
-                    inventoryManager.reserveInventory(sessionId, serviceType);
-                }
+            // ----------------------------------------------------------------
+            // Normalize frontend cartQuantity → quantity BEFORE entering the
+            // SQLite transaction. Frontend field naming must never leak into
+            // backend business logic.
+            // ----------------------------------------------------------------
+            const rawCart = Array.isArray(cart) ? cart : [];
+            const normalizedCart = rawCart.map(item => ({
+                kit_id: item.kit_id || item.id || item.inventory_id,
+                quantity: Number(item.quantity ?? item.cartQuantity ?? 1)
+            }));
 
-                // 2. Create transaction with AUTHORITATIVE backend-calculated amount
+            // Validate each cart item before touching the DB
+            if (serviceType === 'MEDICINE') {
+                if (normalizedCart.length === 0) {
+                    throw new Error('MEDICINE orders require at least one cart item');
+                }
+                for (const item of normalizedCart) {
+                    if (!item.kit_id) {
+                        throw new Error('Cart item is missing kit_id');
+                    }
+                    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+                        throw new Error(`Invalid quantity for ${item.kit_id}`);
+                    }
+                }
+            }
+
+            dbTransaction(() => {
+                // ------------------------------------------------------------
+                // 1. Create transaction FIRST
+                //
+                // transactionManager calculates the authoritative amount from
+                // the SQLite inventory table. Frontend price is NEVER trusted.
+                // ------------------------------------------------------------
                 transaction = transactionManager.createTransaction(
                     sessionId,
                     serviceType,
-                    cart || []
+                    normalizedCart
                 );
 
+                // ------------------------------------------------------------
+                // 2. Reserve ONLY the requested cart
+                //
+                // Explicit cart is passed so reserveInventory() never falls
+                // back to the "reserve all inventory" path.
+                // ------------------------------------------------------------
+                if (inventoryManager && serviceType === 'MEDICINE') {
+                    inventoryManager.reserveInventory(
+                        sessionId,
+                        serviceType,
+                        normalizedCart
+                    );
+                }
+
+                // ------------------------------------------------------------
                 // 3. Update session service type
+                // ------------------------------------------------------------
                 if (session.status === 'CUSTOMER_ATTACHED') {
                     sessionManager.selectService(sessionId, serviceType);
                 }
 
-                // 4. Set payment required & pending on session
+                // ------------------------------------------------------------
+                // 4. Set payment required / pending
+                // ------------------------------------------------------------
                 sessionManager.setPaymentRequired(sessionId, transaction.amount);
+
+                // ------------------------------------------------------------
+                // 5. Create LOCAL Pi order ID
+                //
+                // This is intentionally NOT a Razorpay order ID.
+                // ------------------------------------------------------------
                 localOrderId = `order_${transaction.transaction_id}`;
                 transactionManager.markOrderCreated(transaction.transaction_id, localOrderId);
                 sessionManager.markPaymentPending(sessionId, localOrderId);
             });
-            log.info(`📦 Inventory reserved & transaction created atomically: ${localOrderId} for ₹${transaction.amount / 100} (session: ${sessionId})`);
+
+            log.info(
+                `📦 Inventory reserved & transaction created atomically: ` +
+                `${localOrderId} for ₹${transaction.amount / 100} ` +
+                `(session: ${sessionId})`
+            );
         } catch (orderErr) {
             log.error(`❌ Atomic order creation failed: ${orderErr.message}`);
-            return res.status(400).json({ 
-                error: "Order creation failed", 
-                message: orderErr.message 
+            return res.status(400).json({
+                error: "Order creation failed",
+                message: orderErr.message
             });
         }
 

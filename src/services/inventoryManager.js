@@ -174,20 +174,22 @@ export class InventoryManager {
     }
 
     let txnId = sessionIdOrTxnId;
-    let targetCart = cart;
+    let targetCart = Array.isArray(cart) ? cart : [];
 
-    // Resolve transaction ID & cart from database if session_id passed
+    // Resolve transaction ID from database if session_id was passed.
     const txnRow = this.db.prepare(`
-      SELECT transaction_id, cart 
-      FROM transactions 
-      WHERE session_id = ? OR transaction_id = ? 
-      ORDER BY created_at DESC 
+      SELECT transaction_id, cart
+      FROM transactions
+      WHERE session_id = ? OR transaction_id = ?
+      ORDER BY created_at DESC
       LIMIT 1
     `).get(sessionIdOrTxnId, sessionIdOrTxnId);
 
     if (txnRow) {
       txnId = txnRow.transaction_id;
-      if ((!targetCart || targetCart.length === 0) && txnRow.cart) {
+
+      // Only use transaction cart when an explicit cart wasn't supplied.
+      if (targetCart.length === 0 && txnRow.cart) {
         try {
           targetCart = JSON.parse(txnRow.cart);
         } catch (e) {
@@ -196,23 +198,45 @@ export class InventoryManager {
       }
     }
 
-    if (!targetCart || targetCart.length === 0) {
-      const allItems = this.getAllInventory();
-      targetCart = allItems.map(item => ({ kit_id: item.kit_id, quantity: 1 }));
+    // MEDICINE orders MUST have an explicit cart.
+    // Never silently reserve the entire inventory.
+    if (serviceType === 'MEDICINE' && targetCart.length === 0) {
+      throw new Error('Medicine reservation requires cart items');
+    }
+
+    // Normalize cart fields.
+    targetCart = targetCart.map(item => ({
+      kit_id: item.kit_id || item.id || item.inventory_id,
+      quantity: Number(item.quantity ?? item.cartQuantity ?? 1)
+    }));
+
+    for (const item of targetCart) {
+      if (!item.kit_id) {
+        throw new Error('Reservation item is missing kit_id');
+      }
+      if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+        throw new Error(`Invalid reservation quantity for ${item.kit_id}`);
+      }
     }
 
     const reserved = [];
     const reserveTxn = this.db.transaction(() => {
       for (const item of targetCart) {
-        const kitId = item.kit_id || item.id || item.inventory_id;
-        const qty = item.quantity || 1;
-        if (!kitId) continue;
+        const kitId = item.kit_id;
+        const qty = item.quantity;
 
         const resId = `RES-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
 
         const current = this.getInventoryItem(kitId);
-        if (current && current.available_quantity < qty) {
-          console.warn(`[InventoryManager] Insufficient available stock for ${kitId}: have ${current.available_quantity}, requested ${qty}`);
+        if (!current) {
+          throw new Error(`Inventory item not found: ${kitId}`);
+        }
+
+        if (current.available_quantity < qty) {
+          throw new Error(
+            `Insufficient stock for ${kitId}: ` +
+            `have ${current.available_quantity}, requested ${qty}`
+          );
         }
 
         this.db.prepare(`
@@ -234,7 +258,8 @@ export class InventoryManager {
       reserveTxn();
       console.log(`[InventoryManager] Reserved ${reserved.length} item(s) for ${sessionIdOrTxnId}`);
     } catch (err) {
-      console.warn(`[InventoryManager] Reservation error: ${err.message}`);
+      // Re-throw so the caller's outer SQLite transaction can roll back fully.
+      throw err;
     }
 
     return reserved;
