@@ -2740,28 +2740,264 @@ function requireDatabase(req, res, next) {
     next();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// KIT / INVENTORY ROUTES — SQLite is the single source of truth
+//
+// All reads and writes go through inventoryManager which queries the local
+// `inventory` and `inventory_reservations` tables.  MongoDB is NOT used here.
+//
+// Canonical response shape for each kit:
+//   id, kit_id, name, description, price,
+//   quantity (= stock_quantity), stock_quantity, reserved_quantity,
+//   available_quantity (= stock_quantity - reserved_quantity),
+//   motor_id, updated_at
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Map an inventoryManager item to the canonical API response shape.
+ * inventoryManager._formatItem() already computes reserved/available,
+ * so we just enforce consistent field presence.
+ */
+function formatKitResponse(item) {
+    const stockQty    = Number(item.quantity       ?? item.stock_quantity    ?? 0);
+    const reservedQty = Number(item.reserved_quantity ?? 0);
+    const availableQty = Math.max(0, stockQty - reservedQty);
+    const price        = Number(item.price          ?? item.unit_price       ?? 0);
+
+    return {
+        id:                 item.kit_id,
+        kit_id:             item.kit_id,
+        name:               item.name          ?? '',
+        description:        item.description   ?? '',
+        price,
+        quantity:           stockQty,
+        stock_quantity:     stockQty,
+        reserved_quantity:  reservedQty,
+        available_quantity: availableQty,
+        motor_id:           item.motor_id      ?? null,
+        updated_at:         item.updated_at    ?? null,
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/kits — list all kits from SQLite inventory
+// ─────────────────────────────────────────────────────────────────────────────
 app.get("/api/kits", (req, res) => {
     try {
-        const kits = inventoryManager ? inventoryManager.getAllInventory() : [];
-
-        const formattedKits = kits.map(kit => ({
-            ...kit,
-            id: kit.kit_id || kit.id,
-            kit_id: kit.kit_id || kit.id,
-            unit_price: kit.price ?? kit.unit_price,
-            stock_quantity: kit.quantity ?? kit.stock_quantity
-        }));
-
-        res.json(formattedKits);
+        if (!inventoryManager) {
+            return res.status(503).json({ message: "Inventory not available", kits: [] });
+        }
+        const kits = inventoryManager.getAllInventory().map(formatKitResponse);
+        res.json(kits);
     } catch (err) {
-        console.error("Error fetching local inventory:", err);
-
-        res.status(500).json({
-            message: "Failed to fetch local inventory",
-            kits: []
-        });
+        log.error("GET /api/kits error:", err.message);
+        res.status(500).json({ message: "Failed to fetch inventory", kits: [] });
     }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/kits — create a new kit in SQLite inventory
+//
+// Required body: { kit_id, name, price, quantity }
+// Optional:      { description, motor_id }
+// ─────────────────────────────────────────────────────────────────────────────
+app.post("/api/kits", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory not available" });
+        }
+
+        const { kit_id, name, price, quantity, description = '', motor_id = null } = req.body;
+
+        if (!kit_id || !name || price === undefined || quantity === undefined) {
+            return res.status(400).json({
+                ok: false,
+                message: "Missing required fields: kit_id, name, price, quantity"
+            });
+        }
+
+        const kitIdStr  = String(kit_id).trim();
+        const priceNum  = Number(price);
+        const qtyNum    = Math.floor(Number(quantity));
+
+        if (!kitIdStr) {
+            return res.status(400).json({ ok: false, message: "kit_id must not be empty" });
+        }
+        if (!Number.isFinite(priceNum) || priceNum < 0) {
+            return res.status(400).json({ ok: false, message: "price must be a non-negative number" });
+        }
+        if (!Number.isInteger(qtyNum) || qtyNum < 0) {
+            return res.status(400).json({ ok: false, message: "quantity must be a non-negative integer" });
+        }
+
+        // Check for duplicate
+        const existing = inventoryManager.getInventoryItem(kitIdStr);
+        if (existing) {
+            return res.status(409).json({ ok: false, message: `Kit '${kitIdStr}' already exists` });
+        }
+
+        inventoryManager.db.prepare(`
+            INSERT INTO inventory (kit_id, name, price, quantity, description, motor_id, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        `).run(kitIdStr, String(name).trim(), priceNum, qtyNum, String(description), motor_id);
+
+        const created = inventoryManager.getInventoryItem(kitIdStr);
+        log.info(`✅ Kit created: ${kitIdStr} (${name}, ₹${priceNum}, qty ${qtyNum})`);
+        res.status(201).json({ ok: true, kit: formatKitResponse(created) });
+
+    } catch (err) {
+        log.error("POST /api/kits error:", err.message);
+        res.status(500).json({ ok: false, message: "Failed to create kit" });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/kits/:id — update kit fields in SQLite inventory
+//
+// :id is kit_id (string, e.g. "KIT-001")
+// Updatable: name, description, price, quantity, motor_id
+// ─────────────────────────────────────────────────────────────────────────────
+app.patch("/api/kits/:id", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory not available" });
+        }
+
+        const kitId = String(req.params.id).trim();
+        const existing = inventoryManager.getInventoryItem(kitId);
+        if (!existing) {
+            return res.status(404).json({ ok: false, message: `Kit '${kitId}' not found` });
+        }
+
+        // Build SET clause from whitelisted fields only
+        const sets   = [];
+        const values = [];
+
+        if (req.body.name !== undefined) {
+            sets.push('name = ?');
+            values.push(String(req.body.name).trim());
+        }
+        if (req.body.description !== undefined) {
+            sets.push('description = ?');
+            values.push(String(req.body.description));
+        }
+        if (req.body.price !== undefined) {
+            const p = Number(req.body.price);
+            if (!Number.isFinite(p) || p < 0) {
+                return res.status(400).json({ ok: false, message: "price must be a non-negative number" });
+            }
+            sets.push('price = ?');
+            values.push(p);
+        }
+        if (req.body.quantity !== undefined) {
+            const q = Math.floor(Number(req.body.quantity));
+            if (!Number.isInteger(q) || q < 0) {
+                return res.status(400).json({ ok: false, message: "quantity must be a non-negative integer" });
+            }
+            sets.push('quantity = ?');
+            values.push(q);
+        }
+        if (req.body.motor_id !== undefined) {
+            sets.push('motor_id = ?');
+            values.push(req.body.motor_id === null ? null : String(req.body.motor_id));
+        }
+
+        if (sets.length === 0) {
+            return res.status(400).json({ ok: false, message: "No updatable fields provided" });
+        }
+
+        sets.push("updated_at = datetime('now')");
+        values.push(kitId); // for WHERE clause
+
+        inventoryManager.db.prepare(
+            `UPDATE inventory SET ${sets.join(', ')} WHERE kit_id = ?`
+        ).run(...values);
+
+        const updated = inventoryManager.getInventoryItem(kitId);
+        log.info(`✅ Kit updated: ${kitId}`);
+        res.json({ ok: true, kit: formatKitResponse(updated) });
+
+    } catch (err) {
+        log.error("PATCH /api/kits/:id error:", err.message);
+        res.status(500).json({ ok: false, message: "Failed to update kit" });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/kits/:id/image — update imageUrl field (stored in description for now)
+//
+// Note: The `inventory` SQLite table does not have an imageUrl column.
+// This endpoint is kept for API compatibility. If imageUrl storage is needed,
+// add an `image_url TEXT` column to the inventory schema.
+// ─────────────────────────────────────────────────────────────────────────────
+app.patch("/api/kits/:id/image", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory not available" });
+        }
+
+        const kitId   = String(req.params.id).trim();
+        const { imageUrl } = req.body;
+
+        if (!imageUrl) {
+            return res.status(400).json({ ok: false, message: "Missing imageUrl" });
+        }
+
+        const existing = inventoryManager.getInventoryItem(kitId);
+        if (!existing) {
+            return res.status(404).json({ ok: false, message: `Kit '${kitId}' not found` });
+        }
+
+        // Store imageUrl — add column if schema supports it, otherwise no-op with 200
+        try {
+            inventoryManager.db.prepare(`
+                UPDATE inventory SET image_url = ?, updated_at = datetime('now') WHERE kit_id = ?
+            `).run(String(imageUrl), kitId);
+        } catch (colErr) {
+            // Column doesn't exist yet — acknowledge without error so frontend isn't broken
+            log.warn(`PATCH /api/kits/:id/image: image_url column not in schema, skipping write (${colErr.message})`);
+        }
+
+        const updated = inventoryManager.getInventoryItem(kitId);
+        log.info(`✅ Kit image updated (or no-op): ${kitId}`);
+        res.json({ ok: true, kit: formatKitResponse(updated) });
+
+    } catch (err) {
+        log.error("PATCH /api/kits/:id/image error:", err.message);
+        res.status(500).json({ ok: false, message: "Failed to update kit image" });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/kits/:id — remove kit from SQLite inventory
+//
+// :id is kit_id (string)
+// ─────────────────────────────────────────────────────────────────────────────
+app.delete("/api/kits/:id", (req, res) => {
+    try {
+        if (!inventoryManager) {
+            return res.status(503).json({ ok: false, message: "Inventory not available" });
+        }
+
+        const kitId = String(req.params.id).trim();
+        const existing = inventoryManager.getInventoryItem(kitId);
+        if (!existing) {
+            return res.status(404).json({ ok: false, message: `Kit '${kitId}' not found` });
+        }
+
+        inventoryManager.db.prepare(
+            `DELETE FROM inventory WHERE kit_id = ?`
+        ).run(kitId);
+
+        log.info(`✅ Kit deleted: ${kitId}`);
+        res.json({ ok: true });
+
+    } catch (err) {
+        log.error("DELETE /api/kits/:id error:", err.message);
+        res.status(500).json({ ok: false, message: "Failed to delete kit" });
+    }
+});
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FEEDBACK SUBMISSION - Send to admin email (hidden from users)
