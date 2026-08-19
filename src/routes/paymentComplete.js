@@ -210,9 +210,9 @@ export async function handlePaymentComplete(req, res) {
         }
 
         // ───────────────────────────────────────────────────────────────────
-        // STEP 7: Service Post-Processing (MQTT Dispensing or Local PDF & Email Queuing)
+        // STEP 7: Service Post-Processing (MQTT Dispensing or Local PDF)
         // ───────────────────────────────────────────────────────────────────
-        let completionStatus = 'report_queued';
+        let completionStatus = 'report_ready';
 
         if (session.service_type === 'MEDICINE') {
             for (const job of createdJobs) {

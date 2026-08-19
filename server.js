@@ -4013,12 +4013,10 @@ app.get("/api/sessions/:sessionId/status", async (req, res) => {
         } else if (session.service_type === 'HEALTH_CHECKUP') {
             if (session.report_status === 'FAILED') {
                 clientStatus = 'report_failed';
-            } else if (session.report_status === 'READY' || session.report_status === 'EMAILED') {
-                clientStatus = 'report_ready';
             } else if (session.report_status === 'GENERATING') {
                 clientStatus = 'report_generating';
             } else {
-                clientStatus = 'report_queued';
+                clientStatus = 'report_ready';
             }
         }
 
@@ -4310,6 +4308,43 @@ app.post("/api/sessions/:sessionId/report", async (req, res) => {
 
     } catch (err) {
         log.error("❌ Report generation error:", err.message);
+        res.status(500).json({ ok: false, message: err.message || "Failed to generate report" });
+    }
+});
+
+// Legacy / alias route for report generation
+app.post("/api/reports/generate", async (req, res) => {
+    const sessionId = req.body?.sessionId || req.query?.sessionId;
+    if (!sessionId) {
+        return res.status(400).json({ ok: false, message: "Missing sessionId" });
+    }
+    req.params = { ...req.params, sessionId };
+    try {
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ ok: false, message: "Session not found" });
+        }
+        if (!pdfGenerator) {
+            pdfGenerator = new PDFGenerator(getDb());
+        }
+        const customerData = session.customer_data ? 
+            (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) 
+            : {};
+        const { reportId } = await pdfGenerator.generateHealthReport(
+            sessionId,
+            customerData,
+            req.body?.healthData || (session.health_data ? (typeof session.health_data === 'string' ? JSON.parse(session.health_data) : session.health_data) : null)
+        );
+        sessionManager.updateSessionField(sessionId, 'report_status', 'READY');
+        res.json({
+            ok: true,
+            reportId,
+            sessionId,
+            downloadUrl: `/api/sessions/${sessionId}/report/download`,
+            pdfPath: `/api/sessions/${sessionId}/report/download`
+        });
+    } catch (err) {
+        log.error("❌ /api/reports/generate error:", err.message);
         res.status(500).json({ ok: false, message: err.message || "Failed to generate report" });
     }
 });
