@@ -367,13 +367,17 @@ section('8. startDispensing() Only Allows PENDING State');
 
 (async () => {
     const db = getDb();
+    const { session } = createTestSession();
+    const t1 = createTestTransaction(session.session_id, 100);
+    const t2 = createTestTransaction(session.session_id, 100);
+    const t3 = createTestTransaction(session.session_id, 100);
     
     // Create a job directly in IN_PROGRESS state
     const jobId = `JOB-TEST-${Date.now()}-INPROG`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'IN_PROGRESS')
-    `).run(jobId);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'IN_PROGRESS')
+    `).run(jobId, session.session_id, t1.transaction_id);
     
     // Create a mock MQTT client
     fulfillmentManager.mqttClient = {
@@ -388,8 +392,8 @@ section('8. startDispensing() Only Allows PENDING State');
     const jobId2 = `JOB-TEST-${Date.now()}-COMPL`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'COMPLETED')
-    `).run(jobId2);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'COMPLETED')
+    `).run(jobId2, session.session_id, t2.transaction_id);
     
     const result2 = await fulfillmentManager.startDispensing(jobId2);
     assert(result2 === false, 'startDispensing() rejects COMPLETED jobs');
@@ -398,8 +402,8 @@ section('8. startDispensing() Only Allows PENDING State');
     const jobId3 = `JOB-TEST-${Date.now()}-PEND`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'PENDING')
-    `).run(jobId3);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'PENDING')
+    `).run(jobId3, session.session_id, t3.transaction_id);
     
     const result3 = await fulfillmentManager.startDispensing(jobId3);
     assert(result3 === true, 'startDispensing() accepts PENDING jobs');
@@ -412,20 +416,23 @@ section('9. Restart Safety: IN_PROGRESS → MANUAL_REVIEW_REQUIRED');
 
 (async () => {
     const db = getDb();
+    const { session } = createTestSession();
+    const t1 = createTestTransaction(session.session_id, 100);
+    const t2 = createTestTransaction(session.session_id, 100);
     
     // Simulate: Pi had a job IN_PROGRESS when it crashed
     const jobId = `JOB-TEST-${Date.now()}-CRASH`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state, attempts)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'IN_PROGRESS', 1)
-    `).run(jobId);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'IN_PROGRESS', 1)
+    `).run(jobId, session.session_id, t1.transaction_id);
     
     // Also add a PENDING job that should be recoverable
     const jobId2 = `JOB-TEST-${Date.now()}-SAFE`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state, attempts)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'PENDING', 0)
-    `).run(jobId2);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'PENDING', 0)
+    `).run(jobId2, session.session_id, t2.transaction_id);
     
     // Mock MQTT
     fulfillmentManager.mqttClient = {
@@ -453,6 +460,10 @@ section('10. Manual Review Resolution');
 
 (() => {
     const db = getDb();
+    const { session } = createTestSession();
+    const t1 = createTestTransaction(session.session_id, 100);
+    const t2 = createTestTransaction(session.session_id, 100);
+    const t3 = createTestTransaction(session.session_id, 100);
     
     db.prepare(`
         INSERT OR IGNORE INTO inventory (kit_id, name, price, quantity) VALUES ('TEST-KIT-1', 'Test Kit', 100, 10)
@@ -468,8 +479,8 @@ section('10. Manual Review Resolution');
     const jobId = `JOB-TEST-${Date.now()}-REVIEW`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'MANUAL_REVIEW_REQUIRED')
-    `).run(jobId);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'MANUAL_REVIEW_REQUIRED')
+    `).run(jobId, session.session_id, t1.transaction_id);
     
     // Resolve as COMPLETED (admin verified kit was dispensed)
     fulfillmentManager.resolveManualReview(jobId, 'COMPLETED');
@@ -480,8 +491,8 @@ section('10. Manual Review Resolution');
     const jobId2 = `JOB-TEST-${Date.now()}-REVIEW2`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'MANUAL_REVIEW_REQUIRED')
-    `).run(jobId2);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'MANUAL_REVIEW_REQUIRED')
+    `).run(jobId2, session.session_id, t2.transaction_id);
     
     fulfillmentManager.resolveManualReview(jobId2, 'PENDING');
     const resolved2 = db.prepare('SELECT * FROM fulfillment_jobs WHERE job_id = ?').get(jobId2);
@@ -491,8 +502,8 @@ section('10. Manual Review Resolution');
     const jobId3 = `JOB-TEST-${Date.now()}-REVIEW3`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'MANUAL_REVIEW_REQUIRED')
-    `).run(jobId3);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'MANUAL_REVIEW_REQUIRED')
+    `).run(jobId3, session.session_id, t3.transaction_id);
     
     let invalidResolution = false;
     try {
@@ -510,13 +521,15 @@ section('11. ACK Validation (Strict Mandatory Fields & Matching)');
 
 (async () => {
     const db = getDb();
+    const { session } = createTestSession();
+    const transaction = createTestTransaction(session.session_id, 100);
     
     // Create an IN_PROGRESS job
     const jobId = `JOB-TEST-${Date.now()}-ACK`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'IN_PROGRESS')
-    `).run(jobId);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'IN_PROGRESS')
+    `).run(jobId, session.session_id, transaction.transaction_id);
 
     // ACK missing kitId and quantity (e.g. {"jobId": "JOB-123"})
     const missingFields = await fulfillmentManager.markCompleted(jobId, { jobId });
@@ -554,12 +567,14 @@ section('12. Duplicate ACK Idempotency');
 
 (async () => {
     const db = getDb();
+    const { session } = createTestSession();
+    const transaction = createTestTransaction(session.session_id, 100);
     
     const jobId = `JOB-TEST-${Date.now()}-DUPE-ACK`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'IN_PROGRESS')
-    `).run(jobId);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'IN_PROGRESS')
+    `).run(jobId, session.session_id, transaction.transaction_id);
     
     const validAck = { kitId: 'TEST-KIT-1', quantity: 1 };
 
@@ -604,13 +619,16 @@ section('14. markCompleted() State Validation');
 
 (async () => {
     const db = getDb();
+    const { session } = createTestSession();
+    const t1 = createTestTransaction(session.session_id, 100);
+    const t2 = createTestTransaction(session.session_id, 100);
     
     // PENDING job should not be markable as completed
     const jobId = `JOB-TEST-${Date.now()}-PEND-COMP`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'PENDING')
-    `).run(jobId);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'PENDING')
+    `).run(jobId, session.session_id, t1.transaction_id);
     
     const result = await fulfillmentManager.markCompleted(jobId, {});
     assert(result === false, 'markCompleted() rejects PENDING jobs');
@@ -619,8 +637,8 @@ section('14. markCompleted() State Validation');
     const jobId2 = `JOB-TEST-${Date.now()}-FAIL-COMP`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'FAILED')
-    `).run(jobId2);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'FAILED')
+    `).run(jobId2, session.session_id, t2.transaction_id);
     
     const result2 = await fulfillmentManager.markCompleted(jobId2, {});
     assert(result2 === false, 'markCompleted() rejects FAILED jobs');
@@ -662,13 +680,15 @@ section('17. retryJob() Only Allows PENDING');
 
 (async () => {
     const db = getDb();
+    const { session } = createTestSession();
+    const transaction = createTestTransaction(session.session_id, 100);
     
     // MANUAL_REVIEW_REQUIRED should not be retryable
     const jobId = `JOB-TEST-${Date.now()}-MR-RETRY`;
     db.prepare(`
         INSERT INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, state)
-        VALUES (?, 'test-session', 'test-txn', 'TEST-KIT-1', 1, 'MANUAL_REVIEW_REQUIRED')
-    `).run(jobId);
+        VALUES (?, ?, ?, 'TEST-KIT-1', 1, 'MANUAL_REVIEW_REQUIRED')
+    `).run(jobId, session.session_id, transaction.transaction_id);
     
     fulfillmentManager.mqttClient = {
         publish: (topic, payload, opts, cb) => cb(null),
@@ -779,6 +799,86 @@ section('20. Mandatory Payment Bridge Order Binding');
     } catch (err) {
         skip('Payment Bridge order binding DB test', err.message);
     }
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 21: MULTI-KIT CART CREATION & MOTOR RESOLUTION
+// ═══════════════════════════════════════════════════════════════════════════
+section('21. Multi-Kit Cart Creation & Motor Resolution');
+
+(async () => {
+    const db = getDb();
+    const { session } = createTestSession();
+    const transaction = createTestTransaction(session.session_id, 30000);
+    
+    // Ensure 3 distinct kits with distinct motor_ids exist in inventory
+    db.prepare(`INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id) VALUES ('TEST-KIT-A', 'Aspirin', 100, 10, 1)`).run();
+    db.prepare(`INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id) VALUES ('TEST-KIT-B', 'Bandages', 100, 10, 2)`).run();
+    db.prepare(`INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id) VALUES ('TEST-KIT-C', 'Cold Med', 100, 10, 3)`).run();
+    
+    // Create 3 distinct jobs for the same transaction
+    const jobA = await fulfillmentManager.createJob(session.session_id, transaction.transaction_id, 'TEST-KIT-A', 1);
+    const jobB = await fulfillmentManager.createJob(session.session_id, transaction.transaction_id, 'TEST-KIT-B', 2);
+    const jobC = await fulfillmentManager.createJob(session.session_id, transaction.transaction_id, 'TEST-KIT-C', 1);
+    
+    assert(jobA.job_id !== jobB.job_id && jobB.job_id !== jobC.job_id, '3 distinct kits create exactly 3 distinct jobs for same transaction');
+    assert(jobA.motor_id === 1 && jobB.motor_id === 2 && jobC.motor_id === 3, 'Motor IDs correctly resolved from inventory and stored in jobs');
+    
+    // Test idempotency per (transaction_id, kit_id)
+    const dupeJobA = await fulfillmentManager.createJob(session.session_id, transaction.transaction_id, 'TEST-KIT-A', 1);
+    assert(dupeJobA.job_id === jobA.job_id, 'Re-creating job for existing (transaction_id, kit_id) returns existing job');
+    
+    // Test canonical MQTT payload structure includes motor
+    let publishedTopic = null;
+    let publishedPayload = null;
+    fulfillmentManager.mqttClient = {
+        publish: (topic, payload, opts, cb) => {
+            publishedTopic = topic;
+            publishedPayload = JSON.parse(payload);
+            cb(null);
+        }
+    };
+    
+    await fulfillmentManager.startDispensing(jobA.job_id);
+    assert(publishedTopic === `reliv/dispense/${jobA.job_id}`, 'Canonical MQTT topic matches reliv/dispense/<jobId>');
+    assert(publishedPayload && publishedPayload.motor === 1 && publishedPayload.kitId === 'TEST-KIT-A', 'Canonical MQTT payload contains motor number and kitId');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 22: MULTI-KIT COMPLETION REQUIREMENTS
+// ═══════════════════════════════════════════════════════════════════════════
+section('22. Multi-Kit Completion Requirements');
+
+(async () => {
+    const db = getDb();
+    const { session } = createTestSession();
+    const transaction = createTestTransaction(session.session_id, 20000);
+    
+    db.prepare(`INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id) VALUES ('TEST-MK-1', 'Kit 1', 100, 10, 1)`).run();
+    db.prepare(`INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id) VALUES ('TEST-MK-2', 'Kit 2', 100, 10, 2)`).run();
+    
+    const j1 = await fulfillmentManager.createJob(session.session_id, transaction.transaction_id, 'TEST-MK-1', 1);
+    const j2 = await fulfillmentManager.createJob(session.session_id, transaction.transaction_id, 'TEST-MK-2', 1);
+    
+    // Move both to IN_PROGRESS
+    db.prepare(`UPDATE fulfillment_jobs SET state = 'IN_PROGRESS' WHERE job_id IN (?, ?)`).run(j1.job_id, j2.job_id);
+    
+    // Complete only job 1
+    const ack1 = await fulfillmentManager.markCompleted(j1.job_id, { kitId: 'TEST-MK-1', quantity: 1, motor: 1 });
+    assert(ack1 === true, 'First job completed successfully');
+    
+    // Check jobs for transaction
+    const txnJobs = fulfillmentManager.getJobsByTransaction(transaction.transaction_id);
+    const allCompletedAfterOne = txnJobs.every(j => j.state === 'COMPLETED');
+    assert(allCompletedAfterOne === false, 'Transaction has incomplete jobs when only 1 of 2 jobs is completed');
+    
+    // Complete job 2
+    const ack2 = await fulfillmentManager.markCompleted(j2.job_id, { kitId: 'TEST-MK-2', quantity: 1, motor: 2 });
+    assert(ack2 === true, 'Second job completed successfully');
+    
+    const txnJobsAfterBoth = fulfillmentManager.getJobsByTransaction(transaction.transaction_id);
+    const allCompletedAfterBoth = txnJobsAfterBoth.every(j => j.state === 'COMPLETED');
+    assert(allCompletedAfterBoth === true, 'All jobs completed after both ACKs received');
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════

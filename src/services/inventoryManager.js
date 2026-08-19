@@ -298,14 +298,30 @@ export class InventoryManager {
 
   /**
    * Deduct inventory after successful dispense (mark status COMMITTED and subtract quantity)
+   * If kitId is provided, commits and deducts only the reservation for that specific kit.
    */
-  deductInventory(sessionIdOrTxnId, dispenseJobId) {
-    const rows = this.db.prepare(`
-      SELECT r.reservation_id, r.kit_id, r.quantity
-      FROM inventory_reservations r
-      LEFT JOIN transactions t ON r.transaction_id = t.transaction_id
-      WHERE (t.session_id = ? OR r.transaction_id = ?) AND r.status = 'RESERVED'
-    `).all(sessionIdOrTxnId, sessionIdOrTxnId);
+  deductInventory(sessionIdOrTxnId, dispenseJobId, kitId = null) {
+    let rows;
+    if (kitId) {
+      rows = this.db.prepare(`
+        SELECT r.reservation_id, r.kit_id, r.quantity
+        FROM inventory_reservations r
+        LEFT JOIN transactions t ON r.transaction_id = t.transaction_id
+        WHERE (t.session_id = ? OR r.transaction_id = ?) AND r.kit_id = ? AND r.status = 'RESERVED'
+      `).all(sessionIdOrTxnId, sessionIdOrTxnId, kitId);
+    } else {
+      rows = this.db.prepare(`
+        SELECT r.reservation_id, r.kit_id, r.quantity
+        FROM inventory_reservations r
+        LEFT JOIN transactions t ON r.transaction_id = t.transaction_id
+        WHERE (t.session_id = ? OR r.transaction_id = ?) AND r.status = 'RESERVED'
+      `).all(sessionIdOrTxnId, sessionIdOrTxnId);
+    }
+
+    if (rows.length === 0) {
+      console.log(`[InventoryManager] No RESERVED inventory found to deduct for ${sessionIdOrTxnId}${kitId ? ` (kit: ${kitId})` : ''}`);
+      return [];
+    }
 
     const deductTxn = this.db.transaction(() => {
       for (const r of rows) {
@@ -324,7 +340,7 @@ export class InventoryManager {
     });
 
     deductTxn();
-    console.log(`[InventoryManager] Deducted ${rows.length} item(s) for dispense job ${dispenseJobId}`);
+    console.log(`[InventoryManager] Deducted ${rows.length} item(s) for dispense job ${dispenseJobId}${kitId ? ` (kit: ${kitId})` : ''}`);
     return rows;
   }
 

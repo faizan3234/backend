@@ -2566,7 +2566,7 @@ mqttClient.on("offline", () => {
 });
 
 // MQTT message handler for sensor data AND dispense ACK
-mqttClient.on("message", (topic, message) => {
+mqttClient.on("message", async (topic, message) => {
     log.debug(`📡 MQTT [${topic}]: ${message.toString()}`);
     
     // ✅ PHASE 1: Handle ESP32 dispense ACK
@@ -2588,38 +2588,49 @@ mqttClient.on("message", (topic, message) => {
         
         log.info(`📦 ESP32 dispense ACK received for job: ${jobId}`);
         
-        // Validate ACK and mark job completed
+        // Validate ACK and mark THIS job completed
         try {
-            const completed = fulfillmentManager.markCompleted(jobId, ackData);
+            const completed = await fulfillmentManager.markCompleted(jobId, ackData);
             
             if (completed) {
-                // Mark transaction as FULFILLED only after valid ESP32 ACK
                 const job = fulfillmentManager.getJobStatus(jobId);
                 if (job && job.transaction_id) {
-                    try {
-                        transactionManager.markFulfilled(job.transaction_id);
-                        log.info(`✅ Transaction ${job.transaction_id} marked FULFILLED after ESP32 ACK`);
-                        
-                        // Update session dispense status to COMPLETED after valid ESP32 hardware ACK
+                    // Finalize inventory reservation for this specific physically dispensed kit
+                    if (inventoryManager) {
                         try {
-                            sessionManager.updateDispenseStatus(job.session_id, 'COMPLETED');
-                        } catch (dispErr) {
-                            log.warn(`⚠️ Could not update dispense_status: ${dispErr.message}`);
+                            inventoryManager.deductInventory(job.transaction_id, jobId, job.kit_id);
+                        } catch (invErr) {
+                            log.error(`⚠️ Failed to finalize inventory deduction for job ${jobId}: ${invErr.message}`);
+                        }
+                    }
+
+                    // Multi-kit verification: fetch EVERY fulfillment job for this transaction
+                    const txnJobs = fulfillmentManager.getJobsByTransaction(job.transaction_id);
+                    const allTxnCompleted = txnJobs.length > 0 && txnJobs.every(j => j.state === 'COMPLETED');
+                    
+                    if (allTxnCompleted) {
+                        try {
+                            transactionManager.markFulfilled(job.transaction_id);
+                            log.info(`✅ Transaction ${job.transaction_id} marked FULFILLED (all ${txnJobs.length} kit jobs completed)`);
+                        } catch (txErr) {
+                            log.error(`⚠️ Failed to mark transaction fulfilled: ${txErr.message}`);
                         }
 
-                        // Also complete the session if all jobs for this session are done
+                        // Complete the session if all session jobs are done
                         const sessionJobs = fulfillmentManager.getSessionJobs(job.session_id);
-                        const allCompleted = sessionJobs.every(j => j.state === 'COMPLETED');
-                        if (allCompleted) {
+                        const allSessionCompleted = sessionJobs.length > 0 && sessionJobs.every(j => j.state === 'COMPLETED');
+                        if (allSessionCompleted) {
                             try {
+                                sessionManager.updateDispenseStatus(job.session_id, 'COMPLETED');
                                 sessionManager.markCompleted(job.session_id);
-                                log.info(`✅ Session ${job.session_id} marked COMPLETED (all jobs done)`);
+                                log.info(`✅ Session ${job.session_id} marked COMPLETED (all ${sessionJobs.length} dispense jobs done)`);
                             } catch (sessErr) {
                                 log.error(`⚠️ Failed to mark session completed: ${sessErr.message}`);
                             }
                         }
-                    } catch (txErr) {
-                        log.error(`⚠️ Failed to mark transaction fulfilled: ${txErr.message}`);
+                    } else {
+                        const completedCount = txnJobs.filter(j => j.state === 'COMPLETED').length;
+                        log.info(`📦 Multi-kit progress: ${completedCount}/${txnJobs.length} jobs COMPLETED for transaction ${job.transaction_id}. Transaction remains unfulfilled until all kits dispense.`);
                     }
                 }
             }

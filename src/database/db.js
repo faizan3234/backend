@@ -50,6 +50,21 @@ export function initializeDatabase() {
         try { db.exec("ALTER TABLE sessions ADD COLUMN pairing_token TEXT;"); } catch (e) {}
         try { db.exec("ALTER TABLE sessions ADD COLUMN pairing_used INTEGER DEFAULT 0;"); } catch (e) {}
 
+        // Migration helper: ensure motor_id and unique index exist in fulfillment_jobs table
+        try { db.exec("ALTER TABLE fulfillment_jobs ADD COLUMN motor_id INTEGER;"); } catch (e) {}
+        try {
+            // Deduplicate any legacy duplicate rows before applying unique index
+            db.exec(`
+                DELETE FROM fulfillment_jobs
+                WHERE rowid NOT IN (
+                    SELECT MIN(rowid)
+                    FROM fulfillment_jobs
+                    GROUP BY transaction_id, kit_id
+                );
+            `);
+            db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fulfillment_jobs_txn_kit ON fulfillment_jobs(transaction_id, kit_id);");
+        } catch (e) {}
+
         // Migration helper: ensure event_queue check constraint allows EMAIL_REPORT & EMAIL_RECEIPT
         try {
             const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='event_queue'").get();

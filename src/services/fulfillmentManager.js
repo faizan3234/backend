@@ -58,25 +58,27 @@ class FulfillmentManager {
   /**
    * Create fulfillment job after payment verified
    * 
-   * IDEMPOTENCY: If job already exists for transaction, returns existing job
+   * IDEMPOTENCY: If job already exists for (transaction_id, kit_id), returns existing job.
+   * A cart containing 3 different kits creates exactly 3 distinct jobs.
    * 
    * @param {string} sessionId - Session ID
    * @param {string} transactionId - Transaction ID
    * @param {string} kitId - Kit to dispense
    * @param {number} quantity - Quantity (usually 1)
+   * @param {number|null} motorId - Optional motor ID (resolved from inventory if omitted)
    * @returns {Promise<object>} - Created or existing job
    */
-  async createJob(sessionId, transactionId, kitId, quantity = 1) {
-    // Check if fulfillment already exists (idempotency)
+  async createJob(sessionId, transactionId, kitId, quantity = 1, motorId = null) {
+    // Check if fulfillment job already exists for this specific (transaction_id, kit_id)
     const existing = this.db.prepare(`
       SELECT * FROM fulfillment_jobs
-      WHERE transaction_id = ?
+      WHERE transaction_id = ? AND kit_id = ?
       ORDER BY created_at DESC
       LIMIT 1
-    `).get(transactionId);
+    `).get(transactionId, kitId);
 
     if (existing) {
-      console.log(`⚠️ Fulfillment job already exists for transaction ${transactionId}`);
+      console.log(`⚠️ Fulfillment job already exists for transaction ${transactionId}, kit ${kitId}`);
       console.log(`   State: ${existing.state}, Job ID: ${existing.job_id}`);
       
       // If already COMPLETED, prevent duplicate
@@ -95,19 +97,30 @@ class FulfillmentManager {
       return existing;
     }
 
-    // Create new job
+    // Resolve motor from SQLite inventory if not explicitly provided
+    let resolvedMotorId = motorId;
+    if (resolvedMotorId === null || resolvedMotorId === undefined) {
+      try {
+        const invItem = this.db.prepare('SELECT motor_id FROM inventory WHERE kit_id = ?').get(kitId);
+        resolvedMotorId = (invItem && invItem.motor_id !== null && invItem.motor_id !== undefined) ? Number(invItem.motor_id) : null;
+      } catch (e) {
+        resolvedMotorId = null;
+      }
+    }
+
+    // Create new job with frozen motor_id
     const jobId = this.generateJobId();
     
     this.db.prepare(`
       INSERT INTO fulfillment_jobs (
-        job_id, session_id, transaction_id, kit_id, quantity, state
-      ) VALUES (?, ?, ?, ?, ?, 'PENDING')
-    `).run(jobId, sessionId, transactionId, kitId, quantity);
+        job_id, session_id, transaction_id, kit_id, quantity, motor_id, state
+      ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING')
+    `).run(jobId, sessionId, transactionId, kitId, quantity, resolvedMotorId);
 
     const job = this.db.prepare('SELECT * FROM fulfillment_jobs WHERE job_id = ?').get(jobId);
     
     console.log(`✅ Fulfillment job created: ${jobId}`);
-    console.log(`   Transaction: ${transactionId}, Kit: ${kitId}, Quantity: ${quantity}`);
+    console.log(`   Transaction: ${transactionId}, Kit: ${kitId}, Motor: ${resolvedMotorId ?? 'N/A'}, Quantity: ${quantity}`);
     
     return job;
   }
@@ -115,7 +128,7 @@ class FulfillmentManager {
   /**
    * Start dispensing (PENDING → IN_PROGRESS)
    * 
-   * Publishes MQTT command to ESP32 and updates state
+   * Publishes canonical MQTT command to ESP32 and updates state
    * 
    * @param {string} jobId - Job ID
    * @returns {Promise<boolean>} - Success
@@ -134,11 +147,15 @@ class FulfillmentManager {
       return false;
     }
 
-    // Prepare MQTT payload
+    // Resolve motor number (never kit id)
+    const motorNumber = (job.motor_id !== null && job.motor_id !== undefined) ? Number(job.motor_id) : 1;
+
+    // Prepare canonical secure MQTT payload
     const topic = `reliv/dispense/${jobId}`;
     const payload = JSON.stringify({
       jobId,
       kitId: job.kit_id,
+      motor: motorNumber,
       quantity: job.quantity,
       timestamp: Date.now()
     });
@@ -170,6 +187,7 @@ class FulfillmentManager {
 
         console.log(`✅ Dispense command published: ${jobId}`);
         console.log(`   Topic: ${topic}`);
+        console.log(`   Kit: ${job.kit_id}, Motor: ${motorNumber}, Quantity: ${job.quantity}`);
         console.log(`   Attempt: ${job.attempts + 1}/${job.max_attempts}`);
         
         resolve(true);
@@ -179,6 +197,8 @@ class FulfillmentManager {
 
   /**
    * Handle ESP32 ACK (IN_PROGRESS → COMPLETED)
+   * 
+   * Validates jobId, kitId, motor (if supplied), and quantity before COMPLETED.
    * 
    * @param {string} jobId - Job ID
    * @param {object} ackData - ACK payload from ESP32
@@ -209,6 +229,8 @@ class FulfillmentManager {
     const ackJobId = ackData.jobId || jobId;
     const ackKitId = ackData.kitId || ackData.kit_id;
     const ackQuantity = ackData.quantity !== undefined ? Number(ackData.quantity) : null;
+    const rawAckMotor = ackData.motor !== undefined ? ackData.motor : (ackData.motor_id !== undefined ? ackData.motor_id : null);
+    const ackMotor = rawAckMotor !== null && rawAckMotor !== undefined ? Number(rawAckMotor) : null;
 
     if (!ackKitId) {
       console.error(`❌ ACK validation failed for job ${jobId}: kitId is missing in ESP32 ACK payload`);
@@ -230,6 +252,14 @@ class FulfillmentManager {
       return false;
     }
 
+    // Motor validation: if motor was specified in ACK and job has a stored motor_id, they must match
+    if (ackMotor !== null && !isNaN(ackMotor) && job.motor_id !== null && job.motor_id !== undefined) {
+      if (ackMotor !== Number(job.motor_id)) {
+        console.error(`❌ ACK motor mismatch for job ${jobId}: expected motor ${job.motor_id}, got ${ackMotor}`);
+        return false;
+      }
+    }
+
     // Check if ESP32 reported a physical dispense failure
     if (ackData.status === 'FAILED' || ackData.status === 'ERROR' || ackData.success === false) {
       console.error(`❌ ACK reported physical hardware failure for job ${jobId}: ${ackData.error || ackData.status}`);
@@ -246,7 +276,7 @@ class FulfillmentManager {
     `).run(JSON.stringify(ackData), jobId);
 
     console.log(`✅ Fulfillment COMPLETED: ${jobId}`);
-    console.log(`   Kit: ${job.kit_id}, Quantity: ${job.quantity}`);
+    console.log(`   Kit: ${job.kit_id}, Motor: ${job.motor_id ?? 'N/A'}, Quantity: ${job.quantity}`);
     
     return true;
   }
@@ -439,6 +469,20 @@ class FulfillmentManager {
       WHERE session_id = ?
       ORDER BY created_at DESC
     `).all(sessionId);
+  }
+
+  /**
+   * Get all fulfillment jobs for a transaction
+   * 
+   * @param {string} transactionId - Transaction ID
+   * @returns {Array} - Jobs for this transaction
+   */
+  getJobsByTransaction(transactionId) {
+    return this.db.prepare(`
+      SELECT * FROM fulfillment_jobs
+      WHERE transaction_id = ?
+      ORDER BY created_at ASC
+    `).all(transactionId);
   }
 
   /**

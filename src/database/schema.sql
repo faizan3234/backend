@@ -286,6 +286,7 @@ CREATE TABLE IF NOT EXISTS fulfillment_jobs (
     transaction_id TEXT NOT NULL,
     kit_id TEXT NOT NULL,
     quantity INTEGER NOT NULL,
+    motor_id INTEGER,
     
     -- State machine: PENDING → IN_PROGRESS → COMPLETED / FAILED
     state TEXT NOT NULL DEFAULT 'PENDING',
@@ -318,6 +319,7 @@ CREATE TABLE IF NOT EXISTS fulfillment_jobs (
     CHECK (quantity > 0)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fulfillment_jobs_txn_kit ON fulfillment_jobs(transaction_id, kit_id);
 CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_state ON fulfillment_jobs(state);
 CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_session ON fulfillment_jobs(session_id);
 CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_transaction ON fulfillment_jobs(transaction_id);
