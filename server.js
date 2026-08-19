@@ -4275,9 +4275,6 @@ app.post("/api/sessions/:sessionId/report", async (req, res) => {
         if (!pdfGenerator) {
             pdfGenerator = new PDFGenerator(getDb());
         }
-        if (!emailQueue) {
-            emailQueue = new EmailQueueService(getDb());
-        }
 
         // Get session
         const session = sessionManager.getSession(sessionId);
@@ -4292,37 +4289,23 @@ app.post("/api/sessions/:sessionId/report", async (req, res) => {
 
         log.info(`📄 Generating health report for session: ${sessionId}`);
 
-        // 1. Generate PDF locally (NEVER blocks on email)
-        const { reportId, pdfPath, pdfBuffer } = await pdfGenerator.generateHealthReport(
+        // 1. Generate PDF locally (stored in SQLite reports table and local filesystem)
+        const { reportId, pdfPath } = await pdfGenerator.generateHealthReport(
             sessionId,
             customerData,
-            healthData
+            healthData || (session.health_data ? (typeof session.health_data === 'string' ? JSON.parse(session.health_data) : session.health_data) : null)
         );
 
-        // 2. Queue email if customer has email (asynchronous, non-blocking)
-        if (customerData.email && emailQueue) {
-            emailQueue.queueEmail(sessionId, 'EMAIL_REPORT', {
-                pdfPath,
-                pdfBuffer,
-                reportId
-            });
-
-            app.post("/api/reports/generate", async (req, res) => {
-                req.params = { sessionId: req.body.sessionId };
-                return app._router.handle({ ...req, url: `/api/sessions/${req.body.sessionId}/report` }, res);
-            });
-            log.info(`📧 Report email queued for ${customerData.email}`);
-        }
-
-        // 3. Update session status
+        // 2. Update session status
         sessionManager.updateSessionField(sessionId, 'report_status', 'READY');
 
-        // 4. Return immediately (email sends in background)
+        // 3. Return report info with local download URL (no customer email queued)
         res.json({
             ok: true,
             reportId,
-            pdfPath: `/api/sessions/${sessionId}/report/download`,
-            emailQueued: !!customerData.email
+            sessionId,
+            downloadUrl: `/api/sessions/${sessionId}/report/download`,
+            pdfPath: `/api/sessions/${sessionId}/report/download`
         });
 
     } catch (err) {

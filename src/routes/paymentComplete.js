@@ -236,26 +236,16 @@ export async function handlePaymentComplete(req, res) {
                     : {};
 
                 const pdfGenerator = new PDFGenerator(getDb());
-                const { reportId, pdfPath, pdfBuffer } = await pdfGenerator.generateHealthReport(
+                const { reportId, pdfPath } = await pdfGenerator.generateHealthReport(
                     sessionId,
                     customerData,
                     healthData
                 );
-                console.log(`✅ Health report PDF saved locally: ${pdfPath}`);
+                console.log(`✅ Health report PDF saved locally: ${pdfPath} (reportId: ${reportId})`);
 
-                if (customerData.email) {
-                    const emailQueue = new EmailQueueService(getDb());
-                    emailQueue.queueEmail(sessionId, 'EMAIL_REPORT', {
-                        pdfPath,
-                        pdfBuffer,
-                        reportId
-                    });
-                    console.log(`📧 Health report email queued for ${customerData.email}`);
-                }
-
-                sessionManager.updateReportStatus(sessionId, 'QUEUED');
+                sessionManager.updateReportStatus(sessionId, 'READY');
                 sessionManager.markCompleted(sessionId);
-                completionStatus = 'report_queued';
+                completionStatus = 'report_ready';
             } catch (pdfErr) {
                 console.error(`❌ Health report PDF generation failed for session ${sessionId}:`, pdfErr);
                 sessionManager.updateReportStatus(sessionId, 'FAILED');
