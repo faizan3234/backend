@@ -2642,103 +2642,6 @@ mqttClient.on("message", async (topic, message) => {
     }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// DISPENSING SYSTEM — MQTT motor control (runs ONLY after payment)
-// ═══════════════════════════════════════════════════════════════════════════
-// Kit id → Motor number mapping:
-//   Kit id 1 → Motor 1 (GPIO 18) — Women's Kit
-//   Kit id 2 → Motor 2 (GPIO 19) — Travel Kit
-//   Kit id 3 → Motor 3 (GPIO 21) — First Aid Kit
-//
-// ESP32 MQTT commands (exact format your ESP32 code expects):
-//   Single:  {"motor":2,"quantity":3}
-//   Multi:   {"commands":[{"motor":1,"quantity":2},{"motor":2,"quantity":1}]}
-
-app.post("/api/dispense", async (req, res) => {
-    try {
-        const { cart } = req.body; // [{ id, cartQuantity, ... }]
-
-        if (!Array.isArray(cart) || cart.length === 0) {
-            return res.status(400).json({ ok: false, message: "No items to dispense" });
-        }
-
-        if (!mqttClient || !mqttClient.connected) {
-            return res.status(503).json({ ok: false, message: "MQTT not connected. Dispenser offline." });
-        }
-
-        // Build commands from cart — kit id = motor number
-        const commands = [];
-        for (const item of cart) {
-            const motor = Number(item.id);
-            const qty = Number(item.cartQuantity);
-            if (!motor || motor < 1 || motor > 3) continue;
-            if (!qty || qty < 1 || qty > 10) continue;
-            commands.push({ motor, quantity: qty });
-        }
-
-        if (commands.length === 0) {
-            return res.status(400).json({ ok: false, message: "No valid kits to dispense" });
-        }
-
-        // Use single format for 1 kit, multi format for 2+ kits (matches ESP32 code)
-        const payload = commands.length === 1
-            ? JSON.stringify({ motor: commands[0].motor, quantity: commands[0].quantity })
-            : JSON.stringify({ commands });
-
-        mqttClient.publish("kiosk/relay/dispense", payload, { qos: 1 }, (err) => {
-            if (err) {
-                log.error("❌ MQTT dispense publish error:", err.message);
-                return res.status(500).json({ ok: false, message: "Failed to send dispense command" });
-            }
-            log.info(`✅ Dispense sent: ${payload}`);
-            return res.json({ ok: true, message: "Dispense commands sent", commands });
-        });
-
-        app.post("/api/dispense/start", async (req, res) => {
-            return app._router.handle({ ...req, url: "/api/dispense" }, res);
-        });
-
-        app.post("/api/dispense/confirm", async (req, res) => {
-            try {
-                const { sessionId, transactionId } = req.body;
-                if (!sessionId || !transactionId) {
-                    return res.status(400).json({ ok: false, message: "sessionId and transactionId are required" });
-                }
-                sessionManager.updateDispenseStatus(sessionId, 'COMPLETED');
-                transactionManager.markFulfilled(transactionId);
-                return res.json({ ok: true, sessionId, transactionId });
-            } catch (err) {
-                log.error("❌ Dispense confirm error:", err.message);
-                return res.status(500).json({ ok: false, message: err.message || "Failed to confirm dispense" });
-            }
-        });
-
-        app.post("/api/dispense/start", async (req, res) => {
-            req.url = "/api/dispense";
-            return app._router.handle(req, res);
-        });
-
-        app.post("/api/dispense/confirm", async (req, res) => {
-            try {
-                const { sessionId, transactionId } = req.body;
-                if (!sessionId || !transactionId) {
-                    return res.status(400).json({ ok: false, message: "sessionId and transactionId are required" });
-                }
-                sessionManager.updateDispenseStatus(sessionId, 'COMPLETED');
-                transactionManager.markFulfilled(transactionId);
-                res.json({ ok: true, sessionId, transactionId });
-            } catch (err) {
-                log.error("❌ Dispense confirm error:", err.message);
-                res.status(500).json({ ok: false, message: err.message || "Failed to confirm dispense" });
-            }
-        });
-
-    } catch (err) {
-        log.error("❌ Dispense error:", err.message);
-        res.status(500).json({ ok: false, message: "Dispense failed" });
-    }
-});
-
 // Database availability middleware for critical routes
 function requireDatabase(req, res, next) {
     if (!dbConnected || !db) {
@@ -3706,9 +3609,7 @@ app.get("/api/cloud-dependencies", (req, res) => {
             "/api/payment/create-order",
             "/api/payment/verify",
             "/api/reports/generate",
-            "/api/receipts/generate",
-            "/api/dispense/start",
-            "/api/dispense/confirm"
+            "/api/receipts/generate"
         ],
         dependencies: CLOUD_DEPENDENCY_JUSTIFICATION,
         remainingMongoRoutes: mongoRoutes,
