@@ -5,6 +5,8 @@ import Razorpay from 'razorpay';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import Database from 'better-sqlite3';
+import PaymentV2CloudService from './paymentV2Service.js';
+import { createPaymentV2Router } from './paymentV2Routes.js';
 
 dotenv.config();
 
@@ -221,6 +223,23 @@ const razorpay = new Razorpay({
 });
 
 console.log('✅ Razorpay client initialized');
+
+// ============================================================
+// PAYMENT V2 CLOUD SERVICE (Zero-Internet Kiosk QR Protocol)
+// ============================================================
+
+const paymentV2Service = new PaymentV2CloudService({
+    db,
+    razorpay,
+    cloudPrivateKeyPath: process.env.PAYMENT_V2_CLOUD_PRIVATE_KEY_PATH || './payment-v2-cloud-private-key.pem',
+    kioskPublicKeyPath: process.env.PAYMENT_V2_KIOSK_PUBLIC_KEY_PATH || './payment-v2-kiosk-public-key.pem',
+    codeSecret: process.env.PAYMENT_V2_CODE_ENCRYPTION_SECRET
+});
+
+app.use('/v2', createPaymentV2Router(paymentV2Service));
+app.use('/api/v2', createPaymentV2Router(paymentV2Service));
+
+console.log('✅ Payment V2 cloud routes mounted on /v2 and /api/v2');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AUTHORITATIVE ORDER CREATION & BINDING
@@ -598,6 +617,8 @@ app.get('/health', (req, res) => {
         ),
 
         privateKey: Boolean(privateKey),
+
+        paymentV2: paymentV2Service.isConfigured(),
 
         database: databaseHealthy,
 

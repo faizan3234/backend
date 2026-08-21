@@ -9,6 +9,8 @@ node_modules/
 # RSA private material
 private-key.pem
 *.key
+*payment-v2*-private-key.pem
+*payment-v2*-private.pem
 
 # Runtime database
 bridge.db

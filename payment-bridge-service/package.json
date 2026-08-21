@@ -6,9 +6,11 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js",
+    "check": "node --check index.js && node --check paymentV2Crypto.js && node --check paymentV2Service.js && node --check paymentV2Routes.js && node --check paymentV2Db.js && node --check generate-payment-v2-cloud-key.js",
+    "test": "node test-payment-v2-cloud.js",
     "dev": "node --watch index.js",
     "generate-keys": "node generate-keys.js",
+    "generate-v2-keys": "node generate-payment-v2-cloud-key.js",
     "init-db": "node init-db.js"
   },
   "dependencies": {
