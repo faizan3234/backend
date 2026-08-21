@@ -135,11 +135,14 @@ export function verifyKioskSignature(canonicalPayload, signatureBase64Url, kiosk
 /**
  * Encrypt confirmation code at rest using local secret (AES-256-GCM)
  * @param {string} code - 4-digit code
- * @param {string} secret - 32-byte secret (or string)
+ * @param {string} secret - Secret key string
  * @returns {string} iv:tag:ciphertext (base64)
  */
 export function encryptConfirmationCodeAtRest(code, secret) {
-    const key = crypto.createHash('sha256').update(String(secret || 'reliv_default_cloud_secret_seed')).digest();
+    if (!secret || !String(secret).trim()) {
+        throw new Error('Code encryption secret is required');
+    }
+    const key = crypto.createHash('sha256').update(String(secret), 'utf8').digest();
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
     const ct = Buffer.concat([cipher.update(String(code), 'utf8'), cipher.final()]);
@@ -151,15 +154,18 @@ export function encryptConfirmationCodeAtRest(code, secret) {
 /**
  * Decrypt confirmation code at rest using local secret (AES-256-GCM)
  * @param {string} encryptedStr - iv:tag:ciphertext (base64)
- * @param {string} secret - 32-byte secret
+ * @param {string} secret - Secret key string
  * @returns {string} 4-digit plaintext code
  */
 export function decryptConfirmationCodeAtRest(encryptedStr, secret) {
+    if (!secret || !String(secret).trim()) {
+        throw new Error('Code decryption secret is required');
+    }
     if (!encryptedStr || !encryptedStr.includes(':')) {
         throw new Error('Invalid encrypted code format');
     }
     const [ivB64, tagB64, ctB64] = encryptedStr.split(':');
-    const key = crypto.createHash('sha256').update(String(secret || 'reliv_default_cloud_secret_seed')).digest();
+    const key = crypto.createHash('sha256').update(String(secret), 'utf8').digest();
     const iv = Buffer.from(ivB64, 'base64');
     const tag = Buffer.from(tagB64, 'base64');
     const ct = Buffer.from(ctB64, 'base64');

@@ -719,6 +719,91 @@ const v2CloudService = new PaymentV2CloudService({
     assert(rebootPaidOrder.paid === true && rebootPaidOrder.status === 'PAID', 'Order status persists across service restart');
 
     // ───────────────────────────────────────────────────────────────────────
+    // 11. FAIL-SAFE STARTUP & MISSING CONFIGURATION HANDLING
+    // ───────────────────────────────────────────────────────────────────────
+    section('11. Fail-Safe Startup & Missing Configuration Handling');
+
+    // 1. Missing secret throws in crypto methods
+    let encryptSecretMissing = false;
+    try {
+        encryptConfirmationCodeAtRest('1234', '');
+    } catch (e) {
+        encryptSecretMissing = true;
+    }
+    assert(encryptSecretMissing, 'encryptConfirmationCodeAtRest throws when secret is missing (no hardcoded fallback)');
+
+    let decryptSecretMissing = false;
+    try {
+        decryptConfirmationCodeAtRest('a:b:c', '');
+    } catch (e) {
+        decryptSecretMissing = true;
+    }
+    assert(decryptSecretMissing, 'decryptConfirmationCodeAtRest throws when secret is missing (no hardcoded fallback)');
+
+    // 2. isConfigured returns false when codeSecret is missing
+    const unconfiguredNoSecret = new PaymentV2CloudService({
+        db,
+        razorpay: mockRazorpay,
+        cloudPrivateKey: cloudKeys4096.privateKey,
+        kioskPublicKeysMap: { 'RELIV-001': kioskKeys.publicKey },
+        codeSecret: ''
+    });
+    assert(unconfiguredNoSecret.isConfigured() === false, 'isConfigured() returns false when codeSecret is missing');
+
+    // 3. isConfigured returns false when private key is missing
+    const unconfiguredNoKey = new PaymentV2CloudService({
+        db,
+        razorpay: mockRazorpay,
+        cloudPrivateKeyPath: './non-existent-key.pem',
+        kioskPublicKeysMap: { 'RELIV-001': kioskKeys.publicKey },
+        codeSecret: TEST_SECRET
+    });
+    assert(unconfiguredNoKey.isConfigured() === false, 'isConfigured() returns false when cloud RSA private key is missing');
+
+    // 4. isConfigured returns false when razorpay is missing
+    const unconfiguredNoRzp = new PaymentV2CloudService({
+        db,
+        razorpay: null,
+        cloudPrivateKey: cloudKeys4096.privateKey,
+        kioskPublicKeysMap: { 'RELIV-001': kioskKeys.publicKey },
+        codeSecret: TEST_SECRET
+    });
+    assert(unconfiguredNoRzp.isConfigured() === false, 'isConfigured() returns false when razorpay is missing');
+
+    // 5. isConfigured returns false when kiosk public key is missing
+    const unconfiguredNoKiosk = new PaymentV2CloudService({
+        db,
+        razorpay: mockRazorpay,
+        cloudPrivateKey: cloudKeys4096.privateKey,
+        kioskPublicKeyPath: './non-existent-kiosk.pem',
+        kioskPublicKeysMap: {},
+        codeSecret: TEST_SECRET
+    });
+    assert(unconfiguredNoKiosk.isConfigured() === false, 'isConfigured() returns false when kiosk public keys are missing');
+
+    // 6. createOrderFromPackage throws PAYMENT_V2_NOT_CONFIGURED
+    let createOrderNotConfigured = false;
+    try {
+        await unconfiguredNoSecret.createOrderFromPackage(package4096);
+    } catch (e) {
+        if (e.code === 'PAYMENT_V2_NOT_CONFIGURED') createOrderNotConfigured = true;
+    }
+    assert(createOrderNotConfigured, 'createOrderFromPackage throws PAYMENT_V2_NOT_CONFIGURED when unconfigured');
+
+    // 7. verifyPaymentAndRevealCode throws PAYMENT_V2_NOT_CONFIGURED
+    let verifyNotConfigured = false;
+    try {
+        await unconfiguredNoSecret.verifyPaymentAndRevealCode({
+            orderId: 'order_123',
+            paymentId: 'pay_123',
+            signature: 'sig_123'
+        });
+    } catch (e) {
+        if (e.code === 'PAYMENT_V2_NOT_CONFIGURED') verifyNotConfigured = true;
+    }
+    assert(verifyNotConfigured, 'verifyPaymentAndRevealCode throws PAYMENT_V2_NOT_CONFIGURED when unconfigured');
+
+    // ───────────────────────────────────────────────────────────────────────
     // CLEANUP
     // ───────────────────────────────────────────────────────────────────────
     db.close();

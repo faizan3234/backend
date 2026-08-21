@@ -27,7 +27,7 @@ export class PaymentV2CloudService {
         cloudPrivateKey = null,
         kioskPublicKeyPath = process.env.PAYMENT_V2_KIOSK_PUBLIC_KEY_PATH || './payment-v2-kiosk-public-key.pem',
         kioskPublicKeysMap = null,
-        codeSecret = process.env.PAYMENT_V2_CODE_ENCRYPTION_SECRET || 'reliv_cloud_code_at_rest_secret_seed',
+        codeSecret = process.env.PAYMENT_V2_CODE_ENCRYPTION_SECRET || '',
         ttlMarginMs = 30000 // 30s grace period for clock skew
     } = {}) {
         this.db = db;
@@ -36,7 +36,7 @@ export class PaymentV2CloudService {
         this._cloudPrivateKey = cloudPrivateKey;
         this.kioskPublicKeyPath = kioskPublicKeyPath;
         this.kioskPublicKeysMap = kioskPublicKeysMap || {};
-        this.codeSecret = codeSecret;
+        this.codeSecret = String(codeSecret || '').trim();
         this.ttlMarginMs = ttlMarginMs;
         this._inflightOrders = new Map();
 
@@ -74,9 +74,24 @@ export class PaymentV2CloudService {
     }
 
     isConfigured() {
+        if (!this.codeSecret || !String(this.codeSecret).trim()) {
+            return false;
+        }
+        if (!this.razorpay || !this.razorpay.key_id || !this.razorpay.key_secret) {
+            return false;
+        }
         try {
             const privKey = this.getCloudPrivateKey();
-            return Boolean(privKey && this.razorpay);
+            if (!privKey || !privKey.includes('PRIVATE KEY')) {
+                return false;
+            }
+            // Verify at least default kiosk public key path exists or keys map has entries
+            const hasRegisteredKiosk = Object.keys(this.kioskPublicKeysMap).length > 0 ||
+                (Boolean(this.kioskPublicKeyPath) && fs.existsSync(this.kioskPublicKeyPath));
+            if (!hasRegisteredKiosk) {
+                return false;
+            }
+            return true;
         } catch {
             return false;
         }
@@ -89,6 +104,12 @@ export class PaymentV2CloudService {
      * @returns {Promise<Object>}
      */
     async createOrderFromPackage(packageStr) {
+        if (!this.isConfigured()) {
+            const err = new Error('Payment V2 is not configured on this bridge. Required keys or secrets missing.');
+            err.code = 'PAYMENT_V2_NOT_CONFIGURED';
+            throw err;
+        }
+
         if (!packageStr || typeof packageStr !== 'string') {
             const err = new Error('Package parameter is required');
             err.code = 'INVALID_PACKAGE';
@@ -306,6 +327,12 @@ export class PaymentV2CloudService {
      * @returns {Promise<Object>}
      */
     async verifyPaymentAndRevealCode({ orderId, paymentId, signature, requestId = null }) {
+        if (!this.isConfigured()) {
+            const err = new Error('Payment V2 is not configured on this bridge. Required keys or secrets missing.');
+            err.code = 'PAYMENT_V2_NOT_CONFIGURED';
+            throw err;
+        }
+
         if (!orderId || !paymentId || !signature) {
             const err = new Error('orderId, paymentId, and signature are required');
             err.code = 'MISSING_PARAMS';

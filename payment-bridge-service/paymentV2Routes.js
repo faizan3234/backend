@@ -90,6 +90,8 @@ export function createPaymentV2Router(paymentV2CloudService, {
             console.error('[PaymentV2Routes] ❌ Error creating order:', err.message);
 
             const statusCode = (
+                err.code === 'PAYMENT_V2_NOT_CONFIGURED'
+            ) ? 503 : (
                 err.code === 'DECRYPTION_FAILED' ||
                 err.code === 'INVALID_SIGNATURE' ||
                 err.code === 'INVALID_PAYLOAD_STRUCTURE' ||
@@ -134,6 +136,8 @@ export function createPaymentV2Router(paymentV2CloudService, {
             console.error('[PaymentV2Routes] ❌ Error verifying payment:', err.message);
 
             const statusCode = (
+                err.code === 'PAYMENT_V2_NOT_CONFIGURED'
+            ) ? 503 : (
                 err.code === 'INVALID_PAYMENT_SIGNATURE' ||
                 err.code === 'AMOUNT_MISMATCH' ||
                 err.code === 'ORDER_ID_MISMATCH' ||
