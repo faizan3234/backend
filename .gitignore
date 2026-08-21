@@ -36,6 +36,9 @@ data/service-account-key.json
 
 # Security keys & temporary files
 *.pem
+*payment-v2*-private-key.pem
+*payment-v2*-private.pem
+config/*private-key*.pem
 scratch/
 data/*.db*
 payment-bridge-service/*.db*

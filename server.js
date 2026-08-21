@@ -34,6 +34,8 @@ import settingsManager from "./src/services/settingsManager.js";
 import fulfillmentManager from "./src/services/fulfillmentManager.js";
 import { handlePaymentComplete } from "./src/routes/paymentComplete.js";
 import { buildValidatedRedirectUrl } from "./src/utils/redirectHelper.js";
+import paymentV2Service from "./src/services/paymentV2Service.js";
+import { createPaymentV2Router } from "./src/routes/paymentV2Routes.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 🔐 STAGE I: SECURE PAYMENT ARCHITECTURE (Post-Stage H Security Fix)
@@ -3277,6 +3279,14 @@ app.post("/payment-complete", handlePaymentComplete);
 app.post("/api/payment-complete", handlePaymentComplete);
 
 // ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Payment V2 (Offline Kiosk Transport V2)
+// POST /api/sessions/:sessionId/payment-v2/request
+// GET  /api/sessions/:sessionId/payment-v2/status
+// POST /api/sessions/:sessionId/payment-v2/confirm-code
+// ───────────────────────────────────────────────────────────────────────────
+app.use("/api/sessions/:sessionId/payment-v2", createPaymentV2Router(paymentV2Service));
+
+// ───────────────────────────────────────────────────────────────────────────
 // ENDPOINT: Resolve QR Path (Returns session token from scanned QR path)
 // ───────────────────────────────────────────────────────────────────────────
 app.post("/api/resolve-path", (req, res) => {
@@ -3566,6 +3576,7 @@ app.get("/api/status", (req, res) => {
             database: !!checkDatabaseHealth().healthy,
             email: emailAvailable,
             payments: !!process.env.RAZORPAY_KEY_SECRET,
+            paymentV2: paymentV2Service.isConfigured(),
             googleDrive: googleDriveAvailable,
             mqtt: !!mqttClient?.connected,
             bleHardware: !IS_CLOUD // BLE only available locally

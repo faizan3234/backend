@@ -241,6 +241,63 @@ class TransactionManager {
     }
 
     /**
+     * Verify payment with arbitrary proof source (e.g. CLOUD_CODE_V2)
+     * IDEMPOTENT: Safe to call multiple times for the same transaction
+     *
+     * @param {Object} params
+     * @param {string} params.transactionId
+     * @param {string} [params.source] - e.g. 'CLOUD_CODE_V2'
+     * @param {string} [params.reference] - e.g. requestId
+     * @param {number} [params.amount] - optional amount in paise for validation
+     * @returns {Object} { verified: boolean, already_verified: boolean }
+     */
+    verifyPaymentWithProof({ transactionId, source = 'CLOUD_CODE_V2', reference = null, amount = null }) {
+        const transaction = this.getTransaction(transactionId);
+
+        if (!transaction) {
+            throw new Error(`Transaction ${transactionId} not found`);
+        }
+
+        // ✅ IDEMPOTENCY: If already verified or fulfilled, return success
+        if (transaction.status === TRANSACTION_STATES.VERIFIED || transaction.status === TRANSACTION_STATES.FULFILLED || transaction.verified === 1) {
+            console.log(`[TransactionManager] Payment already verified for ${transactionId}`);
+            return { verified: true, already_verified: true };
+        }
+
+        // Validate amount matches if provided
+        if (amount !== null && amount !== undefined && amount !== transaction.amount) {
+            throw new Error(
+                `Amount mismatch: expected ₹${transaction.amount / 100}, got ₹${amount / 100}`
+            );
+        }
+
+        // Validate state transition
+        this._validateTransition(transaction.status, 'VERIFIED');
+
+        const stmt = this.db.prepare(`
+            UPDATE transactions
+            SET status = ?,
+                provider = ?,
+                provider_payment_id = ?,
+                verified = 1,
+                verified_at = datetime('now'),
+                updated_at = datetime('now')
+            WHERE transaction_id = ?
+        `);
+
+        stmt.run(
+            TRANSACTION_STATES.VERIFIED,
+            source,
+            reference,
+            transactionId
+        );
+
+        console.log(`[TransactionManager] ✅ Payment verified with proof [${source}]: ${reference} for ${transactionId}`);
+
+        return { verified: true, already_verified: false };
+    }
+
+    /**
      * Mark transaction as fulfilled (medicine dispensed or report sent)
      */
     markFulfilled(transactionId) {

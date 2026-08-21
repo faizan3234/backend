@@ -23,6 +23,7 @@ import PDFGenerator from '../services/pdfGenerator.js';
 import EmailQueueService from '../services/emailQueue.js';
 import { getDb, transaction as dbTransaction } from '../database/db.js';
 import { buildValidatedRedirectUrl } from '../utils/redirectHelper.js';
+import paymentFinalizationService from '../services/paymentFinalizationService.js';
 
 /**
  * POST /payment-complete
@@ -147,111 +148,50 @@ export async function handlePaymentComplete(req, res) {
         // ───────────────────────────────────────────────────────────────────
         // STEP 6: ATOMIC SQLITE DATABASE TRANSACTION
         // ───────────────────────────────────────────────────────────────────
-        const createdJobs = [];
         try {
-            dbTransaction(() => {
-                // 1. Store Nonce
-                paymentAuthVerifier.storeNonce(
-                    authorization.nonce,
-                    sessionId,
-                    transaction.transaction_id,
-                    authorization.paymentId,
-                    authorization.amount
-                );
+            // 1. Record Nonce in SQLite (Prevent Replay Attacks)
+            db.prepare(`
+                INSERT INTO payment_nonces (nonce, session_id, transaction_id, created_at)
+                VALUES (?, ?, ?, datetime('now'))
+            `).run(
+                authorization.nonce,
+                sessionId,
+                transaction.transaction_id
+            );
 
-                // 2. Consume Pairing Token
-                sessionManager.consumePairingToken(sessionId, pairingToken);
+            // 2. Consume Pairing Token
+            sessionManager.consumePairingToken(sessionId, pairingToken);
 
-                // 3. Record Payment Verification
-                const paymentDetails = {
-                    id: authorization.paymentId,
-                    amount: authorization.amount,
-                    status: 'captured', // Payment Bridge verified this with Razorpay API
-                    order_id: authorization.orderId
-                };
-                
-                transactionManager.verifyPayment(
-                    transaction.transaction_id,
-                    authorization.paymentId,
-                    paymentDetails
-                );
-
-                // 4. Update Session Status
-                sessionManager.markPaymentVerified(sessionId, authorization.paymentId);
-
-                // 5. Create Fulfillment Job(s) (if MEDICINE or HEALTH_CHECKUP)
-                if (session.service_type === 'MEDICINE') {
-                    const cart = transaction.cart ? (typeof transaction.cart === 'string' ? JSON.parse(transaction.cart) : transaction.cart) : [];
-                    if (cart.length > 0) {
-                        for (const item of cart) {
-                            const job = fulfillmentManager.createJob(
-                                sessionId,
-                                transaction.transaction_id,
-                                item.kit_id,
-                                item.quantity
-                            );
-                            createdJobs.push(job);
-                        }
-                        sessionManager.markFulfillment(sessionId);
-                    }
-                } else if (session.service_type === 'HEALTH_CHECKUP') {
-                    sessionManager.updateReportStatus(sessionId, 'GENERATING');
-                }
-            });
-
-            console.log('✅ Atomic payment completion transaction committed to SQLite');
+            console.log('✅ Nonce recorded and pairing token consumed in SQLite');
 
         } catch (err) {
-            console.error('❌ CRITICAL: Atomic payment completion transaction failed (ROLLED BACK):', err);
+            console.error('❌ CRITICAL: Nonce / pairing token consumption failed (ROLLED BACK):', err);
             return res.status(500).send(generateErrorPage(
                 'Payment processing error.',
-                'Your payment verification could not be saved to local database. The transaction was safely rolled back. Please try again.'
+                'Your payment verification could not be saved to local database. Please try again.'
             ));
         }
 
         // ───────────────────────────────────────────────────────────────────
-        // STEP 7: Service Post-Processing (MQTT Dispensing or Local PDF)
+        // STEP 7: Unified Service Finalization (Dispensing or Local PDF)
         // ───────────────────────────────────────────────────────────────────
-        let completionStatus = 'report_ready';
+        const paymentDetails = {
+            id: authorization.paymentId,
+            amount: authorization.amount,
+            status: 'captured', // Payment Bridge verified this with Razorpay API
+            order_id: authorization.orderId
+        };
 
-        if (session.service_type === 'MEDICINE') {
-            for (const job of createdJobs) {
-                try {
-                    await fulfillmentManager.startDispensing(job.job_id);
-                    console.log(`✅ Dispensing started for job: ${job.job_id}`);
-                } catch (err) {
-                    console.error(`⚠️ Dispense command publish failed for job ${job.job_id}:`, err.message);
-                }
-            }
-            completionStatus = 'dispensing';
+        const finalResult = await paymentFinalizationService.finalizeVerifiedPayment({
+            sessionId,
+            transactionId: transaction.transaction_id,
+            verificationSource: 'RAZORPAY_RSA_SIGNATURE',
+            verificationReference: authorization.paymentId,
+            amount: authorization.amount,
+            legacyPaymentDetails: paymentDetails
+        });
 
-        } else if (session.service_type === 'HEALTH_CHECKUP') {
-            console.log(`📄 Generating health report PDF locally for session: ${sessionId}`);
-            try {
-                const customerData = session.customer_data ? 
-                    (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) 
-                    : {};
-                const healthData = session.health_data ? 
-                    (typeof session.health_data === 'string' ? JSON.parse(session.health_data) : session.health_data) 
-                    : {};
-
-                const pdfGenerator = new PDFGenerator(getDb());
-                const { reportId, pdfPath } = await pdfGenerator.generateHealthReport(
-                    sessionId,
-                    customerData,
-                    healthData
-                );
-                console.log(`✅ Health report PDF saved locally: ${pdfPath} (reportId: ${reportId})`);
-
-                sessionManager.updateReportStatus(sessionId, 'READY');
-                sessionManager.markCompleted(sessionId);
-                completionStatus = 'report_ready';
-            } catch (pdfErr) {
-                console.error(`❌ Health report PDF generation failed for session ${sessionId}:`, pdfErr);
-                sessionManager.updateReportStatus(sessionId, 'FAILED');
-                completionStatus = 'report_failed';
-            }
-        }
+        const completionStatus = finalResult.completionStatus;
         
         // ───────────────────────────────────────────────────────────────────
         // STEP 8: 302 Redirect to HTTPS Customer Site with Verified Status

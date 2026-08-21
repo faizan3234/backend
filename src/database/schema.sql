@@ -403,5 +403,37 @@ INSERT OR IGNORE INTO system_config (key, value) VALUES
     ('session_ttl_minutes', '10'),
     ('db_initialized_at', datetime('now'));
 
+-- ───────────────────────────────────────────────────────────────────────────
+-- PAYMENT_V2_REQUESTS - Offline Payment Transport V2 Requests
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS payment_v2_requests (
+    request_id TEXT PRIMARY KEY,
+    request_nonce TEXT UNIQUE NOT NULL,
+    session_id TEXT NOT NULL,
+    transaction_id TEXT NOT NULL,
+    kiosk_id TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    service_type TEXT NOT NULL,
+    code_hmac TEXT NOT NULL,
+    encrypted_package TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ACTIVE', -- ACTIVE, VERIFIED, EXPIRED, LOCKED, CANCELLED
+    attempt_count INTEGER DEFAULT 0,
+    max_attempts INTEGER DEFAULT 5,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    verified_at INTEGER,
+    consumed_at INTEGER,
+    cancelled_at INTEGER,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id),
+    FOREIGN KEY (transaction_id) REFERENCES transactions(transaction_id),
+    CHECK (status IN ('ACTIVE', 'VERIFIED', 'EXPIRED', 'LOCKED', 'CANCELLED'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_v2_session ON payment_v2_requests(session_id);
+CREATE INDEX IF NOT EXISTS idx_payment_v2_transaction ON payment_v2_requests(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_payment_v2_nonce ON payment_v2_requests(request_nonce);
+CREATE INDEX IF NOT EXISTS idx_payment_v2_status ON payment_v2_requests(status);
+CREATE INDEX IF NOT EXISTS idx_payment_v2_expires ON payment_v2_requests(expires_at);
+
 -- Initialize schema version
 INSERT OR IGNORE INTO schema_version (version) VALUES (1);
