@@ -10,8 +10,8 @@ dotenv.config();
 
 const app = express();
 
-const PORT = Number(process.env.PORT) || 3001;
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = process.env.HOST || '127.0.0.1';
+const PORT = Number(process.env.PORT || 10000);
 const PRIVATE_KEY_PATH = process.env.PRIVATE_KEY_PATH || './private-key.pem';
 const DATABASE_PATH = process.env.DATABASE_PATH || './bridge.db';
 
