@@ -1,8 +1,8 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * RELIV CLOUD PAYMENT BRIDGE — PAYMENT V2 AUTOMATED TEST SUITE
- * Purpose: Comprehensive security, crypto, and payment verification tests
- *          for the cloud Payment Transport V2 backend.
+ * RELIV CLOUD PAYMENT BRIDGE — EXPANDED PAYMENT V2 TEST SUITE
+ * Purpose: Comprehensive security, crypto, replay, concurrency, and payment
+ *          verification tests for the cloud Payment Transport V2 backend.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -15,11 +15,13 @@ import {
     base64UrlDecode,
     decryptPackage,
     verifyKioskSignature,
+    computePayloadFingerprint,
     encryptConfirmationCodeAtRest,
     decryptConfirmationCodeAtRest,
     verifyRazorpayPaymentSignature
 } from './paymentV2Crypto.js';
 import { PaymentV2CloudService } from './paymentV2Service.js';
+import { createV2RateLimiter } from './paymentV2Routes.js';
 
 let passed = 0;
 let failed = 0;
@@ -43,7 +45,7 @@ function section(name) {
 // ───────────────────────────────────────────────────────────────────────────
 // TEST FIXTURES & KEYS
 // ───────────────────────────────────────────────────────────────────────────
-const TEST_DB_PATH = './test-bridge-v2.db';
+const TEST_DB_PATH = './test-bridge-v2-expanded.db';
 if (fs.existsSync(TEST_DB_PATH)) {
     try { fs.unlinkSync(TEST_DB_PATH); } catch {}
 }
@@ -51,7 +53,7 @@ if (fs.existsSync(TEST_DB_PATH)) {
 const db = new Database(TEST_DB_PATH);
 db.pragma('journal_mode = WAL');
 
-// Generate test Kiosk Ed25519 keypair (simulating Pi)
+// Generate test Kiosk Ed25519 keypair
 const kioskKeys = crypto.generateKeyPairSync('ed25519', {
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
     publicKeyEncoding: { type: 'spki', format: 'pem' }
@@ -62,8 +64,15 @@ const otherKioskKeys = crypto.generateKeyPairSync('ed25519', {
     publicKeyEncoding: { type: 'spki', format: 'pem' }
 });
 
-// Generate test Cloud RSA keypair
-const cloudKeys = crypto.generateKeyPairSync('rsa', {
+// Generate RSA-4096 Cloud keypair
+const cloudKeys4096 = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 4096,
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' }
+});
+
+// Generate RSA-2048 Cloud keypair for legacy/compatibility check
+const cloudKeys2048 = crypto.generateKeyPairSync('rsa', {
     modulusLength: 2048,
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
     publicKeyEncoding: { type: 'spki', format: 'pem' }
@@ -110,12 +119,16 @@ function createPiHybridPackage(payload, kioskPrivateKey, cloudPublicKey) {
     return base64UrlEncode(Buffer.from(JSON.stringify(outerEnvelope), 'utf8'));
 }
 
+// Track Razorpay order creations
+let rzpOrderCreateCount = 0;
+
 // Mock Razorpay Client
 const mockRazorpay = {
     key_id: RZP_KEY_ID,
     key_secret: RZP_KEY_SECRET,
     orders: {
         create: async (params) => {
+            rzpOrderCreateCount++;
             return {
                 id: `order_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
                 entity: 'order',
@@ -129,12 +142,20 @@ const mockRazorpay = {
     },
     payments: {
         fetch: async (paymentId) => {
-            // Default mock payment
             if (paymentId === 'pay_failed') {
                 return { id: paymentId, status: 'failed', amount: 50000, currency: 'INR', order_id: 'order_test' };
             }
+            if (paymentId === 'pay_authorized_only') {
+                return { id: paymentId, status: 'authorized', amount: 50000, currency: 'INR', order_id: 'order_test' };
+            }
+            if (paymentId === 'pay_refunded') {
+                return { id: paymentId, status: 'refunded', amount: 50000, currency: 'INR', order_id: 'order_test' };
+            }
             if (paymentId.startsWith('pay_mismatch_amount')) {
                 return { id: paymentId, status: 'captured', amount: 1000, currency: 'INR', order_id: 'order_test' };
+            }
+            if (paymentId.startsWith('pay_mismatch_currency')) {
+                return { id: paymentId, status: 'captured', amount: 50000, currency: 'USD', order_id: 'order_test' };
             }
             return {
                 id: paymentId,
@@ -150,7 +171,7 @@ const mockRazorpay = {
 const v2CloudService = new PaymentV2CloudService({
     db,
     razorpay: mockRazorpay,
-    cloudPrivateKey: cloudKeys.privateKey,
+    cloudPrivateKey: cloudKeys4096.privateKey,
     kioskPublicKeysMap: {
         'RELIV-001': kioskKeys.publicKey
     },
@@ -158,12 +179,12 @@ const v2CloudService = new PaymentV2CloudService({
 });
 
 (async function runAllCloudTests() {
-    console.log('\n🚀 RUNNING CLOUD PAYMENT TRANSPORT V2 TEST SUITE\n');
+    console.log('\n🚀 RUNNING HARDENED CLOUD PAYMENT TRANSPORT V2 TEST SUITE\n');
 
     // ───────────────────────────────────────────────────────────────────────
-    // 1. CRYPTO & DECRYPTION PRIMITIVES
+    // 1. CRYPTO & RSA-4096 / RSA-2048 PRIMITIVES
     // ───────────────────────────────────────────────────────────────────────
-    section('1. Crypto & Decryption Primitives');
+    section('1. Crypto & RSA-4096 / RSA-2048 Primitives');
 
     const testPayload = {
         v: 2,
@@ -181,28 +202,50 @@ const v2CloudService = new PaymentV2CloudService({
         expiresAt: Date.now() + 300000
     };
 
-    const packageStr = createPiHybridPackage(testPayload, kioskKeys.privateKey, cloudKeys.publicKey);
-    assert(typeof packageStr === 'string' && packageStr.length > 50, 'Pi hybrid package generated');
+    const package4096 = createPiHybridPackage(testPayload, kioskKeys.privateKey, cloudKeys4096.publicKey);
+    assert(typeof package4096 === 'string' && package4096.length > 50, 'RSA-4096 hybrid package generated');
 
-    const decrypted = decryptPackage(packageStr, cloudKeys.privateKey);
-    assert(decrypted.payload.requestId === 'REQ-TEST-1', 'Decrypted payload matches original requestId');
-    assert(decrypted.payload.amount === 50000, 'Decrypted payload matches original amount (50000 paise)');
-    assert(decrypted.payload.confirmationCode === '7294', 'Decrypted payload matches confirmation code');
+    const decrypted4096 = decryptPackage(package4096, cloudKeys4096.privateKey);
+    assert(decrypted4096.payload.requestId === 'REQ-TEST-1', 'RSA-4096 decrypted requestId matches');
+    assert(decrypted4096.payload.amount === 50000, 'RSA-4096 decrypted amount matches (50000 paise)');
+    assert(decrypted4096.payload.confirmationCode === '7294', 'RSA-4096 decrypted confirmation code matches');
 
-    const isSigValid = verifyKioskSignature(decrypted.payload, decrypted.signature, kioskKeys.publicKey);
+    const isSigValid = verifyKioskSignature(decrypted4096.payload, decrypted4096.signature, kioskKeys.publicKey);
     assert(isSigValid === true, 'Kiosk Ed25519 signature verified with registered public key');
 
-    const isOtherSigValid = verifyKioskSignature(decrypted.payload, decrypted.signature, otherKioskKeys.publicKey);
+    const isOtherSigValid = verifyKioskSignature(decrypted4096.payload, decrypted4096.signature, otherKioskKeys.publicKey);
     assert(isOtherSigValid === false, 'Forged Kiosk signature fails verification');
 
     // Wrong Cloud RSA key fails decryption
     let wrongKeyFailed = false;
     try {
-        decryptPackage(packageStr, otherCloudKeys.privateKey);
+        decryptPackage(package4096, otherCloudKeys.privateKey);
     } catch {
         wrongKeyFailed = true;
     }
-    assert(wrongKeyFailed, 'Wrong Cloud private key cannot decrypt package');
+    assert(wrongKeyFailed, 'Wrong Cloud private key fails to decrypt package');
+
+    // Ciphertext bit-flipping authentication tag failure
+    const rawEnvelope = JSON.parse(base64UrlDecode(package4096).toString('utf8'));
+    const tamperedCt = Buffer.from(base64UrlDecode(rawEnvelope.ct));
+    tamperedCt[0] ^= 0xFF;
+    const tamperedEnvelope = { ...rawEnvelope, ct: base64UrlEncode(tamperedCt) };
+    const tamperedPkg = base64UrlEncode(Buffer.from(JSON.stringify(tamperedEnvelope), 'utf8'));
+
+    let tamperingFailed = false;
+    try {
+        decryptPackage(tamperedPkg, cloudKeys4096.privateKey);
+    } catch {
+        tamperingFailed = true;
+    }
+    assert(tamperingFailed, 'AES-256-GCM ciphertext tampering fails authentication');
+
+    // Payload fingerprint calculation
+    const fp1 = computePayloadFingerprint(testPayload);
+    const fp2 = computePayloadFingerprint(testPayload);
+    const fp3 = computePayloadFingerprint({ ...testPayload, amount: 60000 });
+    assert(fp1 === fp2 && typeof fp1 === 'string' && fp1.length === 64, 'SHA-256 payload fingerprint is deterministic');
+    assert(fp1 !== fp3, 'Payload mutation produces different SHA-256 fingerprint');
 
     // Code at rest encryption & decryption
     const encryptedCode = encryptConfirmationCodeAtRest('4827', TEST_SECRET);
@@ -211,194 +254,469 @@ const v2CloudService = new PaymentV2CloudService({
     assert(decryptedCode === '4827', 'Code at rest successfully decrypted with secret');
 
     // ───────────────────────────────────────────────────────────────────────
-    // 2. ORDER CREATION FROM PACKAGE (/v2/create-order)
+    // 2. PACKAGE SIZE & FORMAT VALIDATION
     // ───────────────────────────────────────────────────────────────────────
-    section('2. Order Creation (/v2/create-order)');
+    section('2. Package Size & Format Validation');
 
-    const orderRes = await v2CloudService.createOrderFromPackage(packageStr);
+    // 16KB limit check helper
+    const MAX_PACKAGE_BYTES = 16384;
+    const normalPackageBytes = Buffer.byteLength(package4096, 'utf8');
+    assert(normalPackageBytes < MAX_PACKAGE_BYTES, `Standard package size (${normalPackageBytes} bytes) is within 16KB limit`);
+
+    const hugeString = 'A'.repeat(16385);
+    assert(Buffer.byteLength(hugeString, 'utf8') > MAX_PACKAGE_BYTES, 'Oversized package (>16KB) detected');
+
+    // Malformed envelope tests
+    let malformedJsonFailed = false;
+    try { decryptPackage('not_valid_base64_json', cloudKeys4096.privateKey); } catch { malformedJsonFailed = true; }
+    assert(malformedJsonFailed, 'Non-JSON base64url envelope rejected');
+
+    let missingFieldsFailed = false;
+    try {
+        const incompleteEnvelope = base64UrlEncode(JSON.stringify({ v: 2, ek: 'abc' }));
+        decryptPackage(incompleteEnvelope, cloudKeys4096.privateKey);
+    } catch { missingFieldsFailed = true; }
+    assert(missingFieldsFailed, 'Envelope missing required cryptographic fields rejected');
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 3. PAYLOAD STRUCTURE & AUTHORITATIVE VALIDATION
+    // ───────────────────────────────────────────────────────────────────────
+    section('3. Payload Structure & Authoritative Validation');
+
+    // Version mismatch
+    let vMismatch = false;
+    try {
+        const p = createPiHybridPackage({ ...testPayload, v: 1 }, kioskKeys.privateKey, cloudKeys4096.publicKey);
+        await v2CloudService.createOrderFromPackage(p);
+    } catch (e) { if (e.code === 'INVALID_PAYLOAD_STRUCTURE') vMismatch = true; }
+    assert(vMismatch, 'Package with version != 2 rejected');
+
+    // Type mismatch
+    let typeMismatch = false;
+    try {
+        const p = createPiHybridPackage({ ...testPayload, type: 'OTHER_TYPE' }, kioskKeys.privateKey, cloudKeys4096.publicKey);
+        await v2CloudService.createOrderFromPackage(p);
+    } catch (e) { if (e.code === 'INVALID_PAYLOAD_STRUCTURE') typeMismatch = true; }
+    assert(typeMismatch, 'Package with invalid type rejected');
+
+    // Missing required field (e.g. sessionId)
+    let missingField = false;
+    try {
+        const invalidP = { ...testPayload, sessionId: '' };
+        const p = createPiHybridPackage(invalidP, kioskKeys.privateKey, cloudKeys4096.publicKey);
+        await v2CloudService.createOrderFromPackage(p);
+    } catch (e) { if (e.code === 'MISSING_PAYLOAD_FIELD') missingField = true; }
+    assert(missingField, 'Package missing required sessionId rejected');
+
+    // Invalid confirmation code format (e.g. 3 digits or letters)
+    let invalidCodeFormat = false;
+    try {
+        const invalidP = { ...testPayload, confirmationCode: '12A' };
+        const p = createPiHybridPackage(invalidP, kioskKeys.privateKey, cloudKeys4096.publicKey);
+        await v2CloudService.createOrderFromPackage(p);
+    } catch (e) { if (e.code === 'INVALID_CONFIRMATION_CODE_FORMAT') invalidCodeFormat = true; }
+    assert(invalidCodeFormat, 'Non-4-digit confirmation code in payload rejected');
+
+    // Non-positive amount
+    let nonPositiveAmount = false;
+    try {
+        const invalidP = { ...testPayload, amount: 0 };
+        const p = createPiHybridPackage(invalidP, kioskKeys.privateKey, cloudKeys4096.publicKey);
+        await v2CloudService.createOrderFromPackage(p);
+    } catch (e) { if (e.code === 'INVALID_AMOUNT') nonPositiveAmount = true; }
+    assert(nonPositiveAmount, 'Zero/negative amount in payload rejected');
+
+    // Unsupported currency
+    let unsupportedCurrency = false;
+    try {
+        const invalidP = { ...testPayload, currency: 'USD' };
+        const p = createPiHybridPackage(invalidP, kioskKeys.privateKey, cloudKeys4096.publicKey);
+        await v2CloudService.createOrderFromPackage(p);
+    } catch (e) { if (e.code === 'UNSUPPORTED_CURRENCY') unsupportedCurrency = true; }
+    assert(unsupportedCurrency, 'Non-INR currency rejected');
+
+    // Unregistered Kiosk
+    let unregisteredKiosk = false;
+    try {
+        const invalidP = { ...testPayload, kioskId: 'RELIV-UNKNOWN' };
+        const p = createPiHybridPackage(invalidP, kioskKeys.privateKey, cloudKeys4096.publicKey);
+        await v2CloudService.createOrderFromPackage(p);
+    } catch (e) { unregisteredKiosk = true; }
+    assert(unregisteredKiosk, 'Unregistered Kiosk ID rejected');
+
+    // Expired Request
+    let expiredReq = false;
+    try {
+        const invalidP = { ...testPayload, requestId: 'REQ-EXP-TEST', expiresAt: Date.now() - 60000 };
+        const p = createPiHybridPackage(invalidP, kioskKeys.privateKey, cloudKeys4096.publicKey);
+        await v2CloudService.createOrderFromPackage(p);
+    } catch (e) { if (e.code === 'REQUEST_EXPIRED') expiredReq = true; }
+    assert(expiredReq, 'Expired payment request rejected');
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 4. ORDER CREATION, FINGERPRINTING & IDEMPOTENCY
+    // ───────────────────────────────────────────────────────────────────────
+    section('4. Order Creation, Fingerprinting & Idempotency');
+
+    rzpOrderCreateCount = 0;
+    const orderRes = await v2CloudService.createOrderFromPackage(package4096);
     assert(orderRes.ok === true, 'Order created successfully from package');
     assert(orderRes.amount === 50000, 'Authoritative amount ₹500.00 bound to order');
     assert(orderRes.orderId.startsWith('order_'), 'Razorpay order ID returned');
     assert(orderRes.keyId === RZP_KEY_ID, 'Razorpay key_id returned');
-    assert(orderRes.confirmationCode === undefined, 'Plain confirmation code is NOT exposed in createOrder response');
+    assert(orderRes.confirmationCode === undefined, 'Plain confirmation code NOT exposed in createOrder response');
+    assert(rzpOrderCreateCount === 1, 'Exactly 1 Razorpay order created');
 
-    // Verify DB does not contain plain code in database
+    // Check DB record
     const dbOrder = db.prepare('SELECT * FROM payment_v2_orders WHERE request_id = ?').get('REQ-TEST-1');
     assert(dbOrder && dbOrder.status === 'CREATED', 'Order stored in SQLite with status CREATED');
-    assert(!dbOrder.encrypted_code.includes('7294'), 'Plain confirmation code is NOT stored in plain text in SQLite');
+    assert(dbOrder.payload_fingerprint === fp1, 'Stored payload_fingerprint matches calculated SHA-256');
+    assert(!dbOrder.encrypted_code.includes('7294'), 'Plain confirmation code NOT stored in plain text');
     assert(decryptConfirmationCodeAtRest(dbOrder.encrypted_code, TEST_SECRET) === '7294', 'Encrypted code in SQLite decrypts to original code');
 
-    // IDEMPOTENCY: Re-submitting identical package returns same orderId
-    const duplicateOrderRes = await v2CloudService.createOrderFromPackage(packageStr);
-    assert(duplicateOrderRes.orderId === orderRes.orderId, 'Repeated package submission returns same orderId (idempotent)');
+    // IDEMPOTENCY: Repeated submission of identical package
+    const duplicateOrderRes = await v2CloudService.createOrderFromPackage(package4096);
+    assert(duplicateOrderRes.orderId === orderRes.orderId, 'Repeated package returns same orderId (idempotent)');
+    assert(duplicateOrderRes.alreadyCreated === true, 'Response indicates alreadyCreated: true');
+    assert(rzpOrderCreateCount === 1, 'Repeated submission does NOT create additional Razorpay orders (deduplicated)');
 
-    // REPLAY ATTACK: Re-using same requestNonce with different requestId is rejected
-    const replayPayload = { ...testPayload, requestId: 'REQ-TEST-REPLAY' };
-    const replayPkg = createPiHybridPackage(replayPayload, kioskKeys.privateKey, cloudKeys.publicKey);
-
-    let replayRejected = false;
+    // PAYLOAD TAMPERING / FINGERPRINT MISMATCH: Same requestId with different amount
+    let fingerprintMismatch = false;
     try {
+        const tamperedPayload = { ...testPayload, amount: 60000 };
+        const tamperedPkg = createPiHybridPackage(tamperedPayload, kioskKeys.privateKey, cloudKeys4096.publicKey);
+        await v2CloudService.createOrderFromPackage(tamperedPkg);
+    } catch (e) {
+        if (e.code === 'PAYLOAD_TAMPERING_OR_FINGERPRINT_MISMATCH') fingerprintMismatch = true;
+    }
+    assert(fingerprintMismatch, 'Same requestId with modified payload/amount is rejected (PAYLOAD_TAMPERING_OR_FINGERPRINT_MISMATCH)');
+
+    // REPLAY ATTACK: Reusing requestNonce on different requestId
+    let replayNonceRejected = false;
+    try {
+        const replayPayload = { ...testPayload, requestId: 'REQ-NEW-1', requestNonce: 'nonce123' }; // same nonce
+        const replayPkg = createPiHybridPackage(replayPayload, kioskKeys.privateKey, cloudKeys4096.publicKey);
         await v2CloudService.createOrderFromPackage(replayPkg);
     } catch (e) {
-        if (e.code === 'REPLAY_NONCE_DETECTED') replayRejected = true;
+        if (e.code === 'REPLAY_NONCE_DETECTED') replayNonceRejected = true;
     }
-    assert(replayRejected, 'Replay attack with reused nonce is rejected');
-
-    // EXPIRED REQUEST REJECTION
-    const expiredPayload = {
-        ...testPayload,
-        requestId: 'REQ-EXPIRED-1',
-        requestNonce: 'nonce_exp_1',
-        expiresAt: Date.now() - 60000 // Expired 1 minute ago
-    };
-    const expiredPkg = createPiHybridPackage(expiredPayload, kioskKeys.privateKey, cloudKeys.publicKey);
-
-    let expiredRejected = false;
-    try {
-        await v2CloudService.createOrderFromPackage(expiredPkg);
-    } catch (e) {
-        if (e.code === 'REQUEST_EXPIRED') expiredRejected = true;
-    }
-    assert(expiredRejected, 'Expired payment package is rejected');
+    assert(replayNonceRejected, 'Replay attack with reused requestNonce rejected (REPLAY_NONCE_DETECTED)');
 
     // ───────────────────────────────────────────────────────────────────────
-    // 3. PAYMENT VERIFICATION & CODE REVEAL (/v2/verify-payment)
+    // 5. CONCURRENT ORDER CREATION DEDUPLICATION
     // ───────────────────────────────────────────────────────────────────────
-    section('3. Payment Verification & Code Reveal (/v2/verify-payment)');
+    section('5. Concurrent Order Creation Deduplication');
 
-    // Create fresh package & order for verification test
-    const verifyTestPayload = {
+    const concurrentPayload = {
         v: 2,
         type: 'RELIV_PAYMENT_REQUEST',
         kioskId: 'RELIV-001',
-        requestId: 'REQ-VERIFY-1',
-        requestNonce: 'nonce_verify_1',
-        sessionId: 'KSK-VERIFY-1',
-        transactionId: 'TXN-VERIFY-1',
+        requestId: 'REQ-CONCURRENT-1',
+        requestNonce: 'nonce_concurrent_1',
+        sessionId: 'KSK-CONC-1',
+        transactionId: 'TXN-CONC-1',
+        amount: 30000,
+        currency: 'INR',
+        serviceType: 'MEDICINE',
+        confirmationCode: '9012',
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 300000
+    };
+    const concurrentPkg = createPiHybridPackage(concurrentPayload, kioskKeys.privateKey, cloudKeys4096.publicKey);
+
+    const initialCount = rzpOrderCreateCount;
+    // Launch 5 parallel requests simultaneously
+    const results = await Promise.all([
+        v2CloudService.createOrderFromPackage(concurrentPkg),
+        v2CloudService.createOrderFromPackage(concurrentPkg),
+        v2CloudService.createOrderFromPackage(concurrentPkg),
+        v2CloudService.createOrderFromPackage(concurrentPkg),
+        v2CloudService.createOrderFromPackage(concurrentPkg)
+    ]);
+
+    const allSameOrderId = results.every(r => r.orderId === results[0].orderId);
+    assert(allSameOrderId, 'All 5 concurrent requests returned identical orderId');
+    assert(rzpOrderCreateCount === initialCount + 1, 'Only 1 Razorpay order creation call was executed across all concurrent requests');
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 6. PAYMENT VERIFICATION & STRICT CAPTURED-ONLY ENFORCEMENT
+    // ───────────────────────────────────────────────────────────────────────
+    section('6. Payment Verification & Strict Captured-Only Rule');
+
+    const verifyPayload = {
+        v: 2,
+        type: 'RELIV_PAYMENT_REQUEST',
+        kioskId: 'RELIV-001',
+        requestId: 'REQ-VERIFY-2',
+        requestNonce: 'nonce_verify_2',
+        sessionId: 'KSK-VERIFY-2',
+        transactionId: 'TXN-VERIFY-2',
         amount: 50000,
         currency: 'INR',
         serviceType: 'MEDICINE',
-        confirmationCode: '3189',
+        confirmationCode: '5566',
         issuedAt: Date.now(),
         expiresAt: Date.now() + 300000
     };
 
-    const verifyPkg = createPiHybridPackage(verifyTestPayload, kioskKeys.privateKey, cloudKeys.publicKey);
+    const verifyPkg = createPiHybridPackage(verifyPayload, kioskKeys.privateKey, cloudKeys4096.publicKey);
     const verifyOrder = await v2CloudService.createOrderFromPackage(verifyPkg);
-
     const testOrderId = verifyOrder.orderId;
     const testPaymentId = `pay_${testOrderId.replace('order_', '')}`;
 
-    // Override mock payment fetch to return matching order & amount
+    // Mock payments setup
     mockRazorpay.payments.fetch = async (paymentId) => {
         if (paymentId === testPaymentId) {
-            return {
-                id: testPaymentId,
-                status: 'captured',
-                amount: 50000,
-                currency: 'INR',
-                order_id: testOrderId
-            };
+            return { id: testPaymentId, status: 'captured', amount: 50000, currency: 'INR', order_id: testOrderId };
         }
-        if (paymentId === 'pay_wrong_amount') {
-            return {
-                id: paymentId,
-                status: 'captured',
-                amount: 1000, // ₹10.00 instead of ₹500.00
-                currency: 'INR',
-                order_id: testOrderId
-            };
+        if (paymentId === 'pay_auth_only') {
+            return { id: paymentId, status: 'authorized', amount: 50000, currency: 'INR', order_id: testOrderId };
         }
-        if (paymentId === 'pay_not_captured') {
-            return {
-                id: paymentId,
-                status: 'failed',
-                amount: 50000,
-                currency: 'INR',
-                order_id: testOrderId
-            };
+        if (paymentId === 'pay_failed') {
+            return { id: paymentId, status: 'failed', amount: 50000, currency: 'INR', order_id: testOrderId };
+        }
+        if (paymentId === 'pay_wrong_amt') {
+            return { id: paymentId, status: 'captured', amount: 1000, currency: 'INR', order_id: testOrderId };
+        }
+        if (paymentId === 'pay_wrong_order') {
+            return { id: paymentId, status: 'captured', amount: 50000, currency: 'INR', order_id: 'order_other_123' };
+        }
+        if (paymentId === 'pay_wrong_curr') {
+            return { id: paymentId, status: 'captured', amount: 50000, currency: 'USD', order_id: testOrderId };
         }
         throw new Error('Payment not found');
     };
 
-    // 1. Invalid Razorpay Signature Rejection
-    let invalidSigRejected = false;
+    // Missing params check
+    let missingParams = false;
+    try { await v2CloudService.verifyPaymentAndRevealCode({ orderId: testOrderId }); } catch (e) { missingParams = true; }
+    assert(missingParams, 'Missing paymentId/signature rejected');
+
+    // Non-existent order check
+    let orderNotFound = false;
+    try {
+        await v2CloudService.verifyPaymentAndRevealCode({
+            orderId: 'order_non_existent',
+            paymentId: testPaymentId,
+            signature: 'sig'
+        });
+    } catch (e) { if (e.code === 'ORDER_NOT_FOUND') orderNotFound = true; }
+    assert(orderNotFound, 'Non-existent orderId rejected');
+
+    // Invalid signature check
+    let invalidSig = false;
     try {
         await v2CloudService.verifyPaymentAndRevealCode({
             orderId: testOrderId,
             paymentId: testPaymentId,
-            signature: 'fake_invalid_signature_12345'
+            signature: 'invalid_sig'
         });
-    } catch (e) {
-        if (e.code === 'INVALID_PAYMENT_SIGNATURE') invalidSigRejected = true;
-    }
-    assert(invalidSigRejected, 'Invalid Razorpay signature rejected (zero code revealed)');
+    } catch (e) { if (e.code === 'INVALID_PAYMENT_SIGNATURE') invalidSig = true; }
+    assert(invalidSig, 'Invalid Razorpay signature rejected (zero code revealed)');
 
-    // 2. Amount Mismatch Rejection
-    const mismatchSig = crypto
-        .createHmac('sha256', RZP_KEY_SECRET)
-        .update(`${testOrderId}|pay_wrong_amount`)
-        .digest('hex');
-
-    let mismatchRejected = false;
+    // CAPTURED ONLY: Status 'authorized' must be rejected
+    const authSig = crypto.createHmac('sha256', RZP_KEY_SECRET).update(`${testOrderId}|pay_auth_only`).digest('hex');
+    let authRejected = false;
     try {
         await v2CloudService.verifyPaymentAndRevealCode({
             orderId: testOrderId,
-            paymentId: 'pay_wrong_amount',
-            signature: mismatchSig
+            paymentId: 'pay_auth_only',
+            signature: authSig
         });
-    } catch (e) {
-        if (e.code === 'AMOUNT_MISMATCH') mismatchRejected = true;
-    }
-    assert(mismatchRejected, 'Payment amount mismatch rejected (zero code revealed)');
+    } catch (e) { if (e.code === 'PAYMENT_NOT_CAPTURED') authRejected = true; }
+    assert(authRejected, 'Payment status "authorized" rejected — CAPTURED is strictly required (zero code revealed)');
 
-    // 3. Failed/Uncaptured Payment Rejection
-    const uncapturedSig = crypto
-        .createHmac('sha256', RZP_KEY_SECRET)
-        .update(`${testOrderId}|pay_not_captured`)
-        .digest('hex');
-
-    let uncapturedRejected = false;
+    // Failed payment rejected
+    const failedSig = crypto.createHmac('sha256', RZP_KEY_SECRET).update(`${testOrderId}|pay_failed`).digest('hex');
+    let failedRejected = false;
     try {
         await v2CloudService.verifyPaymentAndRevealCode({
             orderId: testOrderId,
-            paymentId: 'pay_not_captured',
-            signature: uncapturedSig
+            paymentId: 'pay_failed',
+            signature: failedSig
         });
-    } catch (e) {
-        if (e.code === 'PAYMENT_NOT_CAPTURED') uncapturedRejected = true;
-    }
-    assert(uncapturedRejected, 'Uncaptured payment rejected (zero code revealed)');
+    } catch (e) { if (e.code === 'PAYMENT_NOT_CAPTURED') failedRejected = true; }
+    assert(failedRejected, 'Payment status "failed" rejected (zero code revealed)');
 
-    // 4. Valid Payment Verification & Code Reveal
-    const validSig = crypto
-        .createHmac('sha256', RZP_KEY_SECRET)
-        .update(`${testOrderId}|${testPaymentId}`)
-        .digest('hex');
+    // Amount mismatch rejected
+    const amtSig = crypto.createHmac('sha256', RZP_KEY_SECRET).update(`${testOrderId}|pay_wrong_amt`).digest('hex');
+    let amtMismatch = false;
+    try {
+        await v2CloudService.verifyPaymentAndRevealCode({
+            orderId: testOrderId,
+            paymentId: 'pay_wrong_amt',
+            signature: amtSig
+        });
+    } catch (e) { if (e.code === 'AMOUNT_MISMATCH') amtMismatch = true; }
+    assert(amtMismatch, 'Payment amount mismatch rejected (zero code revealed)');
 
+    // Order ID mismatch rejected
+    const orderMismatchSig = crypto.createHmac('sha256', RZP_KEY_SECRET).update(`${testOrderId}|pay_wrong_order`).digest('hex');
+    let orderMismatch = false;
+    try {
+        await v2CloudService.verifyPaymentAndRevealCode({
+            orderId: testOrderId,
+            paymentId: 'pay_wrong_order',
+            signature: orderMismatchSig
+        });
+    } catch (e) { if (e.code === 'ORDER_ID_MISMATCH') orderMismatch = true; }
+    assert(orderMismatch, 'Payment order ID mismatch rejected (zero code revealed)');
+
+    // Currency mismatch rejected
+    const currMismatchSig = crypto.createHmac('sha256', RZP_KEY_SECRET).update(`${testOrderId}|pay_wrong_curr`).digest('hex');
+    let currMismatch = false;
+    try {
+        await v2CloudService.verifyPaymentAndRevealCode({
+            orderId: testOrderId,
+            paymentId: 'pay_wrong_curr',
+            signature: currMismatchSig
+        });
+    } catch (e) { if (e.code === 'CURRENCY_MISMATCH') currMismatch = true; }
+    assert(currMismatch, 'Payment currency mismatch rejected (zero code revealed)');
+
+    // Request ID mismatch check
+    const validSig = crypto.createHmac('sha256', RZP_KEY_SECRET).update(`${testOrderId}|${testPaymentId}`).digest('hex');
+    let reqIdMismatch = false;
+    try {
+        await v2CloudService.verifyPaymentAndRevealCode({
+            orderId: testOrderId,
+            paymentId: testPaymentId,
+            signature: validSig,
+            requestId: 'REQ-DIFFERENT'
+        });
+    } catch (e) { if (e.code === 'REQUEST_ID_MISMATCH') reqIdMismatch = true; }
+    assert(reqIdMismatch, 'Provided requestId mismatch rejected');
+
+    // VALID VERIFICATION & CODE REVEAL
     const verifySuccess = await v2CloudService.verifyPaymentAndRevealCode({
         orderId: testOrderId,
         paymentId: testPaymentId,
-        signature: validSig
+        signature: validSig,
+        requestId: 'REQ-VERIFY-2'
     });
-
     assert(verifySuccess.ok === true && verifySuccess.paid === true, 'Payment verified successfully');
-    assert(verifySuccess.confirmationCode === '3189', '4-digit confirmation code revealed to paying customer');
+    assert(verifySuccess.confirmationCode === '5566', '4-digit confirmation code revealed to paying customer');
     assert(verifySuccess.amount === 50000, 'Verified amount reported in response');
+    assert(verifySuccess.alreadyVerified === false, 'First verification reports alreadyVerified: false');
 
-    // Check DB status updated to PAID
-    const paidDbOrder = db.prepare('SELECT * FROM payment_v2_orders WHERE order_id = ?').get(testOrderId);
-    assert(paidDbOrder.status === 'PAID', 'Order status transitioned to PAID in SQLite');
-    assert(paidDbOrder.razorpay_payment_id === testPaymentId, 'Razorpay payment ID recorded in order');
+    // DB state check
+    const paidOrder = db.prepare('SELECT * FROM payment_v2_orders WHERE order_id = ?').get(testOrderId);
+    assert(paidOrder.status === 'PAID', 'Order transitioned to PAID in SQLite');
+    assert(paidOrder.razorpay_payment_id === testPaymentId, 'razorpay_payment_id saved in SQLite');
+    assert(paidOrder.verified_at > 0, 'verified_at timestamp saved in SQLite');
 
-    // 5. Idempotent Code Reveal for Already Paid Order
+    // Idempotent re-reveal
     const repeatVerify = await v2CloudService.verifyPaymentAndRevealCode({
         orderId: testOrderId,
         paymentId: testPaymentId,
         signature: validSig
     });
-    assert(repeatVerify.ok === true && repeatVerify.alreadyVerified === true, 'Repeated verification is idempotent (alreadyVerified: true)');
-    assert(repeatVerify.confirmationCode === '3189', 'Confirmation code re-revealed on repeat submission');
+    assert(repeatVerify.ok === true && repeatVerify.alreadyVerified === true, 'Re-verification reports alreadyVerified: true');
+    assert(repeatVerify.confirmationCode === '5566', 'Re-verification re-reveals correct code');
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 7. UNIQUE PAYMENT ID ENFORCEMENT & REPLAY REJECTION
+    // ───────────────────────────────────────────────────────────────────────
+    section('7. Unique Payment ID Enforcement & Replay Rejection');
+
+    // Create another distinct order
+    const secondOrderPayload = {
+        v: 2,
+        type: 'RELIV_PAYMENT_REQUEST',
+        kioskId: 'RELIV-001',
+        requestId: 'REQ-SECOND-ORDER',
+        requestNonce: 'nonce_second_order',
+        sessionId: 'KSK-SECOND',
+        transactionId: 'TXN-SECOND',
+        amount: 50000,
+        currency: 'INR',
+        serviceType: 'MEDICINE',
+        confirmationCode: '8899',
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 300000
+    };
+    const secondPkg = createPiHybridPackage(secondOrderPayload, kioskKeys.privateKey, cloudKeys4096.publicKey);
+    const secondOrder = await v2CloudService.createOrderFromPackage(secondPkg);
+
+    // Attempt to verify second order using ALREADY-USED testPaymentId
+    const replaySig = crypto.createHmac('sha256', RZP_KEY_SECRET).update(`${secondOrder.orderId}|${testPaymentId}`).digest('hex');
+
+    // Override mock to return matching second order ID
+    mockRazorpay.payments.fetch = async (paymentId) => {
+        if (paymentId === testPaymentId) {
+            return { id: testPaymentId, status: 'captured', amount: 50000, currency: 'INR', order_id: secondOrder.orderId };
+        }
+        throw new Error('Payment not found');
+    };
+
+    let paymentIdReplayRejected = false;
+    try {
+        await v2CloudService.verifyPaymentAndRevealCode({
+            orderId: secondOrder.orderId,
+            paymentId: testPaymentId,
+            signature: replaySig
+        });
+    } catch (e) {
+        if (e.code === 'PAYMENT_ID_ALREADY_USED') paymentIdReplayRejected = true;
+    }
+    assert(paymentIdReplayRejected, 'Replay of already verified payment ID on different order is rejected by UNIQUE constraint');
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 8. ORDER STATUS ENDPOINT & ZERO CODE LEAKAGE
+    // ───────────────────────────────────────────────────────────────────────
+    section('8. Order Status Endpoint & Zero Code Leakage');
+
+    const statusUnpaid = v2CloudService.getOrderStatus(secondOrder.orderId);
+    assert(statusUnpaid.ok === true && statusUnpaid.status === 'CREATED' && statusUnpaid.paid === false, 'Unpaid order reports status CREATED, paid: false');
+    assert(statusUnpaid.confirmationCode === undefined, 'Status poll does NOT leak confirmation code on unpaid order');
+
+    const statusPaid = v2CloudService.getOrderStatus(testOrderId);
+    assert(statusPaid.ok === true && statusPaid.status === 'PAID' && statusPaid.paid === true, 'Paid order reports status PAID, paid: true');
+    assert(statusPaid.confirmationCode === undefined, 'Status poll does NOT leak confirmation code on paid order');
+
+    const statusMissing = v2CloudService.getOrderStatus('order_non_existent');
+    assert(statusMissing.ok === false && statusMissing.code === 'ORDER_NOT_FOUND', 'Non-existent order reports ORDER_NOT_FOUND');
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 9. RATE LIMITER UNIT TESTS
+    // ───────────────────────────────────────────────────────────────────────
+    section('9. Rate Limiter Unit Tests');
+
+    const limiter = createV2RateLimiter({ windowMs: 1000, max: 2 });
+    let reqCount = 0;
+    let rateLimited = false;
+
+    const fakeReq = { ip: '192.168.1.100' };
+    const fakeRes = {
+        status: (code) => ({
+            json: (data) => {
+                if (code === 429 && data.code === 'RATE_LIMIT_EXCEEDED') rateLimited = true;
+            }
+        })
+    };
+
+    limiter(fakeReq, fakeRes, () => { reqCount++; });
+    limiter(fakeReq, fakeRes, () => { reqCount++; });
+    limiter(fakeReq, fakeRes, () => { reqCount++; }); // 3rd request should exceed max 2
+
+    assert(reqCount === 2, 'Rate limiter allowed exactly 2 requests');
+    assert(rateLimited, '3rd request was rejected with 429 RATE_LIMIT_EXCEEDED');
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 10. DATABASE PERSISTENCE ACROSS RESTART
+    // ───────────────────────────────────────────────────────────────────────
+    section('10. Database Persistence Across Restart');
+
+    const serviceReboot = new PaymentV2CloudService({
+        db,
+        razorpay: mockRazorpay,
+        cloudPrivateKey: cloudKeys4096.privateKey,
+        kioskPublicKeysMap: { 'RELIV-001': kioskKeys.publicKey },
+        codeSecret: TEST_SECRET
+    });
+
+    const rebootPaidOrder = serviceReboot.getOrderStatus(testOrderId);
+    assert(rebootPaidOrder.paid === true && rebootPaidOrder.status === 'PAID', 'Order status persists across service restart');
 
     // ───────────────────────────────────────────────────────────────────────
     // CLEANUP
@@ -410,7 +728,7 @@ const v2CloudService = new PaymentV2CloudService({
     // SUMMARY
     // ───────────────────────────────────────────────────────────────────────
     console.log('\n═══════════════════════════════════════════════════════════');
-    console.log('📊 CLOUD PAYMENT V2 TEST RESULTS');
+    console.log('📊 EXPANDED CLOUD PAYMENT V2 TEST RESULTS');
     console.log('═══════════════════════════════════════════════════════════');
     console.log(`  ✅ Passed:  ${passed}`);
     console.log(`  ❌ Failed:  ${failed}`);

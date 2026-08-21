@@ -37,6 +37,16 @@ export function base64UrlDecode(str) {
 }
 
 /**
+ * Compute SHA-256 fingerprint of canonical payload
+ * @param {Object|string} payload
+ * @returns {string} Hex SHA-256 hash
+ */
+export function computePayloadFingerprint(payload) {
+    const data = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    return crypto.createHash('sha256').update(data, 'utf8').digest('hex');
+}
+
+/**
  * Decrypt payment V2 package using Oracle Cloud RSA Private Key
  * @param {string} packageString - Base64URL encoded envelope
  * @param {string|KeyObject} cloudPrivateKeyPem - RSA Private Key PEM

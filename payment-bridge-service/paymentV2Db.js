@@ -15,6 +15,7 @@ export function initPaymentV2Schema(db) {
             order_id TEXT PRIMARY KEY,
             request_id TEXT UNIQUE NOT NULL,
             request_nonce TEXT UNIQUE NOT NULL,
+            payload_fingerprint TEXT NOT NULL,
             session_id TEXT NOT NULL,
             transaction_id TEXT NOT NULL,
             kiosk_id TEXT NOT NULL,
@@ -33,8 +34,21 @@ export function initPaymentV2Schema(db) {
         CREATE INDEX IF NOT EXISTS idx_v2_orders_request ON payment_v2_orders(request_id);
         CREATE INDEX IF NOT EXISTS idx_v2_orders_session ON payment_v2_orders(session_id);
         CREATE INDEX IF NOT EXISTS idx_v2_orders_nonce ON payment_v2_orders(request_nonce);
+        CREATE INDEX IF NOT EXISTS idx_v2_orders_fingerprint ON payment_v2_orders(payload_fingerprint);
         CREATE INDEX IF NOT EXISTS idx_v2_orders_status ON payment_v2_orders(status);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_orders_rzp_payment ON payment_v2_orders(razorpay_payment_id) WHERE razorpay_payment_id IS NOT NULL;
     `);
+
+    // Migration helper: add payload_fingerprint if table was created in an earlier schema version
+    try {
+        const cols = db.prepare("PRAGMA table_info(payment_v2_orders)").all();
+        const hasFingerprint = cols.some(c => c.name === 'payload_fingerprint');
+        if (!hasFingerprint) {
+            db.exec("ALTER TABLE payment_v2_orders ADD COLUMN payload_fingerprint TEXT DEFAULT '';");
+            db.exec("CREATE INDEX IF NOT EXISTS idx_v2_orders_fingerprint ON payment_v2_orders(payload_fingerprint);");
+        }
+        db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_orders_rzp_payment ON payment_v2_orders(razorpay_payment_id) WHERE razorpay_payment_id IS NOT NULL;");
+    } catch (e) {}
 }
 
 export default {

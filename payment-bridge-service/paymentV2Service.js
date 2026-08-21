@@ -12,6 +12,7 @@ import path from 'path';
 import {
     decryptPackage,
     verifyKioskSignature,
+    computePayloadFingerprint,
     encryptConfirmationCodeAtRest,
     decryptConfirmationCodeAtRest,
     verifyRazorpayPaymentSignature
@@ -37,6 +38,7 @@ export class PaymentV2CloudService {
         this.kioskPublicKeysMap = kioskPublicKeysMap || {};
         this.codeSecret = codeSecret;
         this.ttlMarginMs = ttlMarginMs;
+        this._inflightOrders = new Map();
 
         if (this.db) {
             initPaymentV2Schema(this.db);
@@ -172,99 +174,125 @@ export class PaymentV2CloudService {
             throw err;
         }
 
-        // 7. Check IDEMPOTENCY & Existing Orders
-        const existingOrder = this.db.prepare('SELECT * FROM payment_v2_orders WHERE request_id = ?').get(payload.requestId);
+        // 7. Compute Payload Fingerprint (SHA-256)
+        const payloadFingerprint = computePayloadFingerprint(payload);
 
-        if (existingOrder) {
-            if (existingOrder.status === 'PAID') {
-                console.log(`[PaymentV2Cloud] Request ${payload.requestId} is already PAID for order ${existingOrder.order_id}`);
-                return {
-                    ok: true,
-                    paid: true,
-                    orderId: existingOrder.order_id,
-                    amount: existingOrder.amount,
-                    currency: existingOrder.currency,
-                    keyId: this.razorpay?.key_id,
-                    requestId: existingOrder.request_id,
-                    serviceType: existingOrder.service_type
-                };
-            }
-
-            if (existingOrder.status === 'CREATED') {
-                console.log(`[PaymentV2Cloud] Returning existing Razorpay order ${existingOrder.order_id} for request ${payload.requestId} (idempotent)`);
-                return {
-                    ok: true,
-                    orderId: existingOrder.order_id,
-                    amount: existingOrder.amount,
-                    currency: existingOrder.currency,
-                    keyId: this.razorpay?.key_id,
-                    requestId: existingOrder.request_id,
-                    serviceType: existingOrder.service_type,
-                    alreadyCreated: true
-                };
-            }
+        // 8. Deduplicate concurrent requests for the exact same requestId
+        if (this._inflightOrders.has(payload.requestId)) {
+            console.log(`[PaymentV2Cloud] Awaiting existing in-flight order creation for request ${payload.requestId}`);
+            return await this._inflightOrders.get(payload.requestId);
         }
 
-        // 8. Replay Protection: Check Nonce Uniqueness
-        const replayNonce = this.db.prepare('SELECT * FROM payment_v2_orders WHERE request_nonce = ?').get(payload.requestNonce);
-        if (replayNonce && replayNonce.request_id !== payload.requestId) {
-            console.error(`[PaymentV2Cloud] ❌ Replay attack detected with nonce: ${payload.requestNonce}`);
-            const err = new Error('Request nonce replay detected');
-            err.code = 'REPLAY_NONCE_DETECTED';
-            throw err;
-        }
+        const createPromise = (async () => {
+            // Check IDEMPOTENCY & Existing Orders
+            const existingOrder = this.db.prepare('SELECT * FROM payment_v2_orders WHERE request_id = ?').get(payload.requestId);
 
-        // 9. Create Authoritative Razorpay Order
-        const rzpOrder = await this.razorpay.orders.create({
-            amount: authoritativeAmount,
-            currency: 'INR',
-            receipt: payload.requestId.substring(0, 40),
-            notes: {
+            if (existingOrder) {
+                // Check fingerprint mismatch (Tampering / Replay with same requestId but modified payload)
+                if (existingOrder.payload_fingerprint && existingOrder.payload_fingerprint !== payloadFingerprint) {
+                    console.error(`[PaymentV2Cloud] ❌ Payload fingerprint mismatch for request ${payload.requestId}`);
+                    const err = new Error('Payload fingerprint mismatch. Request ID was already bound to a different payload.');
+                    err.code = 'PAYLOAD_TAMPERING_OR_FINGERPRINT_MISMATCH';
+                    throw err;
+                }
+
+                if (existingOrder.status === 'PAID') {
+                    console.log(`[PaymentV2Cloud] Request ${payload.requestId} is already PAID for order ${existingOrder.order_id}`);
+                    return {
+                        ok: true,
+                        paid: true,
+                        orderId: existingOrder.order_id,
+                        amount: existingOrder.amount,
+                        currency: existingOrder.currency,
+                        keyId: this.razorpay?.key_id,
+                        requestId: existingOrder.request_id,
+                        serviceType: existingOrder.service_type
+                    };
+                }
+
+                if (existingOrder.status === 'CREATED') {
+                    console.log(`[PaymentV2Cloud] Returning existing Razorpay order ${existingOrder.order_id} for request ${payload.requestId} (idempotent)`);
+                    return {
+                        ok: true,
+                        orderId: existingOrder.order_id,
+                        amount: existingOrder.amount,
+                        currency: existingOrder.currency,
+                        keyId: this.razorpay?.key_id,
+                        requestId: existingOrder.request_id,
+                        serviceType: existingOrder.service_type,
+                        alreadyCreated: true
+                    };
+                }
+            }
+
+            // Replay Protection: Check Nonce Uniqueness
+            const replayNonce = this.db.prepare('SELECT * FROM payment_v2_orders WHERE request_nonce = ?').get(payload.requestNonce);
+            if (replayNonce && replayNonce.request_id !== payload.requestId) {
+                console.error(`[PaymentV2Cloud] ❌ Replay attack detected with nonce: ${payload.requestNonce}`);
+                const err = new Error('Request nonce replay detected');
+                err.code = 'REPLAY_NONCE_DETECTED';
+                throw err;
+            }
+
+            // Create Authoritative Razorpay Order
+            const rzpOrder = await this.razorpay.orders.create({
+                amount: authoritativeAmount,
+                currency: 'INR',
+                receipt: payload.requestId.substring(0, 40),
+                notes: {
+                    requestId: payload.requestId,
+                    sessionId: payload.sessionId,
+                    transactionId: payload.transactionId,
+                    kioskId: payload.kioskId,
+                    serviceType: payload.serviceType || 'HEALTH_CHECKUP',
+                    v: '2'
+                }
+            });
+
+            // Encrypt Confirmation Code At Rest
+            const encryptedCode = encryptConfirmationCodeAtRest(payload.confirmationCode, this.codeSecret);
+
+            // Persist Order in SQLite
+            this.db.prepare(`
+                INSERT INTO payment_v2_orders (
+                    order_id, request_id, request_nonce, payload_fingerprint,
+                    session_id, transaction_id, kiosk_id, amount, currency,
+                    service_type, encrypted_code, status, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, 'CREATED', ?, ?)
+            `).run(
+                rzpOrder.id,
+                payload.requestId,
+                payload.requestNonce,
+                payloadFingerprint,
+                payload.sessionId,
+                payload.transactionId,
+                payload.kioskId,
+                authoritativeAmount,
+                payload.serviceType || 'HEALTH_CHECKUP',
+                encryptedCode,
+                now,
+                payload.expiresAt
+            );
+
+            console.log(`[PaymentV2Cloud] ✅ Created Razorpay order ${rzpOrder.id} for request ${payload.requestId} (₹${authoritativeAmount / 100})`);
+
+            return {
+                ok: true,
+                orderId: rzpOrder.id,
+                amount: authoritativeAmount,
+                currency: 'INR',
+                keyId: this.razorpay?.key_id,
                 requestId: payload.requestId,
-                sessionId: payload.sessionId,
-                transactionId: payload.transactionId,
-                kioskId: payload.kioskId,
-                serviceType: payload.serviceType || 'HEALTH_CHECKUP',
-                v: '2'
-            }
-        });
+                serviceType: payload.serviceType || 'HEALTH_CHECKUP'
+            };
+        })();
 
-        // 10. Encrypt Confirmation Code At Rest
-        const encryptedCode = encryptConfirmationCodeAtRest(payload.confirmationCode, this.codeSecret);
-
-        // 11. Persist Order in SQLite
-        this.db.prepare(`
-            INSERT INTO payment_v2_orders (
-                order_id, request_id, request_nonce, session_id, transaction_id,
-                kiosk_id, amount, currency, service_type, encrypted_code,
-                status, created_at, expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, 'CREATED', ?, ?)
-        `).run(
-            rzpOrder.id,
-            payload.requestId,
-            payload.requestNonce,
-            payload.sessionId,
-            payload.transactionId,
-            payload.kioskId,
-            authoritativeAmount,
-            payload.serviceType || 'HEALTH_CHECKUP',
-            encryptedCode,
-            now,
-            payload.expiresAt
-        );
-
-        console.log(`[PaymentV2Cloud] ✅ Created Razorpay order ${rzpOrder.id} for request ${payload.requestId} (₹${authoritativeAmount / 100})`);
-
-        // Return order info (NEVER expose confirmationCode here)
-        return {
-            ok: true,
-            orderId: rzpOrder.id,
-            amount: authoritativeAmount,
-            currency: 'INR',
-            keyId: this.razorpay?.key_id,
-            requestId: payload.requestId,
-            serviceType: payload.serviceType || 'HEALTH_CHECKUP'
-        };
+        this._inflightOrders.set(payload.requestId, createPromise);
+        try {
+            return await createPromise;
+        } finally {
+            this._inflightOrders.delete(payload.requestId);
+        }
     }
 
     /**
@@ -346,9 +374,9 @@ export class PaymentV2CloudService {
             throw err;
         }
 
-        // 5. Strict Payment Attribute Checks
-        if (payment.status !== 'captured' && payment.status !== 'authorized') {
-            console.error(`[PaymentV2Cloud] ❌ Payment ${paymentId} not successful. Status: ${payment.status}`);
+        // 5. Strict Payment Attribute Checks: Strictly require 'captured'
+        if (payment.status !== 'captured') {
+            console.error(`[PaymentV2Cloud] ❌ Payment ${paymentId} not captured. Status: ${payment.status}`);
             const err = new Error(`Payment is not captured. Current status: ${payment.status}`);
             err.code = 'PAYMENT_NOT_CAPTURED';
             throw err;
@@ -374,19 +402,41 @@ export class PaymentV2CloudService {
             throw err;
         }
 
-        // 6. Atomic DB Status Transition to PAID
+        // 6. Atomic DB Status Transition to PAID with unique payment ID protection
         const now = Date.now();
-        const updateRes = this.db.prepare(`
-            UPDATE payment_v2_orders
-            SET status = 'PAID',
-                razorpay_payment_id = ?,
-                verified_at = ?
-            WHERE order_id = ? AND status = 'CREATED'
-        `).run(paymentId, now, orderId);
+        try {
+            const updateRes = this.db.prepare(`
+                UPDATE payment_v2_orders
+                SET status = 'PAID',
+                    razorpay_payment_id = ?,
+                    verified_at = ?
+                WHERE order_id = ? AND status = 'CREATED'
+            `).run(paymentId, now, orderId);
 
-        if (updateRes.changes === 0) {
-            // Concurrent request already marked PAID
-            console.log(`[PaymentV2Cloud] Order ${orderId} was updated concurrently`);
+            if (updateRes.changes === 0) {
+                // Check if concurrent request already marked PAID
+                const currentOrder = this.db.prepare('SELECT * FROM payment_v2_orders WHERE order_id = ?').get(orderId);
+                if (currentOrder && currentOrder.status === 'PAID' && currentOrder.razorpay_payment_id === paymentId) {
+                    const code = decryptConfirmationCodeAtRest(currentOrder.encrypted_code, this.codeSecret);
+                    return {
+                        ok: true,
+                        paid: true,
+                        alreadyVerified: true,
+                        confirmationCode: code,
+                        requestId: currentOrder.request_id,
+                        amount: currentOrder.amount,
+                        currency: currentOrder.currency
+                    };
+                }
+            }
+        } catch (dbErr) {
+            if (dbErr.message && dbErr.message.includes('UNIQUE constraint failed')) {
+                console.error(`[PaymentV2Cloud] ❌ Replay attempt: Payment ID ${paymentId} already verified on another order`);
+                const err = new Error('Payment ID has already been verified for another order');
+                err.code = 'PAYMENT_ID_ALREADY_USED';
+                throw err;
+            }
+            throw dbErr;
         }
 
         // 7. Decrypt and Reveal Confirmation Code ONLY AFTER verified payment

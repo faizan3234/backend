@@ -2,7 +2,7 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  * RELIV CLOUD PAYMENT BRIDGE - PAYMENT V2 CLOUD KEYPAIR GENERATOR
- * Purpose: Generate an asymmetric RSA-2048 keypair for Cloud OAEP decryption.
+ * Purpose: Generate an asymmetric RSA-4096 keypair for Cloud OAEP decryption.
  * ═══════════════════════════════════════════════════════════════════════════
  * 
  * Generates:
@@ -17,7 +17,7 @@ import path from 'path';
 const outputDir = process.argv[2] || process.cwd();
 
 console.log('\n═══════════════════════════════════════════════════════════');
-console.log('🔐 RELIV PAYMENT V2 — CLOUD KEYPAIR GENERATOR (RSA-2048)');
+console.log('🔐 RELIV PAYMENT V2 — CLOUD KEYPAIR GENERATOR (RSA-4096)');
 console.log('═══════════════════════════════════════════════════════════\n');
 
 if (!fs.existsSync(outputDir)) {
@@ -35,9 +35,9 @@ if (fs.existsSync(privateKeyPath) && !process.argv.includes('--force')) {
     process.exit(0);
 }
 
-// Generate RSA-2048 keypair
+// Generate RSA-4096 keypair
 const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', {
-    modulusLength: 2048,
+    modulusLength: 4096,
     privateKeyEncoding: {
         type: 'pkcs8',
         format: 'pem'
