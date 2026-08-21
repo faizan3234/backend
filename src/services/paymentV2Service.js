@@ -562,5 +562,52 @@ export class PaymentV2Service {
     }
 }
 
-export const paymentV2Service = new PaymentV2Service();
+// ═══════════════════════════════════════════════════════════════════════════
+// LAZY SINGLETON — deferred initialization
+// ═══════════════════════════════════════════════════════════════════════════
+// In ES modules, all `import` statements are hoisted and their modules
+// evaluated BEFORE any module-level code in the importing file.
+//
+// server.js layout:
+//   Line  37: import paymentV2Service …   ← module evaluated HERE (early)
+//   Line  85: dotenv.config();            ← .env loaded HERE (later)
+//
+// If we did `new PaymentV2Service()` at module scope (line 565 old code),
+// the constructor would capture process.env.PAYMENT_V2_CODE_PEPPER etc.
+// as `undefined` because dotenv hasn't loaded yet.
+//
+// Fix: defer construction until the first property access or method call,
+// which always happens AFTER server.js has called dotenv.config().
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _instance = null;
+
+function _getInstance() {
+    if (!_instance) {
+        _instance = new PaymentV2Service();
+    }
+    return _instance;
+}
+
+/**
+ * Lazy-initialized proxy that defers PaymentV2Service construction
+ * until first property access (guaranteed after dotenv.config()).
+ */
+export const paymentV2Service = new Proxy({}, {
+    get(_target, prop) {
+        const instance = _getInstance();
+        const value = instance[prop];
+        if (typeof value === 'function') {
+            return value.bind(instance);
+        }
+        return value;
+    },
+    set(_target, prop, value) {
+        const instance = _getInstance();
+        instance[prop] = value;
+        return true;
+    }
+});
+
 export default paymentV2Service;
+
