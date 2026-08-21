@@ -6,6 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "check": "node --check index.js",
     "dev": "node --watch index.js",
     "generate-keys": "node generate-keys.js",
     "init-db": "node init-db.js"

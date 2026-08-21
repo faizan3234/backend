@@ -9,59 +9,218 @@ import Database from 'better-sqlite3';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
-  credentials: true
-}));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+const PORT = Number(process.env.PORT) || 3001;
+const HOST = process.env.HOST || '0.0.0.0';
+const PRIVATE_KEY_PATH = process.env.PRIVATE_KEY_PATH || './private-key.pem';
+const DATABASE_PATH = process.env.DATABASE_PATH || './bridge.db';
 
-// Load private key for signing payment authorizations
-let privateKey;
-try {
-  privateKey = fs.readFileSync('./private-key.pem', 'utf8');
-  console.log('✅ Private key loaded for payment authorization signing');
-} catch (error) {
-  console.error('❌ CRITICAL: Private key not found. Run: npm run generate-keys');
-  process.exit(1);
+const allowedOrigins = String(
+    process.env.ALLOWED_ORIGINS || ''
+)
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+
+if (allowedOrigins.length === 0) {
+    console.warn(
+        '⚠️ ALLOWED_ORIGINS is empty. Browser requests will be rejected.'
+    );
 }
 
-// Initialize Razorpay (Payment Bridge has Internet access)
+/**
+ * Reverse proxy is expected to run on the same machine.
+ * Trust only loopback proxy addresses.
+ */
+app.set('trust proxy', 'loopback');
+
+/**
+ * Do not expose Express implementation details.
+ */
+app.disable('x-powered-by');
+
+/**
+ * Explicit browser CORS policy.
+ *
+ * Requests without Origin are allowed because:
+ * - health checks
+ * - server-to-server requests
+ * - curl diagnostics
+ *
+ * Browser Origins must be explicitly whitelisted.
+ */
+app.use(
+    cors({
+        origin(origin, callback) {
+            if (!origin) {
+                return callback(null, true);
+            }
+
+            if (allowedOrigins.includes(origin)) {
+                return callback(null, true);
+            }
+
+            console.warn(`🚫 Blocked CORS origin: ${origin}`);
+
+            return callback(null, false);
+        },
+
+        methods: ['GET', 'POST', 'OPTIONS'],
+
+        allowedHeaders: [
+            'Content-Type',
+            'Authorization'
+        ],
+
+        credentials: false
+    })
+);
+
+/**
+ * Payment payloads are small.
+ * Do not permit arbitrarily large request bodies.
+ */
+app.use(express.json({ limit: '256kb' }));
+app.use(
+    express.urlencoded({
+        extended: true,
+        limit: '256kb'
+    })
+);
+
+/**
+ * ============================================================
+ * REQUIRED CLOUD CONFIGURATION
+ * ============================================================
+ */
+
+const requiredEnvVars = [
+    'RAZORPAY_KEY_ID',
+    'RAZORPAY_KEY_SECRET',
+    'ALLOWED_ORIGINS'
+];
+
+const missingEnvVars = requiredEnvVars.filter(
+    name => !process.env[name] || !String(process.env[name]).trim()
+);
+
+if (missingEnvVars.length > 0) {
+    console.error(
+        `❌ Missing required environment variables: ${missingEnvVars.join(', ')}`
+    );
+
+    process.exit(1);
+}
+
+// ============================================================
+// RSA PRIVATE KEY
+// ============================================================
+
+let privateKey;
+
+try {
+    privateKey = fs.readFileSync(PRIVATE_KEY_PATH, 'utf8');
+
+    if (!privateKey.includes('PRIVATE KEY')) {
+        throw new Error('File does not contain a valid PEM private key');
+    }
+
+    console.log(
+        `✅ Payment authorization private key loaded from ${PRIVATE_KEY_PATH}`
+    );
+} catch (error) {
+    console.error(
+        `❌ CRITICAL: Unable to load payment private key from ${PRIVATE_KEY_PATH}`
+    );
+
+    console.error(error.message);
+
+    process.exit(1);
+}
+
+// ============================================================
+// PAYMENT BRIDGE DATABASE
+// ============================================================
+
+let db;
+
+try {
+    db = new Database(DATABASE_PATH);
+
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+    db.pragma('busy_timeout = 5000');
+
+    console.log(
+        `✅ Payment Bridge database opened: ${DATABASE_PATH}`
+    );
+
+    // Ensure orders table exists
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS orders (
+        order_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        transaction_id TEXT NOT NULL,
+        kiosk_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'INR',
+        status TEXT NOT NULL DEFAULT 'CREATED',
+        created_at INTEGER NOT NULL
+      );
+    `);
+
+    // Ensure authorizations table exists
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS authorizations (
+        auth_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        transaction_id TEXT NOT NULL,
+        kiosk_id TEXT NOT NULL,
+        payment_id TEXT NOT NULL,
+        order_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'INR',
+        authorization_json TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+    `);
+
+    // Ensure verification_log table exists
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS verification_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        payment_id TEXT,
+        session_id TEXT,
+        transaction_id TEXT,
+        amount INTEGER,
+        status TEXT NOT NULL,
+        error TEXT,
+        created_at INTEGER NOT NULL
+      );
+    `);
+
+} catch (error) {
+    console.error(
+        `❌ CRITICAL: Could not initialize Payment Bridge database at ${DATABASE_PATH}`
+    );
+
+    console.error(error);
+
+    process.exit(1);
+}
+
+// ============================================================
+// RAZORPAY CLIENT
+// ============================================================
+
 const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
 console.log('✅ Razorpay client initialized');
-
-// Initialize database
-let db;
-try {
-  db = new Database('./bridge.db');
-  db.pragma('journal_mode = WAL');
-  
-  // Ensure orders table exists
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS orders (
-      order_id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
-      transaction_id TEXT NOT NULL,
-      kiosk_id TEXT NOT NULL,
-      amount INTEGER NOT NULL,
-      currency TEXT NOT NULL DEFAULT 'INR',
-      status TEXT NOT NULL DEFAULT 'CREATED',
-      created_at INTEGER NOT NULL
-    );
-  `);
-  
-  console.log('✅ Database connected & schema verified');
-} catch (error) {
-  console.error('❌ CRITICAL: Database initialization failed. Run: npm run init-db');
-  process.exit(1);
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AUTHORITATIVE ORDER CREATION & BINDING
@@ -416,58 +575,121 @@ app.post('/verify-payment', async (req, res) => {
 
 /**
  * GET /health
- * Health check endpoint
+ * Diagnostic health endpoint
  */
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'healthy',
-    service: 'Reliv Payment Bridge',
-    version: '1.0.0',
-    razorpay: !!process.env.RAZORPAY_KEY_ID,
-    privateKey: !!privateKey,
-    database: !!db
-  });
+    let databaseHealthy = false;
+
+    try {
+        db.prepare('SELECT 1 AS ok').get();
+        databaseHealthy = true;
+    } catch {
+        databaseHealthy = false;
+    }
+
+    res.status(databaseHealthy ? 200 : 503).json({
+        status: databaseHealthy ? 'healthy' : 'degraded',
+        service: 'Reliv Payment Bridge',
+        version: '1.0.0',
+
+        razorpay: Boolean(
+            process.env.RAZORPAY_KEY_ID &&
+            process.env.RAZORPAY_KEY_SECRET
+        ),
+
+        privateKey: Boolean(privateKey),
+
+        database: databaseHealthy,
+
+        uptimeSeconds: Math.floor(process.uptime())
+    });
+});
+
+/**
+ * GET /ready
+ * Readiness endpoint
+ */
+app.get('/ready', (req, res) => {
+    try {
+        db.prepare('SELECT 1').get();
+
+        if (!privateKey) {
+            throw new Error('Private key unavailable');
+        }
+
+        if (
+            !process.env.RAZORPAY_KEY_ID ||
+            !process.env.RAZORPAY_KEY_SECRET
+        ) {
+            throw new Error('Razorpay configuration unavailable');
+        }
+
+        return res.status(200).json({
+            ready: true,
+            service: 'Reliv Payment Bridge'
+        });
+
+    } catch (error) {
+        return res.status(503).json({
+            ready: false,
+            service: 'Reliv Payment Bridge'
+        });
+    }
+});
+
+// Final JSON 404 handler
+app.use((req, res) => {
+    res.status(404).json({
+        success: false,
+        error: 'Endpoint not found'
+    });
+});
+
+// Safe global error handler
+app.use((err, req, res, next) => {
+    console.error('❌ Unhandled request error:', err);
+
+    if (res.headersSent) {
+        return next(err);
+    }
+
+    res.status(500).json({
+        success: false,
+        error: 'Internal server error'
+    });
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('\n⚠️  Received SIGTERM, shutting down gracefully...');
-  db.close();
-  process.exit(0);
-});
+function shutdown(signal) {
+    console.log(`\n⚠️ ${signal} received. Shutting down...`);
 
-process.on('SIGINT', () => {
-  console.log('\n⚠️  Received SIGINT, shutting down gracefully...');
-  db.close();
-  process.exit(0);
-});
+    try {
+        if (db) {
+            db.close();
+            console.log('✅ Payment database closed');
+        }
+    } catch (error) {
+        console.error(
+            '⚠️ Error while closing database:',
+            error.message
+        );
+    }
 
-// Start server
-app.listen(PORT, () => {
-  console.log('');
-  console.log('═══════════════════════════════════════════════════════════');
-  console.log('🔐 RELIV PAYMENT BRIDGE SERVICE');
-  console.log('═══════════════════════════════════════════════════════════');
-  console.log(`   Status: RUNNING`);
-  console.log(`   Port: ${PORT}`);
-  console.log(`   Razorpay: ${process.env.RAZORPAY_KEY_ID ? 'Configured' : 'NOT CONFIGURED'}`);
-  console.log(`   Private Key: Loaded`);
-  console.log(`   Database: Connected (persistent storage)`);
-  console.log('');
-  console.log('📋 Endpoints:');
-  console.log(`   POST http://localhost:${PORT}/verify-payment`);
-  console.log(`   GET  http://localhost:${PORT}/health`);
-  console.log('');
-  console.log('🔄 TRANSPORT MODEL:');
-  console.log('   1. Customer phone → Payment Bridge (HTTPS)');
-  console.log('   2. Bridge verifies with Razorpay API');
-  console.log('   3. Bridge signs authorization (RSA private key)');
-  console.log('   4. Bridge returns to customer site');
-  console.log('   5. Customer site POSTs to Pi (browser form)');
-  console.log('   6. Pi verifies locally (RSA public key)');
-  console.log('');
-  console.log('⚠️  This service MUST have Internet access to Razorpay API');
-  console.log('    The Raspberry Pi does NOT need Internet access.');
-  console.log('═══════════════════════════════════════════════════════════');
-  console.log('');
+    process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+// Final listener
+const server = app.listen(PORT, HOST, () => {
+    console.log('');
+    console.log('══════════════════════════════════════════════');
+    console.log('🔐 RELIV CLOUD PAYMENT BRIDGE');
+    console.log('══════════════════════════════════════════════');
+    console.log(`Host: ${HOST}`);
+    console.log(`Port: ${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Allowed origins: ${allowedOrigins.join(', ') || '(none)'}`);
+    console.log('══════════════════════════════════════════════');
 });
