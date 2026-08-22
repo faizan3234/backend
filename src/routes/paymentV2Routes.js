@@ -47,6 +47,25 @@ export function createPaymentV2Router(paymentV2Service = paymentV2ServiceInstanc
     });
 
     /**
+     * POST /api/sessions/:sessionId/payment-v2/cancel
+     * Explicitly cancel active Payment V2 request and associated unpaid transaction
+     */
+    router.post('/cancel', (req, res) => {
+        try {
+            const { sessionId } = req.params;
+            const result = paymentV2Service.cancelPaymentRequest(sessionId);
+            return res.json(result);
+        } catch (err) {
+            console.error('[PaymentV2Routes] ❌ Error cancelling payment request:', err.message);
+            return res.status(400).json({
+                ok: false,
+                code: err.code || 'CANCEL_FAILED',
+                message: err.message || 'Failed to cancel payment request'
+            });
+        }
+    });
+
+    /**
      * GET /api/sessions/:sessionId/payment-v2/status
      * Retrieve status of payment V2 for this session
      */

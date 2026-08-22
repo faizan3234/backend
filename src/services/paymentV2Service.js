@@ -22,6 +22,44 @@ import {
     verifyCodeHmac
 } from './paymentV2Crypto.js';
 
+/**
+ * Deterministically normalize and sort cart items by kit_id
+ * @param {Array} cart 
+ * @returns {Array<{kit_id: string, quantity: number}>}
+ */
+export function getCanonicalCart(cart) {
+    if (!Array.isArray(cart)) return [];
+    return cart
+        .map(item => {
+            const rawQty = item.cartQuantity ?? item.quantityRequested ?? item.selectedQuantity ?? item.quantity;
+            const parsedQty = parseInt(rawQty, 10);
+            return {
+                kit_id: String(item.kit_id || item._id || item.id || '').trim(),
+                quantity: Number.isInteger(parsedQty) && parsedQty > 0 ? parsedQty : 1
+            };
+        })
+        .filter(item => Boolean(item.kit_id))
+        .sort((a, b) => a.kit_id.localeCompare(b.kit_id));
+}
+
+/**
+ * Compare two carts for canonical equality
+ * @param {Array} cartA 
+ * @param {Array} cartB 
+ * @returns {boolean}
+ */
+export function areCartsEqual(cartA, cartB) {
+    const canonicalA = getCanonicalCart(cartA);
+    const canonicalB = getCanonicalCart(cartB);
+    if (canonicalA.length !== canonicalB.length) return false;
+    for (let i = 0; i < canonicalA.length; i++) {
+        if (canonicalA[i].kit_id !== canonicalB[i].kit_id || canonicalA[i].quantity !== canonicalB[i].quantity) {
+            return false;
+        }
+    }
+    return true;
+}
+
 export class PaymentV2Service {
     constructor({
         db = null,
@@ -153,44 +191,74 @@ export class PaymentV2Service {
         // Clean up expired requests first
         this.expireStaleRequests();
 
-        // 1. Resolve or create authoritative transaction
+        const effectiveServiceType = serviceType || session.service_type || 'HEALTH_CHECKUP';
+        const canonicalNewCart = getCanonicalCart(cart);
+        const now = Date.now();
+
+        // 1. Resolve or create authoritative transaction with cart-aware idempotency
         let transaction = this.transactionManager.getTransactionBySession(sessionId);
 
-        if (!transaction) {
-            const effectiveServiceType = serviceType || session.service_type || 'HEALTH_CHECKUP';
-            transaction = this.transactionManager.createTransaction(sessionId, effectiveServiceType, cart);
-        }
+        if (transaction) {
+            if (transaction.status === 'VERIFIED' || transaction.status === 'FULFILLED' || transaction.verified === 1) {
+                throw new Error(`Transaction ${transaction.transaction_id} is already paid`);
+            }
 
-        if (transaction.status === 'VERIFIED' || transaction.status === 'FULFILLED' || transaction.verified === 1) {
-            throw new Error(`Transaction ${transaction.transaction_id} is already paid`);
+            const transactionCart = Array.isArray(transaction.cart) ? transaction.cart : (typeof transaction.cart === 'string' ? JSON.parse(transaction.cart || '[]') : []);
+            const isSameCart = areCartsEqual(transactionCart, canonicalNewCart);
+            const isSameServiceType = (transaction.type === effectiveServiceType);
+
+            if (isSameCart && isSameServiceType && transaction.status === 'PENDING') {
+                // CASE 1: Exact same cart + same serviceType on unpaid PENDING transaction
+                // Check if active Payment V2 request exists and is valid
+                const existingStmt = this.db.prepare(`
+                    SELECT * FROM payment_v2_requests
+                    WHERE session_id = ? AND transaction_id = ? AND status = 'ACTIVE' AND expires_at > ? AND attempt_count < max_attempts
+                    ORDER BY created_at DESC LIMIT 1
+                `);
+                const existingRequest = existingStmt.get(sessionId, transaction.transaction_id, now);
+
+                if (existingRequest) {
+                    console.log(`[PaymentV2] Returning existing active payment request: ${existingRequest.request_id} (idempotent same cart)`);
+                    return {
+                        ok: true,
+                        requestId: existingRequest.request_id,
+                        sessionId: existingRequest.session_id,
+                        transactionId: existingRequest.transaction_id,
+                        amount: existingRequest.amount,
+                        currency: 'INR',
+                        expiresAt: existingRequest.expires_at,
+                        paymentUrl: `${this.paymentUrlBase}#p=${existingRequest.encrypted_package}`
+                    };
+                }
+            } else {
+                // CASE 2: Cart changed or serviceType changed on unpaid transaction!
+                console.log(`[PaymentV2] Cart or serviceType changed for session ${sessionId}. Cancelling prior request & transaction.`);
+                // Cancel prior active payment requests for this session
+                this.db.prepare(`
+                    UPDATE payment_v2_requests
+                    SET status = 'CANCELLED', cancelled_at = ?
+                    WHERE session_id = ? AND status = 'ACTIVE'
+                `).run(now, sessionId);
+
+                // Mark prior pending transaction as FAILED (superseded)
+                if (transaction.status === 'PENDING') {
+                    this.db.prepare(`
+                        UPDATE transactions
+                        SET status = 'FAILED', updated_at = datetime('now')
+                        WHERE transaction_id = ? AND status = 'PENDING'
+                    `).run(transaction.transaction_id);
+                }
+
+                // Create brand new authoritative transaction with new cart
+                transaction = this.transactionManager.createTransaction(sessionId, effectiveServiceType, canonicalNewCart);
+            }
+        } else {
+            transaction = this.transactionManager.createTransaction(sessionId, effectiveServiceType, canonicalNewCart);
         }
 
         const authoritativeAmount = transaction.amount;
-        const now = Date.now();
 
-        // 2. IDEMPOTENCY CHECK: Is there an existing valid ACTIVE request for this transaction?
-        const existingStmt = this.db.prepare(`
-            SELECT * FROM payment_v2_requests
-            WHERE session_id = ? AND transaction_id = ? AND status = 'ACTIVE' AND expires_at > ? AND attempt_count < max_attempts
-            ORDER BY created_at DESC LIMIT 1
-        `);
-        const existingRequest = existingStmt.get(sessionId, transaction.transaction_id, now);
-
-        if (existingRequest) {
-            console.log(`[PaymentV2] Returning existing active payment request: ${existingRequest.request_id} (idempotent)`);
-            return {
-                ok: true,
-                requestId: existingRequest.request_id,
-                sessionId: existingRequest.session_id,
-                transactionId: existingRequest.transaction_id,
-                amount: existingRequest.amount,
-                currency: 'INR',
-                expiresAt: existingRequest.expires_at,
-                paymentUrl: `${this.paymentUrlBase}#p=${existingRequest.encrypted_package}`
-            };
-        }
-
-        // 3. Atomically cancel any lingering prior active requests for this session
+        // Atomically cancel any lingering prior active requests for this session
         this.db.prepare(`
             UPDATE payment_v2_requests
             SET status = 'CANCELLED', cancelled_at = ?
@@ -325,6 +393,77 @@ export class PaymentV2Service {
     }
 
     /**
+     * Explicitly cancel active Payment V2 request and associated unpaid transaction for a session
+     * @param {string} sessionId
+     * @returns {Object} { ok: true, cancelled: boolean, requestId, transactionId }
+     */
+    cancelPaymentRequest(sessionId) {
+        if (!sessionId) {
+            throw new Error('sessionId is required');
+        }
+
+        const now = Date.now();
+
+        // 1. Find any ACTIVE payment request
+        const activeRequest = this.db.prepare(`
+            SELECT * FROM payment_v2_requests
+            WHERE session_id = ? AND status = 'ACTIVE'
+            ORDER BY created_at DESC LIMIT 1
+        `).get(sessionId);
+
+        let cancelled = false;
+        let requestId = null;
+        let transactionId = null;
+
+        if (activeRequest) {
+            requestId = activeRequest.request_id;
+            transactionId = activeRequest.transaction_id;
+
+            this.db.prepare(`
+                UPDATE payment_v2_requests
+                SET status = 'CANCELLED', cancelled_at = ?
+                WHERE request_id = ?
+            `).run(now, requestId);
+
+            cancelled = true;
+            console.log(`[PaymentV2] Explicitly cancelled payment request ${requestId} for session ${sessionId}`);
+
+            // Also mark associated transaction FAILED if still PENDING (never cancel VERIFIED / FULFILLED)
+            if (transactionId) {
+                const txn = this.transactionManager.getTransaction(transactionId);
+                if (txn && txn.status === 'PENDING') {
+                    this.db.prepare(`
+                        UPDATE transactions
+                        SET status = 'FAILED', updated_at = datetime('now')
+                        WHERE transaction_id = ? AND status = 'PENDING'
+                    `).run(transactionId);
+                    console.log(`[PaymentV2] Marked unpaid transaction ${transactionId} as FAILED (cancelled)`);
+                }
+            }
+        } else {
+            // Also check if any PENDING transaction exists without active request for this session
+            const pendingTxn = this.transactionManager.getTransactionBySession(sessionId);
+            if (pendingTxn && pendingTxn.status === 'PENDING') {
+                transactionId = pendingTxn.transaction_id;
+                this.db.prepare(`
+                    UPDATE transactions
+                    SET status = 'FAILED', updated_at = datetime('now')
+                    WHERE transaction_id = ? AND status = 'PENDING'
+                `).run(transactionId);
+                cancelled = true;
+                console.log(`[PaymentV2] Marked lingering unpaid transaction ${transactionId} as FAILED for session ${sessionId}`);
+            }
+        }
+
+        return {
+            ok: true,
+            cancelled: true,
+            requestId,
+            transactionId
+        };
+    }
+
+    /**
      * Verify customer-entered 4-digit confirmation code offline
      *
      * @param {string} sessionId
@@ -432,8 +571,8 @@ export class PaymentV2Service {
         if (request.status === 'CANCELLED') {
             return {
                 ok: false,
-                code: 'CANCELLED',
-                message: 'Payment request has been cancelled'
+                code: 'PAYMENT_REQUEST_CANCELLED',
+                message: 'Payment request has been cancelled or superseded'
             };
         }
 
