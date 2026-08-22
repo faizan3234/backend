@@ -41,6 +41,10 @@ export class InventoryManager {
       quantity: quantity,
       motor_id: row.motor_id,
       description: row.description,
+
+      image_path: row.image_path || '',
+      imageUrl: row.image_path || '',
+
       updated_at: row.updated_at,
       synced_to_mongo: row.synced_to_mongo,
 
@@ -68,6 +72,7 @@ export class InventoryManager {
         i.quantity,
         i.motor_id,
         i.description,
+        i.image_path,
         i.updated_at,
         i.synced_to_mongo,
         COALESCE(
@@ -94,6 +99,7 @@ export class InventoryManager {
         i.quantity,
         i.motor_id,
         i.description,
+        i.image_path,
         i.updated_at,
         i.synced_to_mongo,
         COALESCE(

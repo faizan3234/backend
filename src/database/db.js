@@ -151,6 +151,43 @@ export function initializeDatabase(customPath = null) {
         // Run schema initialization
         const schema = readFileSync(SCHEMA_PATH, 'utf-8');
         db.exec(schema);
+
+        // ─────────────────────────────────────────────────────────────────────────────
+        // MIGRATION: medicine local image support
+        // Existing kiosks created before medicine images do not have image_path.
+        // Safe to run on every startup.
+        // ─────────────────────────────────────────────────────────────────────────────
+        try {
+            const inventoryColumns = db
+                .prepare(`PRAGMA table_info(inventory)`)
+                .all();
+
+            const hasImagePath = inventoryColumns.some(
+                (column) => column.name === "image_path"
+            );
+
+            if (!hasImagePath) {
+                console.log(
+                    "[Database] Adding image_path column to inventory..."
+                );
+
+                db.exec(`
+                    ALTER TABLE inventory
+                    ADD COLUMN image_path TEXT NOT NULL DEFAULT '';
+                `);
+
+                console.log(
+                    "[Database] ✅ inventory.image_path migration complete"
+                );
+            }
+        } catch (err) {
+            console.error(
+                "[Database] ❌ inventory image_path migration failed:",
+                err.message
+            );
+
+            throw err;
+        }
         
         // Verify schema version
         const versionRow = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get();

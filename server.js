@@ -12,6 +12,7 @@ import { MongoClient, ObjectId } from "mongodb";
 import QRCode from "qrcode";
 import fetch from "node-fetch";
 import mqtt from "mqtt";
+import multer from "multer";
 import RELIV_LOGO_B64 from "./relivlogo-base64.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2669,6 +2670,139 @@ function requireDatabase(req, res, next) {
 //   motor_id, updated_at
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// LOCAL MEDICINE IMAGE STORAGE
+// ═══════════════════════════════════════════════════════════════════════════
+
+const MEDICINE_IMAGE_DIR =
+    process.env.MEDICINE_IMAGE_DIR ||
+    (process.platform === 'win32'
+        ? path.join(process.cwd(), 'data', 'medicine-images')
+        : '/home/reliv/reliv-data/medicine-images');
+
+const MEDICINE_IMAGE_ROUTE = "/medicine-images";
+
+const MAX_MEDICINE_IMAGE_SIZE = 5 * 1024 * 1024; // 5 MB
+
+const medicineImageUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: MAX_MEDICINE_IMAGE_SIZE,
+        files: 1
+    }
+});
+
+function detectMedicineImageExtension(buffer) {
+    if (!Buffer.isBuffer(buffer)) {
+        return null;
+    }
+
+    // JPEG: FF D8 FF
+    if (
+        buffer.length >= 3 &&
+        buffer[0] === 0xff &&
+        buffer[1] === 0xd8 &&
+        buffer[2] === 0xff
+    ) {
+        return ".jpg";
+    }
+
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (
+        buffer.length >= 8 &&
+        buffer[0] === 0x89 &&
+        buffer[1] === 0x50 &&
+        buffer[2] === 0x4e &&
+        buffer[3] === 0x47 &&
+        buffer[4] === 0x0d &&
+        buffer[5] === 0x0a &&
+        buffer[6] === 0x1a &&
+        buffer[7] === 0x0a
+    ) {
+        return ".png";
+    }
+
+    // WEBP: RIFF....WEBP
+    if (
+        buffer.length >= 12 &&
+        buffer.toString("ascii", 0, 4) === "RIFF" &&
+        buffer.toString("ascii", 8, 12) === "WEBP"
+    ) {
+        return ".webp";
+    }
+
+    return null;
+}
+
+function sanitizeMedicineIdForFilename(kitId) {
+    return String(kitId)
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]/g, "_")
+        .slice(0, 80);
+}
+
+function createMedicineImageFilename(kitId, extension) {
+    const safeKitId = sanitizeMedicineIdForFilename(kitId);
+    const random = crypto.randomBytes(6).toString("hex");
+    return `${safeKitId}-${Date.now()}-${random}${extension}`;
+}
+
+async function deleteMedicineImageFile(imagePath) {
+    if (
+        !imagePath ||
+        typeof imagePath !== "string" ||
+        !imagePath.startsWith(`${MEDICINE_IMAGE_ROUTE}/`)
+    ) {
+        return;
+    }
+
+    const filename = path.basename(imagePath);
+    if (!filename) {
+        return;
+    }
+
+    const physicalPath = path.join(MEDICINE_IMAGE_DIR, filename);
+
+    try {
+        await fs.unlink(physicalPath);
+    } catch (err) {
+        if (err.code !== "ENOENT") {
+            log.warn(`Could not delete medicine image ${physicalPath}: ${err.message}`);
+        }
+    }
+}
+
+function handleMedicineImageUpload(req, res, next) {
+    medicineImageUpload.single("image")(req, res, (err) => {
+        if (!err) {
+            return next();
+        }
+
+        if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+            return res.status(413).json({
+                ok: false,
+                message: "Medicine image must be 5 MB or smaller"
+            });
+        }
+
+        log.warn(`Medicine image upload rejected: ${err.message}`);
+
+        return res.status(400).json({
+            ok: false,
+            message: "Invalid medicine image upload"
+        });
+    });
+}
+
+// Serve local medicine images statically
+app.use(
+    MEDICINE_IMAGE_ROUTE,
+    express.static(MEDICINE_IMAGE_DIR, {
+        maxAge: 0,
+        etag: true
+    })
+);
+
 /**
  * Map an inventoryManager item to the canonical API response shape.
  * inventoryManager._formatItem() already computes reserved/available,
@@ -2679,9 +2813,10 @@ function formatKitResponse(item) {
     const reservedQty = Number(item.reserved_quantity ?? 0);
     const availableQty = Math.max(0, stockQty - reservedQty);
     const price        = Number(item.price          ?? item.unit_price       ?? 0);
-    const taxRate      = settingsManager.getTaxRate() ?? 18;
+    const taxRate      = settingsManager?.getTaxRate?.() ?? 18;
     const tax          = Math.round(price * taxRate) / 100;
     const totalPrice   = Math.round((price + tax) * 100) / 100;
+    const imagePath    = item.image_path || item.imageUrl || "";
 
     return {
         id:                 item.kit_id,
@@ -2698,6 +2833,8 @@ function formatKitResponse(item) {
         reserved_quantity:  reservedQty,
         available_quantity: availableQty,
         motor_id:           item.motor_id      ?? null,
+        image_path:         imagePath,
+        imageUrl:           imagePath, // Compatibility alias while frontend is transitioned
         updated_at:         item.updated_at    ?? null,
     };
 }
@@ -2847,77 +2984,242 @@ app.patch("/api/kits/:id", (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PATCH /api/kits/:id/image — update imageUrl field (stored in description for now)
-//
-// Note: The `inventory` SQLite table does not have an imageUrl column.
-// This endpoint is kept for API compatibility. If imageUrl storage is needed,
-// add an `image_url TEXT` column to the inventory schema.
+// PATCH /api/kits/:id/image — upload or replace medicine image (multipart/form-data)
 // ─────────────────────────────────────────────────────────────────────────────
-app.patch("/api/kits/:id/image", (req, res) => {
+app.patch(
+    "/api/kits/:id/image",
+    handleMedicineImageUpload,
+    async (req, res) => {
+        let newPhysicalPath = null;
+
+        try {
+            if (!inventoryManager) {
+                return res.status(503).json({
+                    ok: false,
+                    message: "Inventory not available"
+                });
+            }
+
+            const kitId = String(req.params.id || "").trim();
+
+            if (!kitId) {
+                return res.status(400).json({
+                    ok: false,
+                    message: "Invalid medicine ID"
+                });
+            }
+
+            const existing = inventoryManager.getInventoryItem(kitId);
+
+            if (!existing) {
+                return res.status(404).json({
+                    ok: false,
+                    message: `Kit '${kitId}' not found`
+                });
+            }
+
+            if (!req.file?.buffer) {
+                return res.status(400).json({
+                    ok: false,
+                    message: "Medicine image is required"
+                });
+            }
+
+            // Validate actual file bytes.
+            const extension = detectMedicineImageExtension(req.file.buffer);
+
+            if (!extension) {
+                return res.status(400).json({
+                    ok: false,
+                    message: "Invalid image. Only JPG, PNG and WEBP are supported."
+                });
+            }
+
+            await fs.mkdir(MEDICINE_IMAGE_DIR, { recursive: true });
+
+            const filename = createMedicineImageFilename(kitId, extension);
+
+            newPhysicalPath = path.join(MEDICINE_IMAGE_DIR, filename);
+
+            const newPublicPath = `${MEDICINE_IMAGE_ROUTE}/${filename}`;
+
+            // 1. Save NEW picture first.
+            await fs.writeFile(newPhysicalPath, req.file.buffer, { flag: "wx" });
+
+            // 2. Update SQLite only after file save succeeds.
+            const result = inventoryManager.db.prepare(`
+                UPDATE inventory
+                SET image_path = ?,
+                    updated_at = datetime('now')
+                WHERE kit_id = ?
+            `).run(newPublicPath, kitId);
+
+            if (result.changes !== 1) {
+                // Database update unexpectedly failed.
+                try {
+                    await fs.unlink(newPhysicalPath);
+                } catch {}
+
+                return res.status(500).json({
+                    ok: false,
+                    message: "Could not update medicine image"
+                });
+            }
+
+            // 3. New image + DB are safe. Now remove previous image.
+            if (existing.image_path && existing.image_path !== newPublicPath) {
+                await deleteMedicineImageFile(existing.image_path);
+            }
+
+            const updated = inventoryManager.getInventoryItem(kitId);
+
+            log.info(`✅ Medicine image saved: ${kitId} -> ${newPublicPath}`);
+
+            return res.json({
+                ok: true,
+                message: "Medicine image saved successfully",
+                kit: formatKitResponse(updated)
+            });
+
+        } catch (err) {
+            // If file was written but something later failed, clean it up if possible.
+            if (newPhysicalPath) {
+                try {
+                    await fs.unlink(newPhysicalPath);
+                } catch {}
+            }
+
+            log.error("PATCH /api/kits/:id/image error:", err.message);
+
+            return res.status(500).json({
+                ok: false,
+                message: "Failed to save medicine image"
+            });
+        }
+    }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/kits/:id/image — remove only the medicine picture
+// ─────────────────────────────────────────────────────────────────────────────
+app.delete("/api/kits/:id/image", async (req, res) => {
     try {
         if (!inventoryManager) {
-            return res.status(503).json({ ok: false, message: "Inventory not available" });
+            return res.status(503).json({
+                ok: false,
+                message: "Inventory not available"
+            });
         }
 
-        const kitId   = String(req.params.id).trim();
-        const { imageUrl } = req.body;
-
-        if (!imageUrl) {
-            return res.status(400).json({ ok: false, message: "Missing imageUrl" });
-        }
+        const kitId = String(req.params.id || "").trim();
 
         const existing = inventoryManager.getInventoryItem(kitId);
+
         if (!existing) {
-            return res.status(404).json({ ok: false, message: `Kit '${kitId}' not found` });
+            return res.status(404).json({
+                ok: false,
+                message: `Kit '${kitId}' not found`
+            });
         }
 
-        // Store imageUrl — add column if schema supports it, otherwise no-op with 200
-        try {
-            inventoryManager.db.prepare(`
-                UPDATE inventory SET image_url = ?, updated_at = datetime('now') WHERE kit_id = ?
-            `).run(String(imageUrl), kitId);
-        } catch (colErr) {
-            // Column doesn't exist yet — acknowledge without error so frontend isn't broken
-            log.warn(`PATCH /api/kits/:id/image: image_url column not in schema, skipping write (${colErr.message})`);
+        const oldImagePath = existing.image_path || "";
+
+        // First remove DB reference.
+        inventoryManager.db.prepare(`
+            UPDATE inventory
+            SET image_path = '',
+                updated_at = datetime('now')
+            WHERE kit_id = ?
+        `).run(kitId);
+
+        // Then remove physical file.
+        if (oldImagePath) {
+            await deleteMedicineImageFile(oldImagePath);
         }
 
         const updated = inventoryManager.getInventoryItem(kitId);
-        log.info(`✅ Kit image updated (or no-op): ${kitId}`);
-        res.json({ ok: true, kit: formatKitResponse(updated) });
+
+        log.info(`✅ Medicine image removed: ${kitId}`);
+
+        return res.json({
+            ok: true,
+            message: "Medicine image removed",
+            kit: formatKitResponse(updated)
+        });
 
     } catch (err) {
-        log.error("PATCH /api/kits/:id/image error:", err.message);
-        res.status(500).json({ ok: false, message: "Failed to update kit image" });
+        log.error("DELETE /api/kits/:id/image error:", err.message);
+
+        return res.status(500).json({
+            ok: false,
+            message: "Failed to remove medicine image"
+        });
     }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DELETE /api/kits/:id — remove kit from SQLite inventory
-//
-// :id is kit_id (string)
+// DELETE /api/kits/:id — remove kit from SQLite inventory (and clean up image)
 // ─────────────────────────────────────────────────────────────────────────────
-app.delete("/api/kits/:id", (req, res) => {
+app.delete("/api/kits/:id", async (req, res) => {
     try {
         if (!inventoryManager) {
-            return res.status(503).json({ ok: false, message: "Inventory not available" });
+            return res.status(503).json({
+                ok: false,
+                message: "Inventory not available"
+            });
         }
 
-        const kitId = String(req.params.id).trim();
+        const kitId = String(req.params.id || "").trim();
+
+        if (!kitId) {
+            return res.status(400).json({
+                ok: false,
+                message: "Invalid medicine ID"
+            });
+        }
+
         const existing = inventoryManager.getInventoryItem(kitId);
+
         if (!existing) {
-            return res.status(404).json({ ok: false, message: `Kit '${kitId}' not found` });
+            return res.status(404).json({
+                ok: false,
+                message: `Kit '${kitId}' not found`
+            });
         }
 
-        inventoryManager.db.prepare(
-            `DELETE FROM inventory WHERE kit_id = ?`
-        ).run(kitId);
+        const oldImagePath = existing.image_path || "";
+
+        const result = inventoryManager.db.prepare(`
+            DELETE FROM inventory
+            WHERE kit_id = ?
+        `).run(kitId);
+
+        if (result.changes !== 1) {
+            return res.status(404).json({
+                ok: false,
+                message: `Kit '${kitId}' not found`
+            });
+        }
+
+        // Database deletion succeeded. Image cleanup is now safe.
+        if (oldImagePath) {
+            await deleteMedicineImageFile(oldImagePath);
+        }
 
         log.info(`✅ Kit deleted: ${kitId}`);
-        res.json({ ok: true });
+
+        return res.json({
+            ok: true,
+            message: "Medicine deleted successfully"
+        });
 
     } catch (err) {
         log.error("DELETE /api/kits/:id error:", err.message);
-        res.status(500).json({ ok: false, message: "Failed to delete kit" });
+
+        return res.status(500).json({
+            ok: false,
+            message: "Failed to delete medicine"
+        });
     }
 });
 

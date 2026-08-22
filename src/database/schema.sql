@@ -119,6 +119,10 @@ CREATE TABLE IF NOT EXISTS inventory (
     quantity INTEGER NOT NULL DEFAULT 0,
     motor_id INTEGER,
     description TEXT,
+
+    -- Medicine image stored on Raspberry Pi filesystem.
+    -- Database stores URL/path only, NOT binary/base64 image.
+    image_path TEXT NOT NULL DEFAULT '',
     
     -- Tracking
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
