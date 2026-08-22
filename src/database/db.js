@@ -16,10 +16,14 @@ const __dirname = dirname(__filename);
 // ───────────────────────────────────────────────────────────────────────────
 // Database Configuration
 // ───────────────────────────────────────────────────────────────────────────
-const DB_PATH = process.env.DB_PATH || join(process.cwd(), 'data', 'kiosk.db');
 const SCHEMA_PATH = join(__dirname, 'schema.sql');
 
 let db = null;
+let currentDbPath = null;
+
+export function getDatabasePath() {
+    return currentDbPath || process.env.DB_PATH || join(process.cwd(), 'data', 'kiosk.db');
+}
 
 /**
  * Initialize the SQLite database
@@ -27,13 +31,28 @@ let db = null;
  * - Runs schema migrations
  * - Enables WAL mode for better concurrency
  * - Sets up foreign key constraints
+ * 
+ * @param {string|null} [customPath] - Optional custom database file path (e.g. for isolated test suites)
  */
-export function initializeDatabase() {
+export function initializeDatabase(customPath = null) {
     try {
-        console.log(`[DB] Initializing database at: ${DB_PATH}`);
+        const targetPath = customPath || process.env.DB_PATH || join(process.cwd(), 'data', 'kiosk.db');
+        
+        // If a different database is already open, close it cleanly first
+        if (db && currentDbPath !== targetPath) {
+            try { db.close(); } catch {}
+            db = null;
+        }
+
+        if (db) {
+            return db;
+        }
+
+        console.log(`[DB] Initializing database at: ${targetPath}`);
+        currentDbPath = targetPath;
         
         // Open database connection
-        db = new Database(DB_PATH, {
+        db = new Database(targetPath, {
             verbose: process.env.NODE_ENV === 'development' ? console.log : null
         });
         
@@ -42,6 +61,7 @@ export function initializeDatabase() {
         
         // Enable foreign key constraints
         db.pragma('foreign_keys = ON');
+
         
         // Set reasonable cache size (2MB)
         db.pragma('cache_size = -2000');
@@ -166,6 +186,7 @@ export function closeDatabase() {
     if (db) {
         db.close();
         db = null;
+        currentDbPath = null;
         console.log('[DB] Database connection closed');
     }
 }

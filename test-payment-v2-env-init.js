@@ -92,12 +92,18 @@ process.env.PAYMENT_V2_KIOSK_SIGNING_PRIVATE_KEY_PATH = tempKioskPrivPath;
 process.env.PAYMENT_V2_CLOUD_ENCRYPTION_PUBLIC_KEY_PATH = tempCloudPubPath;
 
 // NOW import the module — it will be lazily initialized
-const { initializeDatabase } = await import('./src/database/db.js');
+const { initializeDatabase, getDatabasePath, closeDatabase } = await import('./src/database/db.js');
 const sessionManagerMod = await import('./src/services/sessionManager.js');
 const transactionManagerMod = await import('./src/services/transactionManager.js');
 
 // Initialize database (required for service)
-initializeDatabase();
+initializeDatabase(TEST_DB_PATH);
+assert(
+    !getDatabasePath().endsWith('kiosk.db'),
+    `TEST DB ISOLATION GUARD: Connected to test DB (${TEST_DB_PATH}), not production kiosk.db`
+);
+const { getDb } = await import('./src/database/db.js');
+const db = getDb();
 sessionManagerMod.default.initialize();
 transactionManagerMod.transactionManager.initialize();
 
@@ -105,8 +111,6 @@ transactionManagerMod.transactionManager.initialize();
 const { paymentV2Service, PaymentV2Service } = await import('./src/services/paymentV2Service.js');
 
 // Seed minimal inventory
-const { getDb } = await import('./src/database/db.js');
-const db = getDb();
 db.prepare(`
     INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id)
     VALUES ('KIT-REGRESSION', 'Regression Kit', 100, 10, 1)
@@ -270,6 +274,7 @@ console.log(`  RESULTS: ${passed} PASS, ${failed} FAIL (${passed + failed} total
 console.log('══════════════════════════════════════════════════\n');
 
 // Clean up test DB
+closeDatabase();
 try { fs.unlinkSync(TEST_DB_PATH); } catch {}
 try { fs.rmSync(TEMP_KEY_DIR, { recursive: true }); } catch {}
 

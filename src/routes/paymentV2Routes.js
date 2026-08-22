@@ -109,7 +109,30 @@ export function createPaymentV2Router(paymentV2Service = paymentV2ServiceInstanc
         }
     });
 
+    /**
+     * POST /api/sessions/:sessionId/payment-v2/calculate-price
+     * Calculate authoritative price breakdown for display
+     */
+    router.post('/calculate-price', async (req, res) => {
+        try {
+            const { serviceType, cart } = req.body || {};
+            const pricing = paymentV2Service.transactionManager.calculateAuthoritativePrice(
+                serviceType || 'MEDICINE',
+                cart || []
+            );
+            return res.json({ ok: true, pricing });
+        } catch (err) {
+            console.error('[PaymentV2Routes] ❌ Error calculating price:', err.message);
+            return res.status(400).json({
+                ok: false,
+                code: err.code || 'PRICING_CALCULATION_FAILED',
+                message: err.message || 'Failed to calculate pricing'
+            });
+        }
+    });
+
     return router;
 }
 
 export default createPaymentV2Router;
+

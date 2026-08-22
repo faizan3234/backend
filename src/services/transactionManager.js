@@ -10,6 +10,7 @@
  */
 
 import { getDb } from '../database/db.js';
+import pricingServiceInstance, { PricingService } from './pricingService.js';
 
 // Transaction states (must match schema CHECK constraint)
 const TRANSACTION_STATES = {
@@ -27,15 +28,10 @@ const VALID_TRANSITIONS = {
     FAILED: [],
 };
 
-// Service pricing (in INR, paise)
-const SERVICE_PRICING = {
-    HEALTH_CHECKUP: 10000,  // ₹100.00 (10000 paise)
-    MEDICINE: 0,            // Calculated from cart
-};
-
-class TransactionManager {
-    constructor() {
-        this.db = null;
+export class TransactionManager {
+    constructor({ db = null, pricingService = pricingServiceInstance } = {}) {
+        this.db = db;
+        this.pricingService = pricingService;
     }
 
     initialize() {
@@ -49,7 +45,7 @@ class TransactionManager {
      * 
      * @param {string} sessionId - Session ID
      * @param {string} serviceType - 'HEALTH_CHECKUP' | 'MEDICINE'
-     * @param {Array} cart - Medicine cart items [{medicine_id, quantity}]
+     * @param {Array} cart - Medicine cart items [{kit_id, quantity}]
      * @returns {Object} Transaction with authoritative amount
      */
     createTransaction(sessionId, serviceType, cart = []) {
@@ -61,8 +57,9 @@ class TransactionManager {
             throw new Error('serviceType must be HEALTH_CHECKUP or MEDICINE');
         }
 
-        // ✅ BACKEND calculates amount (NEVER trust frontend)
-        const amount = this._calculateAmount(serviceType, cart);
+        // ✅ BACKEND calculates amount authoritatively (NEVER trust frontend)
+        const pricing = this.calculateAuthoritativePrice(serviceType, cart);
+        const amount = pricing.totalPaise;
 
         // Generate unique transaction ID
         const timestamp = Date.now();
@@ -91,49 +88,26 @@ class TransactionManager {
     }
 
     /**
-     * Calculate transaction amount from service type and cart
-     * This is the AUTHORITATIVE source of pricing
+     * Calculate authoritative transaction pricing from service type and cart.
+     * This is the SINGLE AUTHORITATIVE source of pricing.
      * 
+     * @param {string} serviceType
+     * @param {Array} cart
+     * @returns {Object} Pricing breakdown with subtotalPaise, taxPaise, totalPaise, items
+     */
+    calculateAuthoritativePrice(serviceType, cart = []) {
+        const ps = this.pricingService || pricingServiceInstance;
+        return ps.calculateAuthoritativePrice({ serviceType, cart });
+    }
+
+    /**
+     * Calculate transaction amount in paise (for backwards compatibility)
      * @private
      */
     _calculateAmount(serviceType, cart) {
-        if (serviceType === 'HEALTH_CHECKUP') {
-            return SERVICE_PRICING.HEALTH_CHECKUP;
-        }
-
-        if (serviceType === 'MEDICINE') {
-            if (!cart || cart.length === 0) {
-                throw new Error('Medicine service requires cart items');
-            }
-
-            let total = 0;
-
-            // Get prices from inventory table (authoritative source)
-            for (const item of cart) {
-                const inventoryItem = this.db.prepare(`
-                    SELECT kit_id, price, quantity
-                    FROM inventory
-                    WHERE kit_id = ?
-                `).get(item.kit_id);
-
-                if (!inventoryItem) {
-                    throw new Error(`Medicine ${item.kit_id} not found in inventory`);
-                }
-
-                if (inventoryItem.quantity < item.quantity) {
-                    throw new Error(`Insufficient stock for ${item.kit_id}: have ${inventoryItem.quantity}, need ${item.quantity}`);
-                }
-
-                // Price is stored as REAL (rupees), convert to paise for consistency
-                const priceInPaise = Math.round(inventoryItem.price * 100);
-                total += priceInPaise * item.quantity;
-            }
-
-            return total;
-        }
-
-        throw new Error(`Unknown service type: ${serviceType}`);
+        return this.calculateAuthoritativePrice(serviceType, cart).totalPaise;
     }
+
 
     /**
      * Mark Razorpay order created (but payment still pending)

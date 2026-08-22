@@ -20,8 +20,9 @@
  */
 
 import crypto from 'crypto';
+import fs from 'fs';
 import Database from 'better-sqlite3';
-import { initializeDatabase, getDb } from './src/database/db.js';
+import { initializeDatabase, getDb, closeDatabase, getDatabasePath } from './src/database/db.js';
 import sessionManager from './src/services/sessionManager.js';
 import { transactionManager } from './src/services/transactionManager.js';
 import fulfillmentManager from './src/services/fulfillmentManager.js';
@@ -122,12 +123,17 @@ console.log('🧪 RELIV KIOSK — PHASE 1 SECURITY & SAFETY TEST SUITE');
 console.log('═══════════════════════════════════════════════════════════\n');
 
 // Initialize database with test path
-process.env.DB_PATH = './data/test-phase1.db';
+const TEST_DB_PATH = './data/test-phase1.db';
+process.env.DB_PATH = TEST_DB_PATH;
 
 try {
-    initializeDatabase();
+    initializeDatabase(TEST_DB_PATH);
     sessionManager.initialize();
     transactionManager.initialize();
+    assert(
+        !getDatabasePath().endsWith('kiosk.db'),
+        `TEST DB ISOLATION GUARD: Connected to test DB (${TEST_DB_PATH}), not production kiosk.db`
+    );
     console.log('✅ Test database initialized\n');
 } catch (err) {
     console.error('❌ Failed to initialize test database:', err);
@@ -267,7 +273,7 @@ section('5. transactionManager.verifyPayment() Correct Args');
     // Correct call with proper paymentDetails object
     const paymentDetails = {
         id: 'pay_test_123',
-        amount: 10000,        // Must match transaction amount
+        amount: transaction.amount, // Must match transaction amount
         status: 'captured',   // Must be 'captured'
         order_id: 'order_test_123'
     };
@@ -340,7 +346,7 @@ section('7. transactionManager.verifyPayment() Not Captured');
     
     const notCaptured = {
         id: 'pay_not_captured',
-        amount: 10000,
+        amount: transaction.amount,
         status: 'created',    // NOT captured
         order_id: 'order_nc'
     };
@@ -710,7 +716,7 @@ section('18. Duplicate Payment Idempotency');
     
     const paymentDetails = {
         id: 'pay_dup_test',
-        amount: 10000,
+        amount: transaction.amount,
         status: 'captured',
         order_id: 'order_dup'
     };
@@ -740,7 +746,7 @@ section('19. Atomic Transaction Rollback on Failure');
     try {
         getDb().transaction(() => {
             // 1. Store Nonce
-            paymentAuthVerifier.storeNonce(nonce, session.session_id, transaction.transaction_id, 'pay_rollback_test', 10000);
+            paymentAuthVerifier.storeNonce(nonce, session.session_id, transaction.transaction_id, 'pay_rollback_test', transaction.amount);
             
             // 2. Consume Pairing Token
             sessionManager.consumePairingToken(session.session_id, pairingToken);
@@ -908,8 +914,8 @@ setTimeout(() => {
     }
     
     // Cleanup test database
+    closeDatabase();
     try {
-        const fs = require('fs');
         if (fs.existsSync('./data/test-phase1.db')) fs.unlinkSync('./data/test-phase1.db');
         if (fs.existsSync('./data/test-phase1.db-wal')) fs.unlinkSync('./data/test-phase1.db-wal');
         if (fs.existsSync('./data/test-phase1.db-shm')) fs.unlinkSync('./data/test-phase1.db-shm');

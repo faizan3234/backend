@@ -2679,6 +2679,9 @@ function formatKitResponse(item) {
     const reservedQty = Number(item.reserved_quantity ?? 0);
     const availableQty = Math.max(0, stockQty - reservedQty);
     const price        = Number(item.price          ?? item.unit_price       ?? 0);
+    const taxRate      = settingsManager.getTaxRate() ?? 18;
+    const tax          = Math.round(price * taxRate) / 100;
+    const totalPrice   = Math.round((price + tax) * 100) / 100;
 
     return {
         id:                 item.kit_id,
@@ -2686,6 +2689,10 @@ function formatKitResponse(item) {
         name:               item.name          ?? '',
         description:        item.description   ?? '',
         price,
+        base_price:         price,
+        tax_rate:           taxRate,
+        tax,
+        total_price:        totalPrice,
         quantity:           stockQty,
         stock_quantity:     stockQty,
         reserved_quantity:  reservedQty,

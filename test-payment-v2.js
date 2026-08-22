@@ -18,7 +18,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { initializeDatabase, getDb } from './src/database/db.js';
+import { initializeDatabase, getDb, closeDatabase } from './src/database/db.js';
 import sessionManager from './src/services/sessionManager.js';
 import { transactionManager } from './src/services/transactionManager.js';
 import fulfillmentManager from './src/services/fulfillmentManager.js';
@@ -64,7 +64,7 @@ function section(name) {
 // ═══════════════════════════════════════════════════════════════════════════
 // TEST FIXTURES & SETUP
 // ═══════════════════════════════════════════════════════════════════════════
-const TEST_DB_PATH = './data/test-payment-v2.db';
+const TEST_DB_PATH = path.resolve('./data/test-payment-v2.db');
 process.env.DB_PATH = TEST_DB_PATH;
 
 // Clean up previous test DB if exists
@@ -72,9 +72,14 @@ if (fs.existsSync(TEST_DB_PATH)) {
     try { fs.unlinkSync(TEST_DB_PATH); } catch {}
 }
 
-const db = initializeDatabase();
+const db = initializeDatabase(TEST_DB_PATH);
 sessionManager.initialize();
 transactionManager.initialize();
+
+assert(
+    !db.name.endsWith('kiosk.db'),
+    `TEST DB ISOLATION GUARD: Connected to test DB (${TEST_DB_PATH}), not production kiosk.db`
+);
 
 // Generate in-memory test keypairs
 const kioskKeys = crypto.generateKeyPairSync('ed25519', {
@@ -289,7 +294,7 @@ db.prepare(`
     });
 
     assert(reqMed.ok === true, 'Medicine cart payment request created');
-    assert(reqMed.amount === 50000, 'Medicine cart total is calculated authoritatively from inventory DB (₹500.00)');
+    assert(reqMed.amount === 56200, 'Medicine cart total is calculated authoritatively (₹500.00 base + 12% tax + ₹2 fee = ₹562.00 / 56200 paise)');
 
     // Client-supplied amount tampering ignored
     const reqTamper = await v2Service.createPaymentRequest(sessionMed.session_id, {
@@ -297,7 +302,7 @@ db.prepare(`
         cart: medCart,
         amount: 100 // Malicious client claims ₹1.00
     });
-    assert(reqTamper.amount === 50000, 'Client-supplied amount is completely ignored (retains 50000 paise)');
+    assert(reqTamper.amount === 56200, 'Client-supplied amount is completely ignored (retains 56200 paise)');
 
     // ───────────────────────────────────────────────────────────────────────
     // IDEMPOTENCY & STATUS
@@ -490,6 +495,7 @@ db.prepare(`
     assert(notConfiguredThrown, 'createPaymentRequest throws PAYMENT_V2_NOT_CONFIGURED gracefully');
 
     // Clean up temporary test files
+    closeDatabase();
     try {
         fs.rmSync(TEMP_KEY_DIR, { recursive: true, force: true });
         if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
