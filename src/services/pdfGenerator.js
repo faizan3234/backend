@@ -15,6 +15,7 @@ import PDFDocument from 'pdfkit';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { normalizeReceiptData, drawReceiptDocument } from './receiptPdfBuilder.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -75,14 +76,14 @@ class PDFGenerator {
      * Generate receipt PDF
      * Returns: { receiptId, pdfPath, pdfBuffer }
      */
-    async generateReceipt(sessionId, customerData, transaction) {
+    async generateReceipt(sessionId, customerData, transaction, ecoStats = null) {
         const receiptId = `RCP-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
         const filename = `${receiptId}.pdf`;
         const pdfPath = path.join(this.receiptsDir, filename);
 
         console.log(`[PDFGenerator] Generating receipt: ${receiptId} for session ${sessionId}`);
 
-        const buffer = await this._createReceiptPDF(customerData, transaction);
+        const buffer = await this._createReceiptPDF(customerData, transaction, ecoStats);
         
         // Save to file
         fs.writeFileSync(pdfPath, buffer);
@@ -94,7 +95,8 @@ class PDFGenerator {
             ) VALUES (?, ?, ?, ?, ?, datetime('now'))
         `);
 
-        stmt.run(receiptId, sessionId, transaction.transaction_id, pdfPath, 'GENERATED');
+        const txId = transaction?.transaction_id || transaction?.receipt_id || receiptId;
+        stmt.run(receiptId, sessionId, txId, pdfPath, 'GENERATED');
 
         console.log(`[PDFGenerator] ✅ Receipt saved: ${pdfPath}`);
 
@@ -214,75 +216,26 @@ class PDFGenerator {
      * Create receipt PDF
      * @private
      */
-    async _createReceiptPDF(customerData, transaction) {
+    async _createReceiptPDF(customerData, transaction, ecoStats = null) {
         return new Promise((resolve, reject) => {
-            const doc = new PDFDocument({ size: 'A4', margin: 50 });
-            const chunks = [];
+            try {
+                const doc = new PDFDocument({ size: 'A4', margin: 44, bufferPages: true });
+                const chunks = [];
 
-            doc.on('data', chunk => chunks.push(chunk));
-            doc.on('end', () => resolve(Buffer.concat(chunks)));
-            doc.on('error', reject);
+                doc.on('data', chunk => chunks.push(chunk));
+                doc.on('end', () => resolve(Buffer.concat(chunks)));
+                doc.on('error', reject);
 
-            // Header
-            doc.fontSize(24).fillColor('#F97316').text('PAYMENT RECEIPT', { align: 'center' });
-            doc.moveDown(0.5);
-            doc.fontSize(10).fillColor('#666').text(new Date().toLocaleDateString(), { align: 'center' });
-            doc.moveDown(2);
+                const normalized = normalizeReceiptData(customerData, transaction, ecoStats);
+                drawReceiptDocument(doc, normalized);
 
-            // Receipt Details
-            doc.fontSize(14).fillColor('#111').text('Receipt Details', { underline: true });
-            doc.moveDown(0.5);
-            doc.fontSize(11).fillColor('#333');
-            doc.text(`Receipt ID: ${transaction.transaction_id}`);
-            doc.text(`Date: ${new Date(transaction.created_at).toLocaleString()}`);
-            doc.text(`Status: ${transaction.status}`);
-            doc.moveDown(1);
-
-            // Customer Info
-            doc.fontSize(14).fillColor('#111').text('Customer Information', { underline: true });
-            doc.moveDown(0.5);
-            doc.fontSize(11).fillColor('#333');
-            doc.text(`Name: ${customerData?.name || 'N/A'}`);
-            if (customerData?.email) doc.text(`Email: ${customerData.email}`);
-            if (customerData?.phone) doc.text(`Phone: ${customerData.phone}`);
-            doc.moveDown(1);
-
-            // Service Details
-            doc.fontSize(14).fillColor('#111').text('Service Details', { underline: true });
-            doc.moveDown(0.5);
-            doc.fontSize(11).fillColor('#333');
-            doc.text(`Service Type: ${transaction.type}`);
-            
-            if (transaction.type === 'MEDICINE' && transaction.cart) {
-                doc.moveDown(0.5);
-                doc.text('Items:');
-                const cart = typeof transaction.cart === 'string' ? JSON.parse(transaction.cart) : transaction.cart;
-                cart.forEach(item => {
-                    doc.text(`  - ${item.kit_id}: ${item.quantity} unit(s)`);
-                });
+                doc.end();
+            } catch (err) {
+                reject(err);
             }
-            
-            doc.moveDown(1);
-
-            // Payment Summary
-            doc.fontSize(14).fillColor('#111').text('Payment Summary', { underline: true });
-            doc.moveDown(0.5);
-            doc.fontSize(11).fillColor('#333');
-            doc.text(`Amount Paid: ₹${(transaction.amount / 100).toFixed(2)}`);
-            doc.text(`Payment Method: Razorpay`);
-            if (transaction.provider_payment_id) {
-                doc.text(`Payment ID: ${transaction.provider_payment_id}`);
-            }
-            doc.moveDown(2);
-
-            // Footer
-            doc.fontSize(9).fillColor('#999');
-            doc.text('Thank you for using RELIV!', 50, doc.page.height - 80, { align: 'center' });
-            doc.text('For support, contact: support@reliv.health', { align: 'center' });
-
-            doc.end();
         });
     }
 }
 
 export default PDFGenerator;
+export { PDFGenerator };

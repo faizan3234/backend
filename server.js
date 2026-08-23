@@ -28,6 +28,7 @@ import sessionManager from "./src/services/sessionManager.js";
 import { transactionManager } from "./src/services/transactionManager.js";
 
 import PDFGenerator from "./src/services/pdfGenerator.js";
+import { normalizeReceiptData, drawReceiptDocument } from "./src/services/receiptPdfBuilder.js";
 import EmailQueueService from "./src/services/emailQueue.js";
 import paymentAuthVerifier from "./src/services/paymentAuthVerifier.js";
 import InventoryManager from "./src/services/inventoryManager.js";
@@ -2132,90 +2133,21 @@ function generateReportPdf(data, ecoStats) {
     });
 }
 function generateReceiptPdf(data, ecoStats) {
-    return new Promise((resolve) => {
-        const doc = new PDFDocument({ size: "A4", margin: 50 });
-        const buffers = [];
-        doc.on("data", buffers.push.bind(buffers));
-        doc.on("end", () => resolve(Buffer.concat(buffers)));
-        const { patient, cart, totalPrice, needsReport } = data;
-        const brandColor = "#F97316",
-            headerBgColor = "#FFF1EA",
-            textColor = "#1F2937",
-            lightTextColor = "#6B7280";
+    return new Promise((resolve, reject) => {
+        try {
+            const doc = new PDFDocument({ size: "A4", margin: 44, bufferPages: true });
+            const buffers = [];
+            doc.on("data", buffers.push.bind(buffers));
+            doc.on("end", () => resolve(Buffer.concat(buffers)));
+            doc.on("error", reject);
 
-        // Soft off-white header background
-        doc.rect(0, 0, doc.page.width, 130).fill("#FFF5F0");
+            const normalized = normalizeReceiptData(data, ecoStats);
+            drawReceiptDocument(doc, normalized);
 
-        // Draw Reliv logo
-        if (RELIV_LOGO_BUFFER) {
-            try {
-                const lH = 60;
-                const lImg = doc.openImage(RELIV_LOGO_BUFFER);
-                const lW = (lImg.width / lImg.height) * lH;
-                doc.image(RELIV_LOGO_BUFFER, 50, 40, { height: lH });
-            } catch {
-                doc.fontSize(32).font("Helvetica-Bold").fillColor(brandColor).text("Reliv", 50, 50);
-            }
-        } else {
-            doc.fontSize(32).font("Helvetica-Bold").fillColor(brandColor).text("Reliv", 50, 50);
+            doc.end();
+        } catch (err) {
+            reject(err);
         }
-        doc.fontSize(10).font("Helvetica").fillColor(lightTextColor).text("Your Personalized Health Checkup.", 50, 85);
-        doc.fontSize(18).font("Helvetica-Bold").fillColor(textColor).text("Purchase Receipt", 0, 65, { align: "right" });
-        doc.fontSize(10).fillColor(lightTextColor).text(`Date: ${new Date().toLocaleDateString()}`, 0, 90, { align: "right" });
-        doc.fontSize(14).font("Helvetica-Bold").fillColor(textColor).text("Billed To:", 50, 160);
-        doc.font("Helvetica").fontSize(11).fillColor(lightTextColor);
-        doc.text(patient.name || "N/A", 50, 180);
-        doc.text(patient.email || "N/A", 50, 195);
-        let tableTop = 220;
-        const itemX = 50,
-            qtyX = 300,
-            priceX = 370,
-            totalX = 460;
-        const tableHeaderHeight = 25,
-            rowHeight = 30;
-        let y = tableTop + tableHeaderHeight;
-        let i = 0;
-        doc.rect(50, tableTop, 500, tableHeaderHeight).fill("#F3F4F6");
-        doc.font("Helvetica-Bold").fontSize(10).fillColor(textColor);
-        doc.text("ITEM", itemX + 10, tableTop + 8);
-        doc.text("QTY", qtyX, tableTop + 8, { width: 60, align: "center" });
-        doc.text("PRICE", priceX, tableTop + 8, { width: 80, align: "right" });
-        doc.text("TOTAL", totalX, tableTop + 8, { width: 90, align: "right" });
-        const items = [];
-        if (needsReport) items.push({ name: "Health Checkup Report", quantity: 1, price: reportPrice });
-        if (cart) items.push(...cart);
-        items.forEach((item) => {
-            if (y + rowHeight > doc.page.height - 100) {
-                doc.addPage();
-                y = 50;
-                doc.rect(50, y, 500, tableHeaderHeight).fill("#F3F4F6");
-                doc.font("Helvetica-Bold").fontSize(10).fillColor(textColor);
-                doc.text("ITEM", itemX + 10, y + 8);
-                doc.text("QTY", qtyX, y + 8, { width: 60, align: "center" });
-                doc.text("PRICE", priceX, y + 8, { width: 80, align: "right" });
-                doc.text("TOTAL", totalX, y + 8, { width: 90, align: "right" });
-                y += tableHeaderHeight;
-            }
-            doc.rect(50, y, 500, rowHeight).fill(i % 2 === 0 ? "#FFFFFF" : "#F9FAFB");
-            doc.font("Helvetica").fontSize(10).fillColor(textColor);
-            doc.text(item.name, itemX + 10, y + 10, { width: 230 });
-            // Support both cartQuantity (new format) and quantity (old format)
-            const qty = item.cartQuantity || item.quantity;
-            doc.text(qty.toString(), qtyX, y + 10, { width: 60, align: "center" });
-            doc.text(`INR ${item.price.toFixed(2)}`, priceX, y + 10, { width: 80, align: "right" });
-            doc.text(`INR ${(item.price * qty).toFixed(2)}`, totalX, y + 10, { width: 90, align: "right" });
-            y += rowHeight;
-            i++;
-        });
-        let totalY = y + 20;
-        doc.font("Helvetica-Bold").fontSize(12).fillColor(textColor);
-        doc.text("Total Paid:", 350, totalY, { width: 100, align: "right" });
-        doc.fillColor(brandColor).text(`INR ${totalPrice.toFixed(2)}`, 450, totalY, { width: 100, align: "right" });
-        doc.fontSize(10).font("Helvetica-Bold").fillColor(textColor).text("Thank you for your purchase!", 50, doc.page.height - 100, { align: "center", width: 495.28 });
-        if (ecoStats) {
-            doc.fontSize(8).fillColor(lightTextColor).text(`Fun Fact: Your digital choice saved ~${ecoStats.individual.water}L of water & ~${ecoStats.individual.co2}g of CO2. Collectively, our users have saved ~${ecoStats.total.water}L of water, ~${ecoStats.total.co2}g of CO2, and ~${ecoStats.total.paper} sheets of paper!`, 50, doc.page.height - 80, { align: "center", width: 495.28 });
-        }
-        doc.end();
     });
 }
 
