@@ -13,13 +13,16 @@
  *    service type and total without inventing line items or taxes.
  * 6. Returns an in-memory Buffer with zero local disk leakage.
  *
- * APPROVED ALL-LIGHT DESIGN SPECIFICATIONS:
- * - All-light palette (#FFFFFF, #FCFCFD, #172033, #667085, #FF641A, #15803D)
- * - Exact vector checkmarks (no font glyph fallback squares)
- * - Clickable mailto:relivcustomercare.in@gmail.com and instagram.com/reliv_care
- * - TrueType DejaVuSans-Bold for native Indian Rupee (₹) & CO₂ glyphs
- * - Single-page layout for standard orders (1-6 items)
- * - Clean multi-page pagination for large carts (repeats header, page numbers)
+ * APPROVED ALL-LIGHT DESIGN SPECIFICATIONS (NATURAL 85-90% VERTICAL SPREAD):
+ * - Prominent 62pt Reliv logo with tagline
+ * - Large, mobile-readable typography (Title: 20pt, Customer: 14pt, Amount: 16.5pt)
+ * - Taller, well-padded cards (Billed To / Payment Details)
+ * - Spacious Purchase Summary table and pale orange TOTAL PAID strip
+ * - Spacious Environmental Impact card with dual dividers and clean sentence
+ * - Support section with prominent clickable email & @reliv_care
+ * - Light 3-column footer (Logo left, Thank you center, Security right)
+ * - Responsive vertical scaling: 1-item receipts naturally occupy 85-90% of page 1,
+ *   multi-item carts (2-5 items) fit comfortably on 1 page, large carts paginate cleanly.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -34,9 +37,9 @@ const __dirname = path.dirname(__filename);
 // ── A4 Geometry Constants ───────────────────────────────────────────────
 const PAGE_WIDTH  = 595.28;
 const PAGE_HEIGHT = 841.89;
-const MARGIN_H    = 32;
-const CONTENT_W   = PAGE_WIDTH - (MARGIN_H * 2); // 531.28 pt
-const DOC_MARGINS = { top: 30, bottom: 0, left: MARGIN_H, right: MARGIN_H };
+const MARGIN_H    = 34;
+const CONTENT_W   = PAGE_WIDTH - (MARGIN_H * 2); // 527.28 pt
+const DOC_MARGINS = { top: 32, bottom: 0, left: MARGIN_H, right: MARGIN_H };
 
 // ── Color Palette (Approved All-Light Theme) ────────────────────────────
 const C = {
@@ -148,7 +151,7 @@ function resolveAssetPath(relativePath) {
 }
 
 /**
- * Setup TrueType fonts supporting the Indian Rupee (₹) symbol
+ * Setup TrueType fonts supporting the Indian Rupee (₹) symbol & Unicode subscript
  * @param {PDFDocument} doc
  * @returns {{ fontR: string, fontB: string, sym: string }}
  */
@@ -261,7 +264,6 @@ function drawVectorCheck(doc, cx, cy, size = 10, color = '#FFFFFF') {
        .lineCap('round')
        .lineJoin('round');
 
-    // Draw check path
     const x1 = cx - size * 0.38;
     const y1 = cy + size * 0.02;
     const x2 = cx - size * 0.10;
@@ -283,7 +285,7 @@ function drawVectorCheck(doc, cx, cy, size = 10, color = '#FFFFFF') {
  * @param {string} strokeColor
  * @param {string} checkColor
  */
-function drawCircleCheck(doc, cx, cy, r = 6, fillColor = C.paleGreen, strokeColor = C.green, checkColor = C.green) {
+function drawCircleCheck(doc, cx, cy, r = 7, fillColor = C.paleGreen, strokeColor = C.green, checkColor = C.green) {
     doc.circle(cx, cy, r).fillAndStroke(fillColor, strokeColor);
     drawVectorCheck(doc, cx, cy, r * 1.2, checkColor);
 }
@@ -299,7 +301,7 @@ export function getPageCount(doc) {
 
 /**
  * Generate an A4 Reliv Payment Receipt PDF in memory.
- * Standard receipts generate exactly 1 page.
+ * Standard receipts naturally occupy 85-90% of the page and generate exactly 1 page.
  *
  * @param {Object} order - Authoritative order from database
  * @param {string} recipientEmail - Recipient email
@@ -327,145 +329,150 @@ export async function generateCloudReceiptPdfBuffer(order, recipientEmail) {
             // Add Page 1
             doc.addPage({ size: 'A4', margins: DOC_MARGINS });
 
-            let y = 28;
+            const items = data.cartItems && data.cartItems.length > 0
+                ? data.cartItems
+                : [{ name: data.primaryItemName, description: '', qty: 1, unitPrice: data.amountInRupees, total: data.amountInRupees }];
+
+            const isSingle = items.length === 1;
+            const isSmallCart = items.length > 1 && items.length <= 5;
+
+            // Responsive vertical scale based on item count
+            const cardH = isSingle ? 108 : (isSmallCart ? 94 : 86);
+            const rowH = isSingle ? 34 : (isSmallCart ? 26 : 24);
+            const gap = isSingle ? 22 : 14;
+
+            let y = 34;
 
             // ============================================================
-            //  1. HEADER SECTION (Clean All-Light Layout)
+            //  1. HEADER SECTION (Prominent 62pt Logo & Balanced Typography)
             // ============================================================
             const logoPath = resolveAssetPath('assets/reliv.png') || resolveAssetPath('reliv.png');
             if (logoPath) {
                 try {
-                    // Logo scaled: height ~42 pt (width ~142 pt), crisp and prominent
-                    doc.image(logoPath, MARGIN_H, y, { height: 42 });
+                    doc.image(logoPath, MARGIN_H, y, { height: 62 });
                 } catch (e) {
-                    doc.font(fontB).fontSize(24).fillColor(C.orange).text('RELIV', MARGIN_H, y + 2);
+                    doc.font(fontB).fontSize(28).fillColor(C.orange).text('RELIV', MARGIN_H, y + 6);
                 }
             } else {
-                doc.font(fontB).fontSize(24).fillColor(C.orange).text('RELIV', MARGIN_H, y + 2);
+                doc.font(fontB).fontSize(28).fillColor(C.orange).text('RELIV', MARGIN_H, y + 6);
             }
 
             // Tagline below logo
-            doc.font(fontR).fontSize(9.5).fillColor(C.navy)
-               .text('Your Personalized Health Checkup.', MARGIN_H, y + 48);
+            doc.font(fontR).fontSize(10).fillColor(C.navy)
+               .text('Your Personalized Health Checkup.', MARGIN_H, y + 70);
 
             // Right side: Header details
-            doc.font(fontB).fontSize(18).fillColor(C.navy)
-               .text('PURCHASE RECEIPT', MARGIN_H, y, { width: CONTENT_W, align: 'right' });
+            doc.font(fontB).fontSize(20).fillColor(C.navy)
+               .text('PURCHASE RECEIPT', MARGIN_H, y + 2, { width: CONTENT_W, align: 'right' });
 
-            doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
-               .text(`Receipt No. ${data.receiptId}`, MARGIN_H, y + 24, { width: CONTENT_W, align: 'right' });
+            doc.font(fontR).fontSize(9.5).fillColor(C.secondary)
+               .text(`Receipt No. ${data.receiptId}`, MARGIN_H, y + 28, { width: CONTENT_W, align: 'right' });
 
-            doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
-               .text(formatReceiptDate(data.paidAt), MARGIN_H, y + 36, { width: CONTENT_W, align: 'right' });
+            doc.font(fontR).fontSize(9.5).fillColor(C.secondary)
+               .text(formatReceiptDate(data.paidAt), MARGIN_H, y + 42, { width: CONTENT_W, align: 'right' });
 
             // PAID badge: Solid Green fill, White text, Crisp Vector Checkmark
-            const badgeW = 66, badgeH = 21;
+            const badgeW = 74, badgeH = 24;
             const badgeX = MARGIN_H + CONTENT_W - badgeW;
-            const badgeY = y + 50;
-            doc.roundedRect(badgeX, badgeY, badgeW, badgeH, 10.5).fill(C.green);
+            const badgeY = y + 58;
+            doc.roundedRect(badgeX, badgeY, badgeW, badgeH, 12).fill(C.green);
 
-            // Draw vector check inside badge
-            drawVectorCheck(doc, badgeX + 14, badgeY + 10.5, 9, '#FFFFFF');
+            drawVectorCheck(doc, badgeX + 16, badgeY + 12, 10, '#FFFFFF');
 
-            doc.font(fontB).fontSize(8.5).fillColor('#FFFFFF')
-               .text('PAID', badgeX + 22, badgeY + 5.5, { width: badgeW - 24, align: 'center' });
+            doc.font(fontB).fontSize(9.5).fillColor('#FFFFFF')
+               .text('PAID', badgeX + 24, badgeY + 6.5, { width: badgeW - 26, align: 'center' });
 
-            y += 82;
+            y += 98;
 
             // ============================================================
             //  2. BILLED TO & PAYMENT DETAILS (Twin Equal-Height Cards)
             // ============================================================
             const cardGap = 14;
             const cardW = (CONTENT_W - cardGap) / 2;
-            const cardH = 82;
-            const cardPad = 12;
+            const cardPad = isSingle ? 16 : 12;
 
             // Left Card: Billed To
             drawCard(doc, MARGIN_H, y, cardW, cardH, C.surface, C.border, 8);
-            doc.font(fontB).fontSize(7.5).fillColor(C.secondary)
-               .text('BILLED TO', MARGIN_H + cardPad, y + 10);
+            doc.font(fontB).fontSize(8.5).fillColor(C.secondary)
+               .text('BILLED TO', MARGIN_H + cardPad, y + (isSingle ? 14 : 10));
 
             const custName = data.customerName || 'Valued Customer';
-            doc.font(fontB).fontSize(12).fillColor(C.navy)
-               .text(custName, MARGIN_H + cardPad, y + 23, { width: cardW - cardPad * 2 });
-            doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
-               .text(data.recipientEmail, MARGIN_H + cardPad, y + 39, { width: cardW - cardPad * 2, lineBreak: false, ellipsis: true });
+            doc.font(fontB).fontSize(isSingle ? 14 : 12).fillColor(C.navy)
+               .text(custName, MARGIN_H + cardPad, y + (isSingle ? 31 : 24), { width: cardW - cardPad * 2 });
+            doc.font(fontR).fontSize(9.5).fillColor(C.secondary)
+               .text(data.recipientEmail, MARGIN_H + cardPad, y + (isSingle ? 51 : 41), { width: cardW - cardPad * 2, lineBreak: false, ellipsis: true });
 
-            doc.moveTo(MARGIN_H + cardPad, y + 54).lineTo(MARGIN_H + cardW - cardPad, y + 54)
+            doc.moveTo(MARGIN_H + cardPad, y + (isSingle ? 70 : 57)).lineTo(MARGIN_H + cardW - cardPad, y + (isSingle ? 70 : 57))
                .strokeColor(C.divider).lineWidth(0.5).stroke();
 
-            doc.font(fontR).fontSize(7.5).fillColor(C.muted)
-               .text(`Session: ${data.sessionId}`, MARGIN_H + cardPad, y + 60, { width: cardW - cardPad * 2, lineBreak: false, ellipsis: true });
+            doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
+               .text(`Session: ${data.sessionId}`, MARGIN_H + cardPad, y + (isSingle ? 80 : 66), { width: cardW - cardPad * 2, lineBreak: false, ellipsis: true });
 
             // Right Card: Payment Details
             const rX = MARGIN_H + cardW + cardGap;
             drawCard(doc, rX, y, cardW, cardH, C.surface, C.border, 8);
-            doc.font(fontB).fontSize(7.5).fillColor(C.secondary)
-               .text('PAYMENT DETAILS', rX + cardPad, y + 10);
+            doc.font(fontB).fontSize(8.5).fillColor(C.secondary)
+               .text('PAYMENT DETAILS', rX + cardPad, y + (isSingle ? 14 : 10));
 
-            doc.font(fontB).fontSize(8).fillColor(C.navy)
-               .text('Payment ID: ', rX + cardPad, y + 23, { continued: true });
+            doc.font(fontB).fontSize(9).fillColor(C.navy)
+               .text('Payment ID: ', rX + cardPad, y + (isSingle ? 31 : 24), { continued: true });
             doc.font(fontR).fillColor(C.navy)
-               .text(data.paymentId, { width: cardW - cardPad * 2 - 58, lineBreak: false, ellipsis: true });
+               .text(data.paymentId, { width: cardW - cardPad * 2 - 64, lineBreak: false, ellipsis: true });
 
-            doc.font(fontB).fontSize(8).fillColor(C.navy)
-               .text('Method: ', rX + cardPad, y + 35, { continued: true });
+            doc.font(fontB).fontSize(9).fillColor(C.navy)
+               .text('Method: ', rX + cardPad, y + (isSingle ? 48 : 39), { continued: true });
             doc.font(fontR).fillColor(C.secondary)
                .text('Razorpay Online (UPI/Card)');
 
-            doc.font(fontB).fontSize(8).fillColor(C.navy)
-               .text('Paid at: ', rX + cardPad, y + 47, { continued: true });
+            doc.font(fontB).fontSize(9).fillColor(C.navy)
+               .text('Paid at: ', rX + cardPad, y + (isSingle ? 65 : 54), { continued: true });
             doc.font(fontR).fillColor(C.secondary)
                .text(formatReceiptDateTime(data.paidAt));
 
-            // Status with vector green indicator
-            drawCircleCheck(doc, rX + cardPad + 4, y + 66, 4.5, C.paleGreen, C.green, C.green);
-            doc.font(fontB).fontSize(7.5).fillColor(C.green)
-               .text('Payment Successful \u2022 Server Verified', rX + cardPad + 13, y + 62);
+            // Status with vector green circle check
+            drawCircleCheck(doc, rX + cardPad + 6, y + (isSingle ? 88 : 74), 5.5, C.paleGreen, C.green, C.green);
+            doc.font(fontB).fontSize(8.5).fillColor(C.green)
+               .text('Payment Successful \u2022 Server Verified', rX + cardPad + 18, y + (isSingle ? 83 : 69.5));
 
-            y += cardH + 14;
+            y += cardH + gap;
 
             // ============================================================
             //  3. PURCHASE SUMMARY TABLE
             // ============================================================
-            doc.font(fontB).fontSize(10).fillColor(C.navy).text('PURCHASE SUMMARY', MARGIN_H, y);
-            y += 12;
+            doc.font(fontB).fontSize(11).fillColor(C.navy).text('PURCHASE SUMMARY', MARGIN_H, y);
+            y += 14;
 
-            const colItem = MARGIN_H + 10;
+            const colItem = MARGIN_H + 12;
             const colQty  = MARGIN_H + 280;
             const colUnit = MARGIN_H + 340;
-            const colAmt  = MARGIN_H + CONTENT_W - 10;
-            const thH = 22;
+            const colAmt  = MARGIN_H + CONTENT_W - 12;
+            const thH = 28;
 
             // Table Header
-            doc.roundedRect(MARGIN_H, y, CONTENT_W, thH, 4).fillAndStroke(C.tableHead, C.border);
-            doc.font(fontB).fontSize(7.5).fillColor(C.secondary);
-            doc.text('ITEM',       colItem, y + 6, { width: 240, align: 'left' });
-            doc.text('QTY',        colQty,  y + 6, { width: 50,  align: 'center' });
-            doc.text('UNIT PRICE', colUnit, y + 6, { width: 80,  align: 'right' });
-            doc.text('AMOUNT',     colAmt - 80, y + 6, { width: 80,  align: 'right' });
+            doc.roundedRect(MARGIN_H, y, CONTENT_W, thH, 5).fillAndStroke(C.tableHead, C.border);
+            doc.font(fontB).fontSize(8.5).fillColor(C.secondary);
+            doc.text('ITEM',       colItem, y + 8.5, { width: 240, align: 'left' });
+            doc.text('QTY',        colQty,  y + 8.5, { width: 50,  align: 'center' });
+            doc.text('UNIT PRICE', colUnit, y + 8.5, { width: 80,  align: 'right' });
+            doc.text('AMOUNT',     colAmt - 80, y + 8.5, { width: 80,  align: 'right' });
 
             y += thH;
-            const rowH = 24;
 
-            const items = data.cartItems && data.cartItems.length > 0
-                ? data.cartItems
-                : [{ name: data.primaryItemName, description: '', qty: 1, unitPrice: data.amountInRupees, total: data.amountInRupees }];
-
-            // Threshold for multi-page cart pagination
-            const MAX_Y_BEFORE_PAGINATE = 550;
-
+            // Smart pagination threshold
             items.forEach((item, idx) => {
-                if (y + rowH > MAX_Y_BEFORE_PAGINATE && idx > 0) {
+                const isPageOne = doc.bufferedPageRange().count === 1;
+                const maxY = isPageOne ? 520 : 640;
+
+                if (y + rowH > maxY && idx > 0) {
                     doc.addPage({ size: 'A4', margins: DOC_MARGINS });
-                    y = 30;
-                    // Repeat table header on page 2
-                    doc.roundedRect(MARGIN_H, y, CONTENT_W, thH, 4).fillAndStroke(C.tableHead, C.border);
-                    doc.font(fontB).fontSize(7.5).fillColor(C.secondary);
-                    doc.text('ITEM',       colItem, y + 6, { width: 240, align: 'left' });
-                    doc.text('QTY',        colQty,  y + 6, { width: 50,  align: 'center' });
-                    doc.text('UNIT PRICE', colUnit, y + 6, { width: 80,  align: 'right' });
-                    doc.text('AMOUNT',     colAmt - 80, y + 6, { width: 80,  align: 'right' });
+                    y = 34;
+                    // Repeat table header on new page
+                    doc.roundedRect(MARGIN_H, y, CONTENT_W, thH, 5).fillAndStroke(C.tableHead, C.border);
+                    doc.font(fontB).fontSize(8.5).fillColor(C.secondary);
+                    doc.text('ITEM',       colItem, y + 8.5, { width: 240, align: 'left' });
+                    doc.text('QTY',        colQty,  y + 8.5, { width: 50,  align: 'center' });
+                    doc.text('UNIT PRICE', colUnit, y + 8.5, { width: 80,  align: 'right' });
+                    doc.text('AMOUNT',     colAmt - 80, y + 8.5, { width: 80,  align: 'right' });
                     y += thH;
                 }
 
@@ -473,14 +480,14 @@ export async function generateCloudReceiptPdfBuffer(order, recipientEmail) {
                     doc.rect(MARGIN_H, y, CONTENT_W, rowH).fill('#FAFBFC');
                 }
 
-                doc.font(fontR).fontSize(8.5).fillColor(C.bodyText);
-                doc.text(item.name, colItem, y + 5, { width: 260, lineBreak: false, ellipsis: true });
-                doc.font(fontR).fontSize(8.5).fillColor(C.bodyText)
-                   .text(String(item.qty), colQty, y + 5, { width: 50, align: 'center' });
-                doc.font(fontR).fontSize(8.5).fillColor(C.bodyText)
-                   .text(fmtAmt(item.unitPrice, sym), colUnit, y + 5, { width: 80, align: 'right' });
-                doc.font(fontB).fontSize(8.5).fillColor(C.bodyText)
-                   .text(fmtAmt(item.total, sym), colAmt - 80, y + 5, { width: 80, align: 'right' });
+                doc.font(fontR).fontSize(isSingle ? 10 : 9).fillColor(C.bodyText);
+                doc.text(item.name, colItem, y + (isSingle ? 10 : 7), { width: 260, lineBreak: false, ellipsis: true });
+                doc.font(fontR).fontSize(isSingle ? 10 : 9).fillColor(C.bodyText)
+                   .text(String(item.qty), colQty, y + (isSingle ? 10 : 7), { width: 50, align: 'center' });
+                doc.font(fontR).fontSize(isSingle ? 10 : 9).fillColor(C.bodyText)
+                   .text(fmtAmt(item.unitPrice, sym), colUnit, y + (isSingle ? 10 : 7), { width: 80, align: 'right' });
+                doc.font(fontB).fontSize(isSingle ? 10 : 9).fillColor(C.bodyText)
+                   .text(fmtAmt(item.total, sym), colAmt - 80, y + (isSingle ? 10 : 7), { width: 80, align: 'right' });
 
                 doc.moveTo(MARGIN_H, y + rowH - 1).lineTo(MARGIN_H + CONTENT_W, y + rowH - 1)
                    .strokeColor(C.divider).lineWidth(0.5).stroke();
@@ -489,128 +496,149 @@ export async function generateCloudReceiptPdfBuffer(order, recipientEmail) {
             });
 
             // ── Payment Summary Strip (Right-Aligned) ──────────────────
-            const sumW = 190;
+            const sumW = 215;
             const sumX = MARGIN_H + CONTENT_W - sumW;
-            y += 4;
+            y += (isSingle ? 10 : 6);
 
-            doc.font(fontR).fontSize(8).fillColor(C.secondary)
+            doc.font(fontR).fontSize(9.5).fillColor(C.secondary)
                .text('Subtotal', sumX, y);
-            doc.font(fontB).fontSize(8).fillColor(C.navy)
+            doc.font(fontB).fontSize(9.5).fillColor(C.navy)
                .text(fmtAmt(data.amountInRupees, sym), sumX, y, { width: sumW, align: 'right' });
-            y += 12;
+            y += 18;
 
             // Total Paid Box (Pale Orange with top orange accent line)
-            const totalH = 26;
-            doc.roundedRect(sumX, y, sumW, totalH, 5).fill(C.paleOrange);
+            const totalH = isSingle ? 38 : 32;
+            doc.roundedRect(sumX, y, sumW, totalH, 6).fill(C.paleOrange);
             doc.moveTo(sumX, y + 0.5).lineTo(sumX + sumW, y + 0.5)
-               .strokeColor(C.orange).lineWidth(1).stroke();
-            doc.font(fontB).fontSize(8.5).fillColor(C.navy)
-               .text('TOTAL PAID', sumX + 8, y + 8);
-            doc.font(fontB).fontSize(12).fillColor(C.orange)
-               .text(fmtAmt(data.amountInRupees, sym), sumX, y + 6, { width: sumW - 8, align: 'right' });
-            y += totalH + 10;
+               .strokeColor(C.orange).lineWidth(1.2).stroke();
+            doc.font(fontB).fontSize(10.5).fillColor(C.navy)
+               .text('TOTAL PAID', sumX + 12, y + (isSingle ? 12 : 9));
+            doc.font(fontB).fontSize(16.5).fillColor(C.orange)
+               .text(fmtAmt(data.amountInRupees, sym), sumX, y + (isSingle ? 8.5 : 6), { width: sumW - 12, align: 'right' });
+            y += totalH + gap;
 
             // ============================================================
-            //  4. PAYMENT CONFIRMATION CARD
+            //  4. PAYMENT CONFIRMATION CARD (48pt)
             // ============================================================
-            const confH = 36;
-            drawCard(doc, MARGIN_H, y, CONTENT_W, confH, C.paleGreen, C.greenBorder, 6);
-            drawCircleCheck(doc, MARGIN_H + 18, y + 18, 6, C.white, C.green, C.green);
+            const confH = isSingle ? 48 : 42;
+            drawCard(doc, MARGIN_H, y, CONTENT_W, confH, C.paleGreen, C.greenBorder, 7);
+            drawCircleCheck(doc, MARGIN_H + 22, y + (confH / 2), 7.5, C.white, C.green, C.green);
 
-            doc.font(fontB).fontSize(8.5).fillColor(C.green)
-               .text('Payment received successfully', MARGIN_H + 30, y + 7);
-            doc.font(fontR).fontSize(7.5).fillColor(C.secondary)
-               .text('Your payment was securely verified and this receipt was generated digitally.', MARGIN_H + 30, y + 19, { width: CONTENT_W - 42 });
-            y += confH + 10;
+            doc.font(fontB).fontSize(10).fillColor(C.green)
+               .text('Payment received successfully', MARGIN_H + 40, y + (isSingle ? 10 : 8));
+            doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
+               .text('Your payment was securely verified and this receipt was generated digitally.', MARGIN_H + 40, y + (isSingle ? 26 : 22), { width: CONTENT_W - 54 });
+            y += confH + gap;
 
             // ============================================================
-            //  5. YOUR RELIV IMPACT (Understated Pale-Green Section)
+            //  5. YOUR RELIV IMPACT (Spacious Section)
             // ============================================================
-            const impactH = 72;
-            drawCard(doc, MARGIN_H, y, CONTENT_W, impactH, C.paleGreen, C.greenBorder, 6);
+            const impactH = isSingle ? 118 : 106;
+            drawCard(doc, MARGIN_H, y, CONTENT_W, impactH, C.paleGreen, C.greenBorder, 8);
 
-            doc.font(fontB).fontSize(8.5).fillColor(C.green)
-               .text('YOUR RELIV IMPACT', MARGIN_H + 12, y + 7);
-            doc.font(fontR).fontSize(7.5).fillColor(C.secondary)
-               .text('Small digital choices create meaningful change.', MARGIN_H + 12, y + 18);
+            doc.font(fontB).fontSize(10.5).fillColor(C.green)
+               .text('YOUR RELIV IMPACT', MARGIN_H + 18, y + 12);
+            doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
+               .text('Small digital choices create meaningful change.', MARGIN_H + 18, y + 27);
 
-            // Divider
-            doc.moveTo(MARGIN_H + 12, y + 28).lineTo(MARGIN_H + CONTENT_W - 12, y + 28)
-               .strokeColor(C.greenBorder).lineWidth(0.5).stroke();
+            // Divider 1
+            doc.moveTo(MARGIN_H + 18, y + 41).lineTo(MARGIN_H + CONTENT_W - 18, y + 41)
+               .strokeColor(C.greenBorder).lineWidth(0.6).stroke();
 
-            // 3 Clean Metric Columns
-            const metricW = (CONTENT_W - 24) / 3;
+            // 3 Typographic Metric Columns
+            const metricW = (CONTENT_W - 36) / 3;
             const metrics = [
                 { val: '20 L',  label: 'Water saved' },
                 { val: '18 g',  label: 'CO\u2082 reduced' },
                 { val: '2',     label: 'Paper sheets saved' }
             ];
             metrics.forEach((m, i) => {
-                const mx = MARGIN_H + 12 + (i * metricW);
-                const my = y + 32;
-                doc.font(fontB).fontSize(12).fillColor(C.green).text(m.val, mx, my, { width: metricW, align: 'center' });
-                doc.font(fontR).fontSize(7).fillColor(C.navy).text(m.label, mx, my + 15, { width: metricW, align: 'center' });
+                const mx = MARGIN_H + 18 + (i * metricW);
+                const my = y + (isSingle ? 48 : 44);
+                doc.font(fontB).fontSize(isSingle ? 17 : 15).fillColor(C.green).text(m.val, mx, my, { width: metricW, align: 'center' });
+                doc.font(fontR).fontSize(8.5).fillColor(C.navy).text(m.label, mx, my + (isSingle ? 21 : 18), { width: metricW, align: 'center' });
                 if (i < 2) {
-                    const dvx = mx + metricW - 1;
-                    doc.moveTo(dvx, y + 31).lineTo(dvx, y + 62)
-                       .strokeColor(C.greenBorder).lineWidth(0.5).stroke();
+                    const dvx = mx + metricW;
+                    doc.moveTo(dvx, y + 44).lineTo(dvx, y + (isSingle ? 81 : 74))
+                       .strokeColor(C.greenBorder).lineWidth(0.6).stroke();
                 }
             });
 
-            doc.font(fontR).fontSize(6.5).fillColor(C.green)
-               .text('Together, Reliv users have saved ~3,460 L water, reduced ~3,114 g CO\u2082, and avoided ~346 sheets of paper.', MARGIN_H + 12, y + 59, { width: CONTENT_W - 24, align: 'center' });
+            // Divider 2
+            const d2Y = y + (isSingle ? 87 : 78);
+            doc.moveTo(MARGIN_H + 18, d2Y).lineTo(MARGIN_H + CONTENT_W - 18, d2Y)
+               .strokeColor(C.greenBorder).lineWidth(0.6).stroke();
 
-            y += impactH + 10;
+            // Collective impact statement
+            doc.font(fontR).fontSize(8.5).fillColor(C.navy)
+               .text('Together, Reliv users have saved approximately 3,460 L of water, reduced 3,114 g of CO\u2082, and avoided 346 sheets of paper.',
+                     MARGIN_H + 18, d2Y + 8, { width: CONTENT_W - 36, align: 'center' });
+
+            y += impactH + gap;
 
             // ============================================================
-            //  6. HELP AND CONTACT SECTION (Clickable Links)
+            //  6. HELP AND CONTACT SECTION (Spacious Card with Clickable Links)
             // ============================================================
-            const helpH = 46;
-            drawCard(doc, MARGIN_H, y, CONTENT_W, helpH, C.white, C.border, 6);
+            const helpH = isSingle ? 74 : 64;
+            drawCard(doc, MARGIN_H, y, CONTENT_W, helpH, C.white, C.border, 8);
 
-            const helpHalf = (CONTENT_W - 24) / 2;
-            const helpLx = MARGIN_H + 12;
-            const helpRx = MARGIN_H + 12 + helpHalf + 12;
+            const helpHalf = (CONTENT_W - 36) / 2;
+            const helpLx = MARGIN_H + 18;
+            const helpRx = MARGIN_H + 18 + helpHalf + 18;
 
-            doc.font(fontB).fontSize(7.5).fillColor(C.navy)
-               .text('NEED HELP?', helpLx, y + 7);
-            doc.font(fontR).fontSize(7).fillColor(C.secondary)
-               .text("We're here to help with your payment, receipt, or Reliv experience.", helpLx, y + 18, { width: helpHalf - 12 });
+            doc.font(fontB).fontSize(9.5).fillColor(C.navy)
+               .text('NEED HELP?', helpLx, y + 14);
+            doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
+               .text("We're here to help with your payment, receipt, or Reliv experience.", helpLx, y + 30, { width: helpHalf - 12 });
 
             // Vertical divider
-            const vdx = MARGIN_H + 12 + helpHalf;
-            doc.moveTo(vdx, y + 6).lineTo(vdx, y + helpH - 6)
-               .strokeColor(C.divider).lineWidth(0.5).stroke();
+            const vdx = MARGIN_H + 18 + helpHalf;
+            doc.moveTo(vdx, y + 12).lineTo(vdx, y + helpH - 12)
+               .strokeColor(C.divider).lineWidth(0.6).stroke();
 
-            // Right side: Clickable Customer Care & Instagram
-            doc.font(fontB).fontSize(7).fillColor(C.secondary).text('Customer Care: ', helpRx, y + 7, { continued: true });
-            doc.font(fontR).fillColor(C.navy).text('relivcustomercare.in@gmail.com', { link: 'mailto:relivcustomercare.in@gmail.com', underline: false });
+            // Right side: Customer Care & Instagram
+            doc.font(fontB).fontSize(8).fillColor(C.secondary).text('Customer Care', helpRx, y + 13);
+            doc.font(fontR).fontSize(9.5).fillColor(C.navy).text('relivcustomercare.in@gmail.com', helpRx, y + 26, { link: 'mailto:relivcustomercare.in@gmail.com', underline: false });
 
-            doc.font(fontB).fontSize(7).fillColor(C.secondary).text('Instagram: ', helpRx, y + 23, { continued: true });
-            doc.font(fontR).fillColor(C.navy).text('@reliv_care', { link: 'https://instagram.com/reliv_care', underline: false });
+            doc.font(fontB).fontSize(8).fillColor(C.secondary).text('Instagram', helpRx, y + (isSingle ? 43 : 38));
+            doc.font(fontR).fontSize(9.5).fillColor(C.navy).text('@reliv_care', helpRx, y + (isSingle ? 55 : 49), { link: 'https://instagram.com/reliv_care', underline: false });
 
-            y += helpH + 12;
+            y += helpH + 22;
 
             // ============================================================
-            //  7. LIGHT FOOTER (Pinned in Safe Zone)
+            //  7. APPROVED LIGHT FOOTER (Logo Left, Message Center, Security Right)
             // ============================================================
             const totalPages = doc.bufferedPageRange().count;
-            const footerY = Math.max(y, 775);
+            const footerY = Math.max(y, 756);
 
+            // Thin horizontal divider above footer
             doc.moveTo(MARGIN_H, footerY).lineTo(MARGIN_H + CONTENT_W, footerY)
-               .strokeColor(C.border).lineWidth(0.5).stroke();
+               .strokeColor(C.border).lineWidth(0.6).stroke();
 
-            doc.font(fontB).fontSize(7.5).fillColor(C.navy)
-               .text('Thank you for choosing Reliv.', MARGIN_H, footerY + 5, { width: CONTENT_W, align: 'center' });
-            doc.font(fontR).fontSize(7).fillColor(C.secondary)
-               .text('Your partner in proactive healthcare.', MARGIN_H, footerY + 15, { width: CONTENT_W, align: 'center' });
+            // Footer Left: Transparent Reliv logo
+            if (logoPath) {
+                try {
+                    doc.image(logoPath, MARGIN_H, footerY + 8, { height: 20 });
+                } catch (e) {
+                    doc.font(fontB).fontSize(11).fillColor(C.orange).text('RELIV', MARGIN_H, footerY + 12);
+                }
+            } else {
+                doc.font(fontB).fontSize(11).fillColor(C.orange).text('RELIV', MARGIN_H, footerY + 12);
+            }
 
+            // Footer Center: Thank you & Proactive healthcare
+            doc.font(fontB).fontSize(9).fillColor(C.navy)
+               .text('Thank you for choosing Reliv.', MARGIN_H + 85, footerY + 8, { width: CONTENT_W - 250, align: 'center' });
+            doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
+               .text('Your partner in proactive healthcare.', MARGIN_H + 85, footerY + 22, { width: CONTENT_W - 250, align: 'center' });
+
+            // Footer Right: Security note & page numbering
             const secText = totalPages > 1
-                ? `Digitally generated receipt \u2022 No signature required \u2022 Page ${totalPages} of ${totalPages}`
-                : 'Digitally generated receipt \u2022 No signature required';
+                ? `Digitally generated receipt\nNo signature required \u2022 Page ${totalPages} of ${totalPages}`
+                : 'Digitally generated receipt\nNo signature required';
 
-            doc.font(fontR).fontSize(6.5).fillColor(C.muted)
-               .text(secText, MARGIN_H, footerY + 25, { width: CONTENT_W, align: 'center' });
+            doc.font(fontR).fontSize(8).fillColor(C.muted)
+               .text(secText, MARGIN_H + CONTENT_W - 165, footerY + 9, { width: 165, align: 'right' });
 
             doc.end();
         } catch (err) {
