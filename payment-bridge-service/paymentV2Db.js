@@ -53,13 +53,22 @@ export function initPaymentV2Schema(db) {
         ON payment_v2_receipts(request_id);
     `);
 
-    // Migration helper: add payload_fingerprint if table was created in an earlier schema version
+    // Migration helper: add columns if table was created in an earlier schema version
     try {
         const cols = db.prepare("PRAGMA table_info(payment_v2_orders)").all();
-        const hasFingerprint = cols.some(c => c.name === 'payload_fingerprint');
-        if (!hasFingerprint) {
+        const colNames = new Set(cols.map(c => c.name));
+        if (!colNames.has('payload_fingerprint')) {
             db.exec("ALTER TABLE payment_v2_orders ADD COLUMN payload_fingerprint TEXT DEFAULT '';");
             db.exec("CREATE INDEX IF NOT EXISTS idx_v2_orders_fingerprint ON payment_v2_orders(payload_fingerprint);");
+        }
+        if (!colNames.has('item_name')) {
+            db.exec("ALTER TABLE payment_v2_orders ADD COLUMN item_name TEXT;");
+        }
+        if (!colNames.has('cart')) {
+            db.exec("ALTER TABLE payment_v2_orders ADD COLUMN cart TEXT;");
+        }
+        if (!colNames.has('customer_name')) {
+            db.exec("ALTER TABLE payment_v2_orders ADD COLUMN customer_name TEXT;");
         }
         db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_orders_rzp_payment ON payment_v2_orders(razorpay_payment_id) WHERE razorpay_payment_id IS NOT NULL;");
     } catch (e) {}

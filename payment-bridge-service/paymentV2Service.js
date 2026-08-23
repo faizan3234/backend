@@ -274,13 +274,18 @@ export class PaymentV2CloudService {
             // Encrypt Confirmation Code At Rest
             const encryptedCode = encryptConfirmationCodeAtRest(payload.confirmationCode, this.codeSecret);
 
+            const itemName = payload.itemName || payload.medicineName || payload.item_name || payload.medicine_name || null;
+            const cartJson = payload.cart ? (typeof payload.cart === 'string' ? payload.cart : JSON.stringify(payload.cart)) : null;
+            const customerName = payload.customerName || payload.customer_name || null;
+
             // Persist Order in SQLite
             this.db.prepare(`
                 INSERT INTO payment_v2_orders (
                     order_id, request_id, request_nonce, payload_fingerprint,
                     session_id, transaction_id, kiosk_id, amount, currency,
-                    service_type, encrypted_code, status, created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, 'CREATED', ?, ?)
+                    service_type, item_name, cart, customer_name,
+                    encrypted_code, status, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, ?, ?, ?, 'CREATED', ?, ?)
             `).run(
                 rzpOrder.id,
                 payload.requestId,
@@ -291,6 +296,9 @@ export class PaymentV2CloudService {
                 payload.kioskId,
                 authoritativeAmount,
                 payload.serviceType || 'HEALTH_CHECKUP',
+                itemName,
+                cartJson,
+                customerName,
                 encryptedCode,
                 now,
                 payload.expiresAt

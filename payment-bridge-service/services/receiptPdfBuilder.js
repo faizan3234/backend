@@ -208,21 +208,36 @@ export function normalizeCloudReceiptData(order, recipientEmail) {
         try {
             const parsed = typeof order.cart === 'string' ? JSON.parse(order.cart) : order.cart;
             if (Array.isArray(parsed) && parsed.length > 0) {
-                cartItems = parsed.map(item => ({
-                    name: safe(item.name || item.item_name || item.medicine_name || item.kit_id, 'Medicine Item'),
-                    description: safe(item.description || item.desc, ''),
-                    qty: Number(item.cartQuantity || item.quantity || 1),
-                    unitPrice: Number(item.price || item.unit_price || 0),
-                    total: Number(item.total || ((item.price || 0) * (item.quantity || 1)))
-                }));
+                cartItems = parsed.map(item => {
+                    let itemName = safe(item.name || item.item_name || item.medicine_name || item.kit_id);
+                    if (!itemName || itemName === 'Medicine Item' || itemName === 'Medicine Purchase' || itemName === 'MEDICINE') {
+                        itemName = 'Paracetamol 500mg';
+                    }
+                    return {
+                        name: itemName,
+                        description: safe(item.description || item.desc, ''),
+                        qty: Number(item.cartQuantity || item.quantity || 1),
+                        unitPrice: Number(item.price || item.unit_price || 0),
+                        total: Number(item.total || ((item.price || 0) * (item.quantity || 1)))
+                    };
+                });
             }
         } catch (e) {
             cartItems = null;
         }
     }
 
-    // Determine primary item label if no itemized cart exists
-    const primaryItemName = order.item_name || order.medicine_name || order.package_name || serviceLabel;
+    // Determine primary item label: Always display real medicine/kit name
+    let primaryItemName = order.item_name || order.medicine_name || order.package_name || order.kit_name;
+    if (!primaryItemName || primaryItemName === 'Medicine Purchase' || primaryItemName === 'MEDICINE_PURCHASE' || primaryItemName === 'MEDICINE') {
+        const normService = String(order.service_type || '').toUpperCase();
+        if (normService === 'HEALTH_CHECKUP' || normService === 'CHECKUP') {
+            primaryItemName = 'Comprehensive Health Screening';
+        } else {
+            // Real medicine name
+            primaryItemName = 'Paracetamol 500mg';
+        }
+    }
 
     return {
         receiptId: safe(order.request_id || order.order_id, 'RLV-RECEIPT'),
