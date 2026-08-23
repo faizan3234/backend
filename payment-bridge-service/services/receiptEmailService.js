@@ -112,6 +112,41 @@ export function generateReceiptContent(order) {
         ? new Date(order.verified_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'medium' }) + ' IST'
         : new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'medium' }) + ' IST';
 
+    let itemsDetailText = '';
+    let itemsDetailHtml = '';
+
+    if (order.cart) {
+        try {
+            const parsed = typeof order.cart === 'string' ? JSON.parse(order.cart) : order.cart;
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                itemsDetailText = '\nItems Purchased:\n' + parsed.map(item => {
+                    const name = item.name || item.item_name || item.medicine_name || item.kit_id || 'Medicine Item';
+                    const qty = item.quantity || item.qty || item.cartQuantity || 1;
+                    return ` - ${name} (Qty: ${qty})`;
+                }).join('\n') + '\n';
+
+                itemsDetailHtml = `
+          <tr>
+            <td class="detail-label">Items</td>
+            <td class="detail-value" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+              ${parsed.map(item => {
+                  const name = item.name || item.item_name || item.medicine_name || item.kit_id || 'Medicine Item';
+                  const qty = item.quantity || item.qty || item.cartQuantity || 1;
+                  return `<div>• ${name} &times; ${qty}</div>`;
+              }).join('')}
+            </td>
+          </tr>`;
+            }
+        } catch (e) {}
+    } else if (order.item_name) {
+        itemsDetailText = `\nItem: ${order.item_name}\n`;
+        itemsDetailHtml = `
+          <tr>
+            <td class="detail-label">Item</td>
+            <td class="detail-value" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">${order.item_name}</td>
+          </tr>`;
+    }
+
     const text = `========================================
 RELIV
 Payment Receipt
@@ -121,8 +156,7 @@ Payment Successful
 
 Amount Paid: ${formattedAmount}
 Status: PAID
-Service: ${serviceLabel}
-
+Service: ${serviceLabel}${itemsDetailText}
 Payment ID: ${order.razorpay_payment_id || 'N/A'}
 Order ID: ${order.order_id || 'N/A'}
 Transaction ID: ${order.transaction_id || 'N/A'}
@@ -280,7 +314,7 @@ For queries, contact relivcustomercare.in@gmail.com
           <tr>
             <td class="detail-label">Service</td>
             <td class="detail-value" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">${serviceLabel}</td>
-          </tr>
+          </tr>${itemsDetailHtml}
           <tr>
             <td class="detail-label">Payment ID</td>
             <td class="detail-value">${order.razorpay_payment_id || 'N/A'}</td>
