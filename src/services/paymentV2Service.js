@@ -741,11 +741,20 @@ export class PaymentV2Service {
 
         if (updateResult.changes === 0) {
             // Concurrent request already changed the status
-            console.log(`[PaymentV2] Request ${request.request_id} was already consumed concurrently`);
+            console.log(`[PaymentV2] Request ${request.request_id} was already consumed concurrently - invoking reconciliation pipeline`);
+            const finalResult = await this.paymentFinalizationService.finalizeVerifiedPayment({
+                sessionId: request.session_id,
+                transactionId: request.transaction_id,
+                verificationSource: 'CLOUD_CODE_V2',
+                verificationReference: request.request_id,
+                amount: request.amount
+            });
+
             return {
                 ok: true,
                 status: 'VERIFIED',
-                alreadyVerified: true
+                alreadyVerified: true,
+                ...finalResult
             };
         }
 

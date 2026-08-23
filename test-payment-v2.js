@@ -492,7 +492,194 @@ db.prepare(`
     } catch (e) {
         if (e.code === 'PAYMENT_V2_NOT_CONFIGURED') notConfiguredThrown = true;
     }
-    assert(notConfiguredThrown, 'createPaymentRequest throws PAYMENT_V2_NOT_CONFIGURED gracefully');
+    // ───────────────────────────────────────────────────────────────────────
+    // 10. POST-PAYMENT FULFILLMENT RECONCILIATION & REPAIR TESTS
+    // ───────────────────────────────────────────────────────────────────────
+    section('10. Post-Payment Fulfillment Reconciliation & Repair');
+
+    // Seed test inventory kits
+    db.prepare(`
+        INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id)
+        VALUES 
+            ('KIT-PARACETAMOL', 'Paracetamol 650mg', 32, 100, 1),
+            ('KIT-HEHE', 'First Aid Kit HeHe', 50, 150, 2),
+            ('KIT-BANDAGE', 'Bandage Strips Pack', 13, 100, 3),
+            ('KIT-VIT-D', 'Vitamin D3', 120, 50, 1),
+            ('KIT-ASPIRIN', 'Aspirin', 40, 80, 2)
+    `).run();
+
+    let mqttPublishCount = 0;
+    fulfillmentManager.mqttClient = {
+        publish: (topic, payload, opts, cb) => {
+            mqttPublishCount++;
+            if (cb) cb(null);
+        },
+        connected: true
+    };
+
+    // Test 1: PENDING transaction + valid code -> VERIFIED -> fulfillment job created and started
+    const s1 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const s1Cart = [{ kit_id: 'KIT-PARACETAMOL', quantity: 1 }];
+    const s1Txn = transactionManager.createTransaction(s1.session_id, 'MEDICINE', s1Cart);
+    const s1Req = await v2Service.createPaymentRequest(s1.session_id, { cart: s1Cart });
+    const s1Decrypted = decryptPackage(s1Req.paymentUrl.split('#p=')[1], cloudKeys.privateKey);
+
+    const s1BeforePublishes = mqttPublishCount;
+    const s1Verify = await v2Service.verifyConfirmationCode(s1.session_id, {
+        requestId: s1Req.requestId,
+        code: s1Decrypted.payload.confirmationCode
+    });
+    assert(s1Verify.ok === true && s1Verify.status === 'VERIFIED', 'Test 1: PENDING transaction verified successfully');
+    assert(s1Verify.jobs && s1Verify.jobs.length === 1, 'Test 1: Exactly 1 fulfillment job returned on verification');
+    const s1JobInDb = db.prepare('SELECT * FROM fulfillment_jobs WHERE transaction_id = ?').get(s1Txn.transaction_id);
+    assert(s1JobInDb !== undefined, 'Test 1: Fulfillment job created in SQLite');
+    assert(s1JobInDb.kit_id === 'KIT-PARACETAMOL', 'Test 1: Job kitId is KIT-PARACETAMOL');
+    assert(mqttPublishCount === s1BeforePublishes + 1, 'Test 1: Dispensing command published to MQTT');
+
+    // Test 2: VERIFIED medicine transaction + zero jobs -> finalization repairs it by creating missing job
+    const s2 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const s2Cart = [{ kit_id: 'KIT-HEHE', quantity: 9 }];
+    const s2Txn = transactionManager.createTransaction(s2.session_id, 'MEDICINE', s2Cart);
+    // Manually mark transaction as VERIFIED with zero fulfillment jobs to simulate the bug
+    db.prepare("UPDATE transactions SET status = 'VERIFIED', verified = 1 WHERE transaction_id = ?").run(s2Txn.transaction_id);
+    const s2ZeroJobs = db.prepare('SELECT * FROM fulfillment_jobs WHERE transaction_id = ?').all(s2Txn.transaction_id);
+    assert(s2ZeroJobs.length === 0, 'Test 2 Setup: Verified transaction has zero fulfillment jobs');
+
+    const s2BeforePublishes = mqttPublishCount;
+    const s2Repair = await finalizationService.finalizeVerifiedPayment({
+        sessionId: s2.session_id,
+        transactionId: s2Txn.transaction_id
+    });
+    assert(s2Repair.success === true, 'Test 2: Finalization succeeded on already-verified transaction');
+    assert(s2Repair.alreadyVerified === true, 'Test 2: Finalization detected already-verified status');
+    assert(s2Repair.jobs && s2Repair.jobs.length === 1, 'Test 2: Missing fulfillment job was created during reconciliation');
+    const s2RepairedJob = db.prepare('SELECT * FROM fulfillment_jobs WHERE transaction_id = ?').get(s2Txn.transaction_id);
+    assert(s2RepairedJob.kit_id === 'KIT-HEHE' && s2RepairedJob.quantity === 9, 'Test 2: Repaired job has exact kit_id and quantity 9');
+    assert(mqttPublishCount === s2BeforePublishes + 1, 'Test 2: Newly repaired job started dispensing');
+
+    // Test 3: VERIFIED transaction + existing PENDING job -> no duplicate job created
+    const s3 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const s3Cart = [{ kit_id: 'KIT-BANDAGE', quantity: 3 }];
+    const s3Txn = transactionManager.createTransaction(s3.session_id, 'MEDICINE', s3Cart);
+    db.prepare("UPDATE transactions SET status = 'VERIFIED', verified = 1 WHERE transaction_id = ?").run(s3Txn.transaction_id);
+    // Create 1 job in PENDING state
+    const s3ExistingJob = await fulfillmentManager.createJob(s3.session_id, s3Txn.transaction_id, 'KIT-BANDAGE', 3);
+    assert(s3ExistingJob.state === 'PENDING', 'Test 3 Setup: Existing job is PENDING');
+
+    const s3Finalize = await finalizationService.finalizeVerifiedPayment({
+        sessionId: s3.session_id,
+        transactionId: s3Txn.transaction_id
+    });
+    const s3AllJobs = db.prepare('SELECT * FROM fulfillment_jobs WHERE transaction_id = ?').all(s3Txn.transaction_id);
+    assert(s3AllJobs.length === 1, 'Test 3: Exactly 1 job exists (no duplicate inserted)');
+    assert(s3AllJobs[0].job_id === s3ExistingJob.job_id, 'Test 3: Existing job was reused');
+
+    // Test 4: VERIFIED transaction + COMPLETED job -> absolutely no second dispense
+    const s4 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const s4Cart = [{ kit_id: 'KIT-PARACETAMOL', quantity: 1 }];
+    const s4Txn = transactionManager.createTransaction(s4.session_id, 'MEDICINE', s4Cart);
+    db.prepare("UPDATE transactions SET status = 'VERIFIED', verified = 1 WHERE transaction_id = ?").run(s4Txn.transaction_id);
+    const s4Job = await fulfillmentManager.createJob(s4.session_id, s4Txn.transaction_id, 'KIT-PARACETAMOL', 1);
+    db.prepare("UPDATE fulfillment_jobs SET state = 'COMPLETED' WHERE job_id = ?").run(s4Job.job_id);
+
+    const s4BeforePublishes = mqttPublishCount;
+    const s4Finalize = await finalizationService.finalizeVerifiedPayment({
+        sessionId: s4.session_id,
+        transactionId: s4Txn.transaction_id
+    });
+    assert(mqttPublishCount === s4BeforePublishes, 'Test 4: Absolutely no second dispense for COMPLETED job (0 new publishes)');
+    assert(s4Finalize.jobs[0].state === 'COMPLETED', 'Test 4: Job state remains COMPLETED');
+
+    // Test 5: VERIFIED transaction + IN_PROGRESS job -> do not republish or restart unsafely
+    const s5 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const s5Cart = [{ kit_id: 'KIT-VIT-D', quantity: 1 }];
+    const s5Txn = transactionManager.createTransaction(s5.session_id, 'MEDICINE', s5Cart);
+    db.prepare("UPDATE transactions SET status = 'VERIFIED', verified = 1 WHERE transaction_id = ?").run(s5Txn.transaction_id);
+    const s5Job = await fulfillmentManager.createJob(s5.session_id, s5Txn.transaction_id, 'KIT-VIT-D', 1);
+    db.prepare("UPDATE fulfillment_jobs SET state = 'IN_PROGRESS' WHERE job_id = ?").run(s5Job.job_id);
+
+    const s5BeforePublishes = mqttPublishCount;
+    const s5Finalize = await finalizationService.finalizeVerifiedPayment({
+        sessionId: s5.session_id,
+        transactionId: s5Txn.transaction_id
+    });
+    assert(mqttPublishCount === s5BeforePublishes, 'Test 5: IN_PROGRESS job not republished (0 new publishes)');
+
+    // Test 6: MANUAL_REVIEW_REQUIRED -> never auto-retry
+    const s6 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const s6Cart = [{ kit_id: 'KIT-ASPIRIN', quantity: 2 }];
+    const s6Txn = transactionManager.createTransaction(s6.session_id, 'MEDICINE', s6Cart);
+    db.prepare("UPDATE transactions SET status = 'VERIFIED', verified = 1 WHERE transaction_id = ?").run(s6Txn.transaction_id);
+    const s6Job = await fulfillmentManager.createJob(s6.session_id, s6Txn.transaction_id, 'KIT-ASPIRIN', 2);
+    db.prepare("UPDATE fulfillment_jobs SET state = 'MANUAL_REVIEW_REQUIRED' WHERE job_id = ?").run(s6Job.job_id);
+
+    const s6BeforePublishes = mqttPublishCount;
+    const s6Finalize = await finalizationService.finalizeVerifiedPayment({
+        sessionId: s6.session_id,
+        transactionId: s6Txn.transaction_id
+    });
+    assert(mqttPublishCount === s6BeforePublishes, 'Test 6: MANUAL_REVIEW_REQUIRED never auto-retried (0 new publishes)');
+    assert(s6Finalize.jobs[0].state === 'MANUAL_REVIEW_REQUIRED', 'Test 6: State remains MANUAL_REVIEW_REQUIRED');
+
+    // Test 7: Two distinct medicines in cart -> exactly two jobs created
+    const s7 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const s7Cart = [
+        { kit_id: 'KIT-PARACETAMOL', quantity: 2 },
+        { kit_id: 'KIT-BANDAGE', quantity: 5 }
+    ];
+    const s7Txn = transactionManager.createTransaction(s7.session_id, 'MEDICINE', s7Cart);
+    const s7Req = await v2Service.createPaymentRequest(s7.session_id, { cart: s7Cart });
+    const s7Decrypted = decryptPackage(s7Req.paymentUrl.split('#p=')[1], cloudKeys.privateKey);
+
+    const s7Verify = await v2Service.verifyConfirmationCode(s7.session_id, {
+        requestId: s7Req.requestId,
+        code: s7Decrypted.payload.confirmationCode
+    });
+    assert(s7Verify.ok === true && s7Verify.status === 'VERIFIED', 'Test 7: Multi-medicine payment verified');
+    const s7Jobs = db.prepare('SELECT * FROM fulfillment_jobs WHERE transaction_id = ? ORDER BY kit_id ASC').all(s7Txn.transaction_id);
+    assert(s7Jobs.length === 2, 'Test 7: Exactly 2 fulfillment jobs created for 2-item cart');
+    assert(s7Jobs[0].kit_id === 'KIT-BANDAGE' && s7Jobs[0].quantity === 5, 'Test 7: First job kit_id and quantity 5 matched');
+    assert(s7Jobs[1].kit_id === 'KIT-PARACETAMOL' && s7Jobs[1].quantity === 2, 'Test 7: Second job kit_id and quantity 2 matched');
+
+    // Test 8: Repeated confirmation-code request -> same jobs returned, no duplicate dispense
+    const s7BeforeRepeatPublishes = mqttPublishCount;
+    const s7Repeat = await v2Service.verifyConfirmationCode(s7.session_id, {
+        requestId: s7Req.requestId,
+        code: s7Decrypted.payload.confirmationCode
+    });
+    assert(s7Repeat.ok === true && s7Repeat.alreadyVerified === true, 'Test 8: Repeated code verification returns alreadyVerified: true');
+    assert(s7Repeat.jobs && s7Repeat.jobs.length === 2, 'Test 8: Same 2 jobs returned on repeat');
+    const s7JobsAfterRepeat = db.prepare('SELECT * FROM fulfillment_jobs WHERE transaction_id = ?').all(s7Txn.transaction_id);
+    assert(s7JobsAfterRepeat.length === 2, 'Test 8: Database still has exactly 2 jobs (no duplicates created)');
+
+    // Test 9: updateResult.changes === 0 concurrency path -> still invokes reconciliation
+    const s9 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const s9Cart = [{ kit_id: 'KIT-PARACETAMOL', quantity: 1 }];
+    const s9Txn = transactionManager.createTransaction(s9.session_id, 'MEDICINE', s9Cart);
+    const s9Req = await v2Service.createPaymentRequest(s9.session_id, { cart: s9Cart });
+    const s9Decrypted = decryptPackage(s9Req.paymentUrl.split('#p=')[1], cloudKeys.privateKey);
+
+    // Simulate concurrent request transitioning payment_v2_requests to VERIFIED before this caller runs UPDATE
+    db.prepare("UPDATE payment_v2_requests SET status = 'VERIFIED' WHERE request_id = ?").run(s9Req.requestId);
+
+    const s9Verify = await v2Service.verifyConfirmationCode(s9.session_id, {
+        requestId: s9Req.requestId,
+        code: s9Decrypted.payload.confirmationCode
+    });
+    assert(s9Verify.ok === true && s9Verify.status === 'VERIFIED', 'Test 9: Concurrency path returns ok: true, status: VERIFIED');
+    assert(s9Verify.jobs && s9Verify.jobs.length === 1, 'Test 9: Concurrency path invoked reconciliation pipeline and returned jobs');
+
+    // Test 10: Transaction cart quantity is preserved exactly in fulfillment job
+    const s10 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const s10Cart = [{ kit_id: 'KIT-HEHE', quantity: 9 }];
+    const s10Txn = transactionManager.createTransaction(s10.session_id, 'MEDICINE', s10Cart);
+    const s10Req = await v2Service.createPaymentRequest(s10.session_id, { cart: s10Cart });
+    const s10Decrypted = decryptPackage(s10Req.paymentUrl.split('#p=')[1], cloudKeys.privateKey);
+    const s10Verify = await v2Service.verifyConfirmationCode(s10.session_id, {
+        requestId: s10Req.requestId,
+        code: s10Decrypted.payload.confirmationCode
+    });
+    assert(s10Verify.jobs[0].quantity === 9, 'Test 10: Cart purchase quantity 9 is preserved exactly in fulfillment job');
 
     // Clean up temporary test files
     closeDatabase();

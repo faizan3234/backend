@@ -76,76 +76,113 @@ export class PaymentFinalizationService {
             throw new Error(`Transaction ${transactionId} not found`);
         }
 
-        // 1. Check idempotency: if already verified or fulfilled
+        // 1. Check if transaction is already verified
         const isAlreadyVerified = transaction.status === 'VERIFIED' || 
                                   transaction.status === 'FULFILLED' || 
                                   transaction.verified === 1;
 
-        let createdJobs = [];
+        // 2. Perform atomic DB state transition if not already verified
+        if (!isAlreadyVerified) {
+            dbTransaction(() => {
+                // Verify payment on transactionManager
+                if (legacyPaymentDetails) {
+                    this.transactionManager.verifyPayment(
+                        transactionId,
+                        verificationReference,
+                        legacyPaymentDetails
+                    );
+                } else {
+                    this.transactionManager.verifyPaymentWithProof({
+                        transactionId,
+                        source: verificationSource,
+                        reference: verificationReference,
+                        amount: amount ?? transaction.amount
+                    });
+                }
 
-        if (isAlreadyVerified) {
-            console.log(`[PaymentFinalization] Transaction ${transactionId} is already verified (idempotent skip)`);
-            const existingJobs = this.fulfillmentManager.getJobsByTransaction ? 
-                this.fulfillmentManager.getJobsByTransaction(transactionId) : [];
+                // Update session status
+                this.sessionManager.markPaymentVerified(sessionId, verificationReference || 'VERIFIED');
 
-            return {
-                success: true,
-                alreadyVerified: true,
-                completionStatus: session.service_type === 'MEDICINE' ? 'dispensing' : 'report_ready',
-                jobs: existingJobs
-            };
+                const effectiveService = String(session.service_type || transaction.type || '').toUpperCase();
+                if (effectiveService === 'HEALTH_CHECKUP' || effectiveService === 'CHECKUP') {
+                    this.sessionManager.updateReportStatus(sessionId, 'GENERATING');
+                }
+            });
+
+            console.log(`[PaymentFinalization] ✅ Payment verified and state transitioned for session ${sessionId}, transaction ${transactionId}`);
+        } else {
+            console.log(`[PaymentFinalization] ℹ️ Transaction ${transactionId} is already verified - reconciling post-payment fulfillment/report`);
         }
 
-        // 2. Perform atomic DB state transition
-        dbTransaction(() => {
-            // Verify payment on transactionManager
-            if (legacyPaymentDetails) {
-                this.transactionManager.verifyPayment(
-                    transactionId,
-                    verificationReference,
-                    legacyPaymentDetails
-                );
-            } else {
-                this.transactionManager.verifyPaymentWithProof({
-                    transactionId,
-                    source: verificationSource,
-                    reference: verificationReference,
-                    amount: amount ?? transaction.amount
-                });
-            }
+        // 3. Post-processing & Reconciliation: Dispensing or PDF generation
+        const rawServiceType = session.service_type || transaction.type || '';
+        const serviceType = String(rawServiceType).trim().toUpperCase();
+        const isMedicine = serviceType === 'MEDICINE' || serviceType === 'MEDICINE_PURCHASE';
 
-            // Update session status
-            this.sessionManager.markPaymentVerified(sessionId, verificationReference || 'VERIFIED');
-
-            if (session.service_type === 'HEALTH_CHECKUP') {
-                this.sessionManager.updateReportStatus(sessionId, 'GENERATING');
-            }
-        });
-
-        console.log(`[PaymentFinalization] ✅ Payment verified and state transitioned for session ${sessionId}, transaction ${transactionId}`);
-
-        // 3. Post-processing: Dispensing or PDF generation
         let completionStatus = 'report_ready';
+        let allJobs = [];
 
-        if (session.service_type === 'MEDICINE') {
-            const cart = transaction.cart ? 
-                (typeof transaction.cart === 'string' ? JSON.parse(transaction.cart) : transaction.cart) 
-                : [];
+        if (isMedicine) {
+            let cart = [];
+            if (transaction.cart) {
+                try {
+                    cart = typeof transaction.cart === 'string' ? JSON.parse(transaction.cart) : transaction.cart;
+                } catch (e) {
+                    cart = [];
+                }
+            }
+            if (!Array.isArray(cart)) {
+                cart = [];
+            }
+
+            // Reconcile fulfillment jobs for every kit in cart
+            const jobsToDispense = [];
 
             if (cart.length > 0) {
                 for (const item of cart) {
+                    const kitId = item.kit_id || item.id || item.inventory_id;
+                    const qty = Number(item.quantity || item.cartQuantity || 1);
+                    if (!kitId) continue;
+
+                    // fulfillmentManager.createJob is idempotent on (transaction_id, kit_id)
                     const job = await this.fulfillmentManager.createJob(
                         sessionId,
                         transactionId,
-                        item.kit_id,
-                        item.quantity
+                        kitId,
+                        qty
                     );
-                    createdJobs.push(job);
+
+                    allJobs.push(job);
+
+                    // Safety Rule: Only newly created or safely PENDING jobs may be passed to startDispensing().
+                    // Existing COMPLETED, IN_PROGRESS, MANUAL_REVIEW_REQUIRED, or FAILED jobs must NOT be restarted unsafely.
+                    if (job && job.state === 'PENDING') {
+                        jobsToDispense.push(job);
+                    }
                 }
-                this.sessionManager.markFulfillment(sessionId);
+
+                // Mark session fulfillment if in PAYMENT_VERIFIED or PAYMENT_REQUIRED
+                const freshSession = this.sessionManager.getSession(sessionId);
+                if (freshSession && (freshSession.status === 'PAYMENT_VERIFIED' || freshSession.status === 'PAYMENT_REQUIRED')) {
+                    try {
+                        this.sessionManager.markFulfillment(sessionId);
+                    } catch (e) {
+                        console.warn(`[PaymentFinalization] Could not mark session fulfillment:`, e.message);
+                    }
+                }
+            } else {
+                // If cart was empty or already fulfilled, fetch any existing jobs
+                allJobs = this.fulfillmentManager.getJobsByTransaction ? 
+                    this.fulfillmentManager.getJobsByTransaction(transactionId) : [];
             }
 
-            for (const job of createdJobs) {
+            // If allJobs is still empty, retrieve from db
+            if (allJobs.length === 0 && this.fulfillmentManager.getJobsByTransaction) {
+                allJobs = this.fulfillmentManager.getJobsByTransaction(transactionId);
+            }
+
+            // Start dispensing only for safe PENDING jobs
+            for (const job of jobsToDispense) {
                 const jobId = job.job_id || job.jobId;
                 try {
                     await this.fulfillmentManager.startDispensing(jobId);
@@ -154,40 +191,47 @@ export class PaymentFinalizationService {
                     console.error(`[PaymentFinalization] ⚠️ Dispense publish failed for job ${jobId}:`, err.message);
                 }
             }
+
             completionStatus = 'dispensing';
 
-        } else if (session.service_type === 'HEALTH_CHECKUP') {
-            console.log(`[PaymentFinalization] 📄 Generating health report PDF locally for session: ${sessionId}`);
-            try {
-                const customerData = session.customer_data ? 
-                    (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) 
-                    : {};
-                const healthData = session.health_data ? 
-                    (typeof session.health_data === 'string' ? JSON.parse(session.health_data) : session.health_data) 
-                    : {};
+        } else if (serviceType === 'HEALTH_CHECKUP' || serviceType === 'CHECKUP') {
+            const freshSession = this.sessionManager.getSession(sessionId);
+            // If report is not already generated and completed
+            if (!freshSession || freshSession.report_status !== 'READY') {
+                console.log(`[PaymentFinalization] 📄 Generating health report PDF locally for session: ${sessionId}`);
+                try {
+                    const customerData = session.customer_data ? 
+                        (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) 
+                        : {};
+                    const healthData = session.health_data ? 
+                        (typeof session.health_data === 'string' ? JSON.parse(session.health_data) : session.health_data) 
+                        : {};
 
-                const { reportId, pdfPath } = await this.pdfGenerator.generateHealthReport(
-                    sessionId,
-                    customerData,
-                    healthData
-                );
-                console.log(`[PaymentFinalization] ✅ Health report PDF saved locally: ${pdfPath} (reportId: ${reportId})`);
+                    const { reportId, pdfPath } = await this.pdfGenerator.generateHealthReport(
+                        sessionId,
+                        customerData,
+                        healthData
+                    );
+                    console.log(`[PaymentFinalization] ✅ Health report PDF saved locally: ${pdfPath} (reportId: ${reportId})`);
 
-                this.sessionManager.updateReportStatus(sessionId, 'READY');
-                this.sessionManager.markCompleted(sessionId);
+                    this.sessionManager.updateReportStatus(sessionId, 'READY');
+                    this.sessionManager.markCompleted(sessionId);
+                    completionStatus = 'report_ready';
+                } catch (pdfErr) {
+                    console.error(`[PaymentFinalization] ❌ Health report PDF generation failed for session ${sessionId}:`, pdfErr);
+                    this.sessionManager.updateReportStatus(sessionId, 'FAILED');
+                    completionStatus = 'report_failed';
+                }
+            } else {
                 completionStatus = 'report_ready';
-            } catch (pdfErr) {
-                console.error(`[PaymentFinalization] ❌ Health report PDF generation failed for session ${sessionId}:`, pdfErr);
-                this.sessionManager.updateReportStatus(sessionId, 'FAILED');
-                completionStatus = 'report_failed';
             }
         }
 
         return {
             success: true,
-            alreadyVerified: false,
+            alreadyVerified: isAlreadyVerified,
             completionStatus,
-            jobs: createdJobs
+            jobs: allJobs
         };
     }
 }
