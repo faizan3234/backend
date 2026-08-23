@@ -2,7 +2,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  * RELIV CLOUD PAYMENT BRIDGE - RECEIPT PDF BUILDER
  * Purpose: Generates authoritative A4 payment receipt PDFs in-memory for
- *          Cloud Payment V2 email attachments.
+ *          Cloud Payment V2 email attachments and downloads.
  * 
  * SECURITY & DATA INTEGRITY RULES:
  * 1. ONLY authoritative database/order data is rendered.
@@ -13,13 +13,13 @@
  *    service type and total without inventing line items or taxes.
  * 6. Returns an in-memory Buffer with zero local disk leakage.
  *
- * PAGINATION & LAYOUT RULES:
- * - autoFirstPage: false and margins.bottom: 0 — we manually control page flow
- *   and prevent PDFKit from silently creating trailing pages.
- * - Single-page receipts for standard orders (1-5 items) with zero overflow.
- * - Clickable customer care email & Instagram handle links.
- * - Dynamic authoritative service / medicine names.
- * - Clean all-light aesthetic matching Reliv design standards.
+ * APPROVED ALL-LIGHT DESIGN SPECIFICATIONS:
+ * - All-light palette (#FFFFFF, #FCFCFD, #172033, #667085, #FF641A, #15803D)
+ * - Exact vector checkmarks (no font glyph fallback squares)
+ * - Clickable mailto:relivcustomercare.in@gmail.com and instagram.com/reliv_care
+ * - TrueType DejaVuSans-Bold for native Indian Rupee (₹) & CO₂ glyphs
+ * - Single-page layout for standard orders (1-6 items)
+ * - Clean multi-page pagination for large carts (repeats header, page numbers)
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -35,7 +35,7 @@ const __dirname = path.dirname(__filename);
 const PAGE_WIDTH  = 595.28;
 const PAGE_HEIGHT = 841.89;
 const MARGIN_H    = 32;
-const CONTENT_W   = PAGE_WIDTH - (MARGIN_H * 2); // ~531.28 pt
+const CONTENT_W   = PAGE_WIDTH - (MARGIN_H * 2); // 531.28 pt
 const DOC_MARGINS = { top: 30, bottom: 0, left: MARGIN_H, right: MARGIN_H };
 
 // ── Color Palette (Approved All-Light Theme) ────────────────────────────
@@ -107,7 +107,7 @@ export function formatReceiptDateTime(dateInput) {
 }
 
 /**
- * Format amount in rupees with ₹ or INR prefix
+ * Format amount in rupees with ₹ prefix
  * @param {number} rupees
  * @param {string} symbol
  * @returns {string}
@@ -156,33 +156,30 @@ export function setupPdfFonts(doc) {
     let hasBold = false;
     let hasRegular = false;
 
-    const fontPath = resolveAssetPath('fonts/DejaVuSans-Bold.ttf');
-    if (fontPath) {
+    // Check for DejaVuSans-Bold.ttf (full Unicode coverage including ₹ and CO₂)
+    const boldFontPath = resolveAssetPath('fonts/DejaVuSans-Bold.ttf');
+    if (boldFontPath) {
         try {
-            doc.registerFont('Reliv-Bold', fontPath);
+            doc.registerFont('Reliv-Bold', boldFontPath);
+            doc.registerFont('Reliv-Regular', boldFontPath);
             hasBold = true;
+            hasRegular = true;
         } catch (e) {
             console.warn('[ReceiptPdfBuilder] Could not register DejaVuSans-Bold:', e.message);
         }
     }
 
-    if (process.platform === 'win32') {
-        const arialPath = 'C:/Windows/Fonts/arial.ttf';
-        const arialBoldPath = 'C:/Windows/Fonts/arialbd.ttf';
-        if (fs.existsSync(arialPath)) {
-            try {
-                doc.registerFont('Reliv-Regular', arialPath);
-                hasRegular = true;
-                if (!hasBold && fs.existsSync(arialBoldPath)) {
-                    doc.registerFont('Reliv-Bold', arialBoldPath);
-                    hasBold = true;
-                }
-            } catch (e) { /* ignore */ }
-        }
+    // If regular DejaVuSans.ttf exists, use it for regular weight
+    const regFontPath = resolveAssetPath('fonts/DejaVuSans.ttf');
+    if (regFontPath) {
+        try {
+            doc.registerFont('Reliv-Regular', regFontPath);
+            hasRegular = true;
+        } catch (e) { /* ignore */ }
     }
 
     return {
-        fontR: hasRegular ? 'Reliv-Regular' : (hasBold ? 'Reliv-Bold' : 'Helvetica'),
+        fontR: hasRegular ? 'Reliv-Regular' : 'Helvetica',
         fontB: hasBold   ? 'Reliv-Bold'    : 'Helvetica-Bold',
         sym:   hasBold   ? '₹' : 'INR '
     };
@@ -221,6 +218,9 @@ export function normalizeCloudReceiptData(order, recipientEmail) {
         }
     }
 
+    // Determine primary item label if no itemized cart exists
+    const primaryItemName = order.item_name || order.medicine_name || order.package_name || serviceLabel;
+
     return {
         receiptId: safe(order.request_id || order.order_id, 'RLV-RECEIPT'),
         requestId: safe(order.request_id, 'N/A'),
@@ -230,6 +230,7 @@ export function normalizeCloudReceiptData(order, recipientEmail) {
         sessionId: safe(order.session_id, 'N/A'),
         kioskId: safe(order.kiosk_id, 'N/A'),
         serviceType: serviceLabel,
+        primaryItemName,
         amountInRupees,
         currency: order.currency || 'INR',
         status: 'PAID',
@@ -243,6 +244,48 @@ export function normalizeCloudReceiptData(order, recipientEmail) {
 /** Draw a rounded-rect card with fill and border */
 function drawCard(doc, x, y, w, h, fill, stroke = C.border, r = 8) {
     doc.roundedRect(x, y, w, h, r).fillAndStroke(fill, stroke);
+}
+
+/**
+ * Draw a clean vector checkmark icon
+ * @param {PDFDocument} doc
+ * @param {number} cx - center x
+ * @param {number} cy - center y
+ * @param {number} size - size in pt
+ * @param {string} color - stroke color
+ */
+function drawVectorCheck(doc, cx, cy, size = 10, color = '#FFFFFF') {
+    doc.save();
+    doc.lineWidth(size * 0.18)
+       .strokeColor(color)
+       .lineCap('round')
+       .lineJoin('round');
+
+    // Draw check path
+    const x1 = cx - size * 0.38;
+    const y1 = cy + size * 0.02;
+    const x2 = cx - size * 0.10;
+    const y2 = cy + size * 0.32;
+    const x3 = cx + size * 0.40;
+    const y3 = cy - size * 0.30;
+
+    doc.moveTo(x1, y1).lineTo(x2, y2).lineTo(x3, y3).stroke();
+    doc.restore();
+}
+
+/**
+ * Draw a circle checkmark icon
+ * @param {PDFDocument} doc
+ * @param {number} cx
+ * @param {number} cy
+ * @param {number} r
+ * @param {string} fillColor
+ * @param {string} strokeColor
+ * @param {string} checkColor
+ */
+function drawCircleCheck(doc, cx, cy, r = 6, fillColor = C.paleGreen, strokeColor = C.green, checkColor = C.green) {
+    doc.circle(cx, cy, r).fillAndStroke(fillColor, strokeColor);
+    drawVectorCheck(doc, cx, cy, r * 1.2, checkColor);
 }
 
 /**
@@ -281,106 +324,111 @@ export async function generateCloudReceiptPdfBuffer(order, recipientEmail) {
 
             const { fontR, fontB, sym } = setupPdfFonts(doc);
 
-            // Add Page 1 with zero bottom margin to prevent accidental line-wrap page additions
+            // Add Page 1
             doc.addPage({ size: 'A4', margins: DOC_MARGINS });
 
             let y = 28;
 
             // ============================================================
-            //  1. HEADER SECTION (All-Light, Clean Open Layout)
+            //  1. HEADER SECTION (Clean All-Light Layout)
             // ============================================================
             const logoPath = resolveAssetPath('assets/reliv.png') || resolveAssetPath('reliv.png');
             if (logoPath) {
                 try {
-                    // Logo scaled cleanly (height: 36 pt, preserved aspect ratio)
-                    doc.image(logoPath, MARGIN_H, y, { height: 36 });
+                    // Logo scaled: height ~42 pt (width ~142 pt), crisp and prominent
+                    doc.image(logoPath, MARGIN_H, y, { height: 42 });
                 } catch (e) {
-                    doc.font(fontB).fontSize(22).fillColor(C.orange).text('RELIV', MARGIN_H, y + 2);
+                    doc.font(fontB).fontSize(24).fillColor(C.orange).text('RELIV', MARGIN_H, y + 2);
                 }
             } else {
-                doc.font(fontB).fontSize(22).fillColor(C.orange).text('RELIV', MARGIN_H, y + 2);
+                doc.font(fontB).fontSize(24).fillColor(C.orange).text('RELIV', MARGIN_H, y + 2);
             }
 
             // Tagline below logo
-            doc.font(fontR).fontSize(9).fillColor(C.navy)
-               .text('Your Personalized Health Checkup.', MARGIN_H, y + 42);
+            doc.font(fontR).fontSize(9.5).fillColor(C.navy)
+               .text('Your Personalized Health Checkup.', MARGIN_H, y + 48);
 
             // Right side: Header details
-            doc.font(fontB).fontSize(16).fillColor(C.navy)
+            doc.font(fontB).fontSize(18).fillColor(C.navy)
                .text('PURCHASE RECEIPT', MARGIN_H, y, { width: CONTENT_W, align: 'right' });
 
             doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
-               .text(`Receipt No. ${data.receiptId}`, MARGIN_H, y + 22, { width: CONTENT_W, align: 'right' });
+               .text(`Receipt No. ${data.receiptId}`, MARGIN_H, y + 24, { width: CONTENT_W, align: 'right' });
 
             doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
-               .text(formatReceiptDate(data.paidAt), MARGIN_H, y + 34, { width: CONTENT_W, align: 'right' });
+               .text(formatReceiptDate(data.paidAt), MARGIN_H, y + 36, { width: CONTENT_W, align: 'right' });
 
-            // Compact Green PAID pill below date
-            const badgeW = 58, badgeH = 18;
+            // PAID badge: Solid Green fill, White text, Crisp Vector Checkmark
+            const badgeW = 66, badgeH = 21;
             const badgeX = MARGIN_H + CONTENT_W - badgeW;
-            const badgeY = y + 48;
-            doc.roundedRect(badgeX, badgeY, badgeW, badgeH, 9)
-               .fillAndStroke(C.paleGreen, C.greenBorder);
-            doc.font(fontB).fontSize(8).fillColor(C.green)
-               .text('\u2713 PAID', badgeX, badgeY + 4, { width: badgeW, align: 'center' });
+            const badgeY = y + 50;
+            doc.roundedRect(badgeX, badgeY, badgeW, badgeH, 10.5).fill(C.green);
 
-            y += 74;
+            // Draw vector check inside badge
+            drawVectorCheck(doc, badgeX + 14, badgeY + 10.5, 9, '#FFFFFF');
+
+            doc.font(fontB).fontSize(8.5).fillColor('#FFFFFF')
+               .text('PAID', badgeX + 22, badgeY + 5.5, { width: badgeW - 24, align: 'center' });
+
+            y += 82;
 
             // ============================================================
-            //  2. BILLED TO & PAYMENT DETAILS (Twin Cards)
+            //  2. BILLED TO & PAYMENT DETAILS (Twin Equal-Height Cards)
             // ============================================================
-            const cardGap = 12;
+            const cardGap = 14;
             const cardW = (CONTENT_W - cardGap) / 2;
-            const cardH = 78;
+            const cardH = 82;
             const cardPad = 12;
 
             // Left Card: Billed To
             drawCard(doc, MARGIN_H, y, cardW, cardH, C.surface, C.border, 8);
             doc.font(fontB).fontSize(7.5).fillColor(C.secondary)
-               .text('BILLED TO', MARGIN_H + cardPad, y + 9);
+               .text('BILLED TO', MARGIN_H + cardPad, y + 10);
 
             const custName = data.customerName || 'Valued Customer';
-            doc.font(fontB).fontSize(11).fillColor(C.navy)
-               .text(custName, MARGIN_H + cardPad, y + 22, { width: cardW - cardPad * 2 });
-            doc.font(fontR).fontSize(8).fillColor(C.secondary)
-               .text(data.recipientEmail, MARGIN_H + cardPad, y + 37, { width: cardW - cardPad * 2, lineBreak: false, ellipsis: true });
+            doc.font(fontB).fontSize(12).fillColor(C.navy)
+               .text(custName, MARGIN_H + cardPad, y + 23, { width: cardW - cardPad * 2 });
+            doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
+               .text(data.recipientEmail, MARGIN_H + cardPad, y + 39, { width: cardW - cardPad * 2, lineBreak: false, ellipsis: true });
 
-            doc.moveTo(MARGIN_H + cardPad, y + 51).lineTo(MARGIN_H + cardW - cardPad, y + 51)
+            doc.moveTo(MARGIN_H + cardPad, y + 54).lineTo(MARGIN_H + cardW - cardPad, y + 54)
                .strokeColor(C.divider).lineWidth(0.5).stroke();
 
             doc.font(fontR).fontSize(7.5).fillColor(C.muted)
-               .text(`Session: ${data.sessionId}`, MARGIN_H + cardPad, y + 57, { width: cardW - cardPad * 2, lineBreak: false, ellipsis: true });
+               .text(`Session: ${data.sessionId}`, MARGIN_H + cardPad, y + 60, { width: cardW - cardPad * 2, lineBreak: false, ellipsis: true });
 
             // Right Card: Payment Details
             const rX = MARGIN_H + cardW + cardGap;
             drawCard(doc, rX, y, cardW, cardH, C.surface, C.border, 8);
             doc.font(fontB).fontSize(7.5).fillColor(C.secondary)
-               .text('PAYMENT DETAILS', rX + cardPad, y + 9);
+               .text('PAYMENT DETAILS', rX + cardPad, y + 10);
 
             doc.font(fontB).fontSize(8).fillColor(C.navy)
-               .text('Payment ID: ', rX + cardPad, y + 22, { continued: true });
+               .text('Payment ID: ', rX + cardPad, y + 23, { continued: true });
             doc.font(fontR).fillColor(C.navy)
-               .text(data.paymentId, { width: cardW - cardPad * 2 - 60, lineBreak: false, ellipsis: true });
+               .text(data.paymentId, { width: cardW - cardPad * 2 - 58, lineBreak: false, ellipsis: true });
 
             doc.font(fontB).fontSize(8).fillColor(C.navy)
-               .text('Method: ', rX + cardPad, y + 34, { continued: true });
+               .text('Method: ', rX + cardPad, y + 35, { continued: true });
             doc.font(fontR).fillColor(C.secondary)
                .text('Razorpay Online (UPI/Card)');
 
             doc.font(fontB).fontSize(8).fillColor(C.navy)
-               .text('Paid at: ', rX + cardPad, y + 46, { continued: true });
+               .text('Paid at: ', rX + cardPad, y + 47, { continued: true });
             doc.font(fontR).fillColor(C.secondary)
                .text(formatReceiptDateTime(data.paidAt));
 
+            // Status with vector green indicator
+            drawCircleCheck(doc, rX + cardPad + 4, y + 66, 4.5, C.paleGreen, C.green, C.green);
             doc.font(fontB).fontSize(7.5).fillColor(C.green)
-               .text('\u2022 Payment Successful \u2022 Server Verified', rX + cardPad, y + 60);
+               .text('Payment Successful \u2022 Server Verified', rX + cardPad + 13, y + 62);
 
             y += cardH + 14;
 
             // ============================================================
             //  3. PURCHASE SUMMARY TABLE
             // ============================================================
-            doc.font(fontB).fontSize(9.5).fillColor(C.navy).text('PURCHASE SUMMARY', MARGIN_H, y);
+            doc.font(fontB).fontSize(10).fillColor(C.navy).text('PURCHASE SUMMARY', MARGIN_H, y);
             y += 12;
 
             const colItem = MARGIN_H + 10;
@@ -402,10 +450,10 @@ export async function generateCloudReceiptPdfBuffer(order, recipientEmail) {
 
             const items = data.cartItems && data.cartItems.length > 0
                 ? data.cartItems
-                : [{ name: data.serviceType, description: '', qty: 1, unitPrice: data.amountInRupees, total: data.amountInRupees }];
+                : [{ name: data.primaryItemName, description: '', qty: 1, unitPrice: data.amountInRupees, total: data.amountInRupees }];
 
-            // Threshold for creating another page for extreme multi-item carts
-            const MAX_Y_BEFORE_PAGINATE = 560;
+            // Threshold for multi-page cart pagination
+            const MAX_Y_BEFORE_PAGINATE = 550;
 
             items.forEach((item, idx) => {
                 if (y + rowH > MAX_Y_BEFORE_PAGINATE && idx > 0) {
@@ -440,7 +488,7 @@ export async function generateCloudReceiptPdfBuffer(order, recipientEmail) {
                 y += rowH;
             });
 
-            // ── Payment Summary Strip ──────────────────────────────────
+            // ── Payment Summary Strip (Right-Aligned) ──────────────────
             const sumW = 190;
             const sumX = MARGIN_H + CONTENT_W - sumW;
             y += 4;
@@ -451,7 +499,7 @@ export async function generateCloudReceiptPdfBuffer(order, recipientEmail) {
                .text(fmtAmt(data.amountInRupees, sym), sumX, y, { width: sumW, align: 'right' });
             y += 12;
 
-            // Total Paid Box (Pale Orange with thin accent line)
+            // Total Paid Box (Pale Orange with top orange accent line)
             const totalH = 26;
             doc.roundedRect(sumX, y, sumW, totalH, 5).fill(C.paleOrange);
             doc.moveTo(sumX, y + 0.5).lineTo(sumX + sumW, y + 0.5)
@@ -467,14 +515,16 @@ export async function generateCloudReceiptPdfBuffer(order, recipientEmail) {
             // ============================================================
             const confH = 36;
             drawCard(doc, MARGIN_H, y, CONTENT_W, confH, C.paleGreen, C.greenBorder, 6);
+            drawCircleCheck(doc, MARGIN_H + 18, y + 18, 6, C.white, C.green, C.green);
+
             doc.font(fontB).fontSize(8.5).fillColor(C.green)
-               .text('\u2713 Payment received successfully', MARGIN_H + 12, y + 7);
+               .text('Payment received successfully', MARGIN_H + 30, y + 7);
             doc.font(fontR).fontSize(7.5).fillColor(C.secondary)
-               .text('Your payment was securely verified and this receipt was generated digitally.', MARGIN_H + 12, y + 20, { width: CONTENT_W - 24 });
+               .text('Your payment was securely verified and this receipt was generated digitally.', MARGIN_H + 30, y + 19, { width: CONTENT_W - 42 });
             y += confH + 10;
 
             // ============================================================
-            //  5. YOUR RELIV IMPACT (Understated Pale-Green Theme)
+            //  5. YOUR RELIV IMPACT (Understated Pale-Green Section)
             // ============================================================
             const impactH = 72;
             drawCard(doc, MARGIN_H, y, CONTENT_W, impactH, C.paleGreen, C.greenBorder, 6);
@@ -532,7 +582,7 @@ export async function generateCloudReceiptPdfBuffer(order, recipientEmail) {
             doc.moveTo(vdx, y + 6).lineTo(vdx, y + helpH - 6)
                .strokeColor(C.divider).lineWidth(0.5).stroke();
 
-            // Right side: Customer Care & Instagram
+            // Right side: Clickable Customer Care & Instagram
             doc.font(fontB).fontSize(7).fillColor(C.secondary).text('Customer Care: ', helpRx, y + 7, { continued: true });
             doc.font(fontR).fillColor(C.navy).text('relivcustomercare.in@gmail.com', { link: 'mailto:relivcustomercare.in@gmail.com', underline: false });
 
@@ -542,8 +592,9 @@ export async function generateCloudReceiptPdfBuffer(order, recipientEmail) {
             y += helpH + 12;
 
             // ============================================================
-            //  7. LIGHT FOOTER (Always within bottom safe zone)
+            //  7. LIGHT FOOTER (Pinned in Safe Zone)
             // ============================================================
+            const totalPages = doc.bufferedPageRange().count;
             const footerY = Math.max(y, 775);
 
             doc.moveTo(MARGIN_H, footerY).lineTo(MARGIN_H + CONTENT_W, footerY)
@@ -553,8 +604,13 @@ export async function generateCloudReceiptPdfBuffer(order, recipientEmail) {
                .text('Thank you for choosing Reliv.', MARGIN_H, footerY + 5, { width: CONTENT_W, align: 'center' });
             doc.font(fontR).fontSize(7).fillColor(C.secondary)
                .text('Your partner in proactive healthcare.', MARGIN_H, footerY + 15, { width: CONTENT_W, align: 'center' });
+
+            const secText = totalPages > 1
+                ? `Digitally generated receipt \u2022 No signature required \u2022 Page ${totalPages} of ${totalPages}`
+                : 'Digitally generated receipt \u2022 No signature required';
+
             doc.font(fontR).fontSize(6.5).fillColor(C.muted)
-               .text('Digitally generated receipt \u2022 No signature required', MARGIN_H, footerY + 25, { width: CONTENT_W, align: 'center' });
+               .text(secText, MARGIN_H, footerY + 25, { width: CONTENT_W, align: 'center' });
 
             doc.end();
         } catch (err) {
