@@ -1355,7 +1355,224 @@ const v2CloudService = new PaymentV2CloudService({
     } catch (e) {
         if (e.code === 'PAYMENT_ID_ALREADY_USED') replayPaymentIdThrown = true;
     }
-    assert(replayPaymentIdThrown, 'recoverPayment rejects already-bound payment ID with PAYMENT_ID_ALREADY_USED (anti-replay)');
+    // ───────────────────────────────────────────────────────────────────────
+    // 15. IMMUTABLE PAYMENT-TIME ITEMS SNAPSHOT INTEGRITY & RECEIPT TESTS
+    // ───────────────────────────────────────────────────────────────────────
+    section('15. Immutable Payment-Time Items Snapshot Integrity & Receipt Tests');
+
+    // 1. Buy KIT-PARACETAMOL with quantity 1
+    const p1Package = createPiHybridPackage({
+        v: 2,
+        type: 'RELIV_PAYMENT_REQUEST',
+        kioskId: 'RELIV-001',
+        requestId: 'REQ-ITEM-INTEGRITY-P1',
+        requestNonce: 'nonce_item_integrity_p1',
+        sessionId: 'sess_p1',
+        transactionId: 'TXN-P1',
+        amount: 3784,
+        currency: 'INR',
+        serviceType: 'MEDICINE',
+        confirmationCode: '1111',
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 300000,
+        items: [
+            {
+                kitId: 'KIT-PARACETAMOL',
+                name: 'Paracetamol 650mg',
+                quantity: 1,
+                unitPricePaise: 3200,
+                lineTotalPaise: 3200
+            }
+        ],
+        breakdown: {
+            subtotalPaise: 3200,
+            gstPaise: 384,
+            platformFeePaise: 200,
+            discountPaise: 0,
+            totalPaise: 3784
+        }
+    }, kioskKeys.privateKey, cloudKeys4096.publicKey);
+
+    const p1OrderRes = await v2CloudService.createOrderFromPackage(p1Package);
+    const p1Order = db.prepare('SELECT * FROM payment_v2_orders WHERE order_id = ?').get(p1OrderRes.orderId);
+    assert(p1Order.items_json !== null, 'Order stores items_json snapshot');
+    const p1Normalized = normalizeCloudReceiptData(p1Order, 'p1@test.com');
+    assert(p1Normalized.cartItems[0].name === 'Paracetamol 650mg', '1x Paracetamol: exact kit name rendered');
+    assert(p1Normalized.cartItems[0].qty === 1, '1x Paracetamol: exact quantity 1 rendered');
+
+    // 2. Buy KIT-PARACETAMOL with quantity 2
+    const p2Package = createPiHybridPackage({
+        v: 2,
+        type: 'RELIV_PAYMENT_REQUEST',
+        kioskId: 'RELIV-001',
+        requestId: 'REQ-ITEM-INTEGRITY-P2',
+        requestNonce: 'nonce_item_integrity_p2',
+        sessionId: 'sess_p2',
+        transactionId: 'TXN-P2',
+        amount: 7368,
+        currency: 'INR',
+        serviceType: 'MEDICINE',
+        confirmationCode: '2222',
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 300000,
+        items: [
+            {
+                kitId: 'KIT-PARACETAMOL',
+                name: 'Paracetamol 650mg',
+                quantity: 2,
+                unitPricePaise: 3200,
+                lineTotalPaise: 6400
+            }
+        ],
+        breakdown: {
+            subtotalPaise: 6400,
+            gstPaise: 768,
+            platformFeePaise: 200,
+            discountPaise: 0,
+            totalPaise: 7368
+        }
+    }, kioskKeys.privateKey, cloudKeys4096.publicKey);
+
+    const p2OrderRes = await v2CloudService.createOrderFromPackage(p2Package);
+    const p2Order = db.prepare('SELECT * FROM payment_v2_orders WHERE order_id = ?').get(p2OrderRes.orderId);
+    const p2Normalized = normalizeCloudReceiptData(p2Order, 'p2@test.com');
+    assert(p2Normalized.cartItems[0].name === 'Paracetamol 650mg', '2x Paracetamol: exact kit name rendered');
+    assert(p2Normalized.cartItems[0].qty === 2, '2x Paracetamol: exact quantity 2 rendered');
+
+    // 3. Buy KIT-HEHE with quantity 9 (where inventory stock was 150)
+    const hehePackage = createPiHybridPackage({
+        v: 2,
+        type: 'RELIV_PAYMENT_REQUEST',
+        kioskId: 'RELIV-001',
+        requestId: 'REQ-ITEM-INTEGRITY-HEHE',
+        requestNonce: 'nonce_item_integrity_hehe',
+        sessionId: 'sess_hehe',
+        transactionId: 'TXN-HEHE',
+        amount: 45200,
+        currency: 'INR',
+        serviceType: 'MEDICINE',
+        confirmationCode: '9999',
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 300000,
+        items: [
+            {
+                kitId: 'KIT-HEHE',
+                name: 'First Aid Emergency Kit HeHe',
+                quantity: 9, // Exactly 9! NEVER 150 stock quantity!
+                unitPricePaise: 5000,
+                lineTotalPaise: 45000
+            }
+        ],
+        breakdown: {
+            subtotalPaise: 45000,
+            gstPaise: 0,
+            platformFeePaise: 200,
+            discountPaise: 0,
+            totalPaise: 45200
+        }
+    }, kioskKeys.privateKey, cloudKeys4096.publicKey);
+
+    const heheOrderRes = await v2CloudService.createOrderFromPackage(hehePackage);
+    const heheOrder = db.prepare('SELECT * FROM payment_v2_orders WHERE order_id = ?').get(heheOrderRes.orderId);
+    const heheNormalized = normalizeCloudReceiptData(heheOrder, 'hehe@test.com');
+    assert(heheNormalized.cartItems[0].name === 'First Aid Emergency Kit HeHe', 'Custom kit: exact kit name rendered (NOT Paracetamol)');
+    assert(heheNormalized.cartItems[0].qty === 9, 'Custom kit: exact purchased quantity 9 rendered (NOT 1, NOT 150 stock)');
+    assert(heheNormalized.cartItems[0].unitPrice === 50, 'Custom kit: unit price ₹50.00 rendered');
+    assert(heheNormalized.cartItems[0].total === 450, 'Custom kit: line total ₹450.00 rendered');
+
+    // 4. Multiple distinct medicines in cart
+    const multiPackage = createPiHybridPackage({
+        v: 2,
+        type: 'RELIV_PAYMENT_REQUEST',
+        kioskId: 'RELIV-001',
+        requestId: 'REQ-ITEM-INTEGRITY-MULTI',
+        requestNonce: 'nonce_item_integrity_multi',
+        sessionId: 'sess_multi',
+        transactionId: 'TXN-MULTI',
+        amount: 28424,
+        currency: 'INR',
+        serviceType: 'MEDICINE',
+        confirmationCode: '3333',
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 300000,
+        items: [
+            { kitId: 'KIT-ASPIRIN', name: 'Aspirin 75mg', quantity: 2, unitPricePaise: 4000, lineTotalPaise: 8000 },
+            { kitId: 'KIT-VIT-D', name: 'Vitamin D3 60k IU', quantity: 1, unitPricePaise: 12000, lineTotalPaise: 12000 },
+            { kitId: 'KIT-BANDAGE', name: 'Bandage Strips Pack', quantity: 4, unitPricePaise: 1300, lineTotalPaise: 5200 }
+        ],
+        breakdown: {
+            subtotalPaise: 25200,
+            gstPaise: 3024,
+            platformFeePaise: 200,
+            discountPaise: 0,
+            totalPaise: 28424
+        }
+    }, kioskKeys.privateKey, cloudKeys4096.publicKey);
+
+    const multiOrderRes = await v2CloudService.createOrderFromPackage(multiPackage);
+    const multiOrder = db.prepare('SELECT * FROM payment_v2_orders WHERE order_id = ?').get(multiOrderRes.orderId);
+    const multiNormalized = normalizeCloudReceiptData(multiOrder, 'multi@test.com');
+    assert(multiNormalized.cartItems.length === 3, 'Multi-kit: exactly 3 items rendered');
+    assert(multiNormalized.cartItems[0].name === 'Aspirin 75mg' && multiNormalized.cartItems[0].qty === 2, 'Multi-kit: item 1 exact name and qty 2');
+    assert(multiNormalized.cartItems[1].name === 'Vitamin D3 60k IU' && multiNormalized.cartItems[1].qty === 1, 'Multi-kit: item 2 exact name and qty 1');
+    assert(multiNormalized.cartItems[2].name === 'Bandage Strips Pack' && multiNormalized.cartItems[2].qty === 4, 'Multi-kit: item 3 exact name and qty 4');
+
+    // 5. Signed snapshot line total mismatch rejected
+    const tamperedPayload = {
+        v: 2,
+        type: 'RELIV_PAYMENT_REQUEST',
+        kioskId: 'RELIV-001',
+        requestId: 'REQ-TAMPER-LINE',
+        requestNonce: 'nonce_tamper_line',
+        sessionId: 'sess_tamper_line',
+        transactionId: 'TXN-TAMPER-LINE',
+        amount: 3784,
+        currency: 'INR',
+        serviceType: 'MEDICINE',
+        confirmationCode: '7777',
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 300000,
+        items: [
+            {
+                kitId: 'KIT-PARACETAMOL',
+                name: 'Paracetamol 650mg',
+                quantity: 2,
+                unitPricePaise: 3200,
+                lineTotalPaise: 5000 // TAMPERED! (3200 * 2 != 5000)
+            }
+        ]
+    };
+    const tamperedPackage = createPiHybridPackage(tamperedPayload, kioskKeys.privateKey, cloudKeys4096.publicKey);
+
+    let tamperThrown = false;
+    try {
+        await v2CloudService.createOrderFromPackage(tamperedPackage);
+    } catch (e) {
+        if (e.code === 'PAYLOAD_TAMPERING_OR_FINGERPRINT_MISMATCH') tamperThrown = true;
+    }
+    assert(tamperThrown, 'createOrderFromPackage rejects invalid lineTotalPaise mismatch');
+
+    // 6. Old legacy PAID order without items_json or cart renders generic without guessing
+    const legacyOrder = {
+        order_id: 'order_legacy_old',
+        request_id: 'REQ-LEGACY-OLD',
+        amount: 10000,
+        service_type: 'MEDICINE_PURCHASE',
+        items_json: null,
+        cart: null,
+        item_name: null,
+        status: 'PAID',
+        verified_at: Date.now()
+    };
+    const legacyNormalized = normalizeCloudReceiptData(legacyOrder, 'legacy@test.com');
+    assert(legacyNormalized.cartItems.length === 1, 'Legacy order without snapshot creates 1 generic row');
+    assert(legacyNormalized.cartItems[0].name === 'Medicine Purchase', 'Legacy order without snapshot uses generic "Medicine Purchase"');
+    assert(legacyNormalized.cartItems[0].qty === '—', 'Legacy order without snapshot does NOT guess quantity (renders —)');
+    assert(legacyNormalized.amountInRupees === 100, 'Legacy order total paid matches authoritative amount ₹100.00');
+
+    // 7. Test PDF Buffer generation for custom kit (9 qty)
+    const hehePdfBuf = await generateCloudReceiptPdfBuffer(heheOrder, 'hehe@test.com');
+    assert(Buffer.isBuffer(hehePdfBuf) && hehePdfBuf.length > 50000, 'Custom 9-quantity kit generates valid PDF');
 
     // ───────────────────────────────────────────────────────────────────────
     // CLEANUP

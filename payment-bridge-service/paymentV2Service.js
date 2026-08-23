@@ -271,10 +271,83 @@ export class PaymentV2CloudService {
                 }
             });
 
+            // Validate Items Snapshot & Breakdown Integrity if present in signed payload
+            let itemsJson = null;
+            let breakdownJson = null;
+
+            if (payload.items) {
+                if (!Array.isArray(payload.items)) {
+                    console.error('[PaymentV2Cloud] ❌ Invalid items payload: not an array');
+                    const err = new Error('Invalid items payload structure');
+                    err.code = 'INVALID_PAYLOAD_STRUCTURE';
+                    throw err;
+                }
+
+                for (const it of payload.items) {
+                    if (!it || typeof it !== 'object') {
+                        const err = new Error('Invalid item structure in payload');
+                        err.code = 'INVALID_PAYLOAD_STRUCTURE';
+                        throw err;
+                    }
+                    if (!it.kitId || typeof it.kitId !== 'string') {
+                        const err = new Error('Invalid item kitId in payload');
+                        err.code = 'INVALID_PAYLOAD_STRUCTURE';
+                        throw err;
+                    }
+                    if (!it.name || typeof it.name !== 'string') {
+                        const err = new Error('Invalid item name in payload');
+                        err.code = 'INVALID_PAYLOAD_STRUCTURE';
+                        throw err;
+                    }
+                    if (!Number.isInteger(it.quantity) || it.quantity <= 0) {
+                        const err = new Error('Invalid item quantity in payload: must be positive integer');
+                        err.code = 'INVALID_PAYLOAD_STRUCTURE';
+                        throw err;
+                    }
+                    if (!Number.isInteger(it.unitPricePaise) || it.unitPricePaise < 0) {
+                        const err = new Error('Invalid item unitPricePaise in payload');
+                        err.code = 'INVALID_PAYLOAD_STRUCTURE';
+                        throw err;
+                    }
+                    if (!Number.isInteger(it.lineTotalPaise) || it.lineTotalPaise < 0) {
+                        const err = new Error('Invalid item lineTotalPaise in payload');
+                        err.code = 'INVALID_PAYLOAD_STRUCTURE';
+                        throw err;
+                    }
+                    if (it.lineTotalPaise !== it.unitPricePaise * it.quantity) {
+                        console.error(`[PaymentV2Cloud] ❌ Line total mismatch for ${it.name}: ${it.lineTotalPaise} !== ${it.unitPricePaise} * ${it.quantity}`);
+                        const err = new Error('Item line total does not equal unitPricePaise * quantity');
+                        err.code = 'PAYLOAD_TAMPERING_OR_FINGERPRINT_MISMATCH';
+                        throw err;
+                    }
+                }
+
+                itemsJson = JSON.stringify(payload.items);
+            }
+
+            if (payload.breakdown) {
+                const b = payload.breakdown;
+                if (!b || typeof b !== 'object') {
+                    const err = new Error('Invalid breakdown structure in payload');
+                    err.code = 'INVALID_PAYLOAD_STRUCTURE';
+                    throw err;
+                }
+                if (!Number.isInteger(b.totalPaise) || b.totalPaise !== authoritativeAmount) {
+                    console.error(`[PaymentV2Cloud] ❌ Breakdown total mismatch: ${b.totalPaise} !== ${authoritativeAmount}`);
+                    const err = new Error('Breakdown total does not match authoritative amount');
+                    err.code = 'PAYLOAD_TAMPERING_OR_FINGERPRINT_MISMATCH';
+                    throw err;
+                }
+                breakdownJson = JSON.stringify(b);
+            }
+
             // Encrypt Confirmation Code At Rest
             const encryptedCode = encryptConfirmationCodeAtRest(payload.confirmationCode, this.codeSecret);
 
             let itemName = payload.itemName || payload.medicineName || payload.item_name || payload.medicine_name || null;
+            if (!itemName && payload.items && payload.items.length > 0) {
+                itemName = payload.items[0].name;
+            }
             let cartJson = null;
             if (payload.cart) {
                 try {
@@ -286,6 +359,14 @@ export class PaymentV2CloudService {
                 } catch (e) {
                     cartJson = typeof payload.cart === 'string' ? payload.cart : JSON.stringify(payload.cart);
                 }
+            } else if (payload.items) {
+                cartJson = JSON.stringify(payload.items.map(it => ({
+                    kit_id: it.kitId,
+                    name: it.name,
+                    quantity: it.quantity,
+                    price: it.unitPricePaise / 100,
+                    total: it.lineTotalPaise / 100
+                })));
             }
             const customerName = payload.customerName || payload.customer_name || null;
 
@@ -295,8 +376,9 @@ export class PaymentV2CloudService {
                     order_id, request_id, request_nonce, payload_fingerprint,
                     session_id, transaction_id, kiosk_id, amount, currency,
                     service_type, item_name, cart, customer_name,
+                    items_json, breakdown_json,
                     encrypted_code, status, created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, ?, ?, ?, 'CREATED', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, ?, ?, ?, ?, ?, 'CREATED', ?, ?)
             `).run(
                 rzpOrder.id,
                 payload.requestId,
@@ -310,6 +392,8 @@ export class PaymentV2CloudService {
                 itemName,
                 cartJson,
                 customerName,
+                itemsJson,
+                breakdownJson,
                 encryptedCode,
                 now,
                 payload.expiresAt

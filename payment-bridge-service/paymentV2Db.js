@@ -25,6 +25,11 @@ export function initPaymentV2Schema(db) {
             encrypted_code TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'CREATED',
             razorpay_payment_id TEXT,
+            item_name TEXT,
+            cart TEXT,
+            customer_name TEXT,
+            items_json TEXT,
+            breakdown_json TEXT,
             created_at INTEGER NOT NULL,
             expires_at INTEGER NOT NULL,
             verified_at INTEGER,
@@ -53,7 +58,7 @@ export function initPaymentV2Schema(db) {
         ON payment_v2_receipts(request_id);
     `);
 
-    // Migration helper: add columns if table was created in an earlier schema version
+    // Migration helper: safely add columns if table was created in an earlier schema version
     try {
         const cols = db.prepare("PRAGMA table_info(payment_v2_orders)").all();
         const colNames = new Set(cols.map(c => c.name));
@@ -69,6 +74,12 @@ export function initPaymentV2Schema(db) {
         }
         if (!colNames.has('customer_name')) {
             db.exec("ALTER TABLE payment_v2_orders ADD COLUMN customer_name TEXT;");
+        }
+        if (!colNames.has('items_json')) {
+            db.exec("ALTER TABLE payment_v2_orders ADD COLUMN items_json TEXT;");
+        }
+        if (!colNames.has('breakdown_json')) {
+            db.exec("ALTER TABLE payment_v2_orders ADD COLUMN breakdown_json TEXT;");
         }
         db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_orders_rzp_payment ON payment_v2_orders(razorpay_payment_id) WHERE razorpay_payment_id IS NOT NULL;");
     } catch (e) {}

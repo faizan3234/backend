@@ -288,41 +288,74 @@ export class PaymentV2Service {
             confirmationCode
         });
 
-        // Resolve itemized cart with real medicine/kit names from SQL database
-        let resolvedCart = [];
-        let primaryItemName = null;
-        if (transaction.cart) {
+        // Build authoritative payment-time items snapshot & breakdown
+        let itemsSnapshot = [];
+        let breakdownSnapshot = null;
+
+        const effectiveType = String(session.service_type || transaction.type || effectiveServiceType).toUpperCase();
+        if (effectiveType === 'MEDICINE' || effectiveType === 'MEDICINE_PURCHASE') {
             try {
-                const parsedCart = typeof transaction.cart === 'string' ? JSON.parse(transaction.cart) : transaction.cart;
-                if (Array.isArray(parsedCart) && parsedCart.length > 0) {
-                    resolvedCart = parsedCart.map(item => {
-                        const kitId = item.kit_id || item.id || item.inventory_id;
-                        let kitName = item.name;
-                        let unitPrice = item.price || item.unit_price;
-                        if (!kitName || unitPrice === undefined) {
+                const pricing = this.transactionManager.pricingService.calculateAuthoritativeCartTotal(canonicalNewCart);
+                itemsSnapshot = pricing.items.map(it => ({
+                    kitId: String(it.kit_id),
+                    name: String(it.name),
+                    quantity: Number(it.quantity), // EXACT purchase cart quantity! NEVER inventory stock!
+                    unitPricePaise: Number(it.unitPricePaise),
+                    lineTotalPaise: Number(it.subtotalPaise)
+                }));
+                breakdownSnapshot = {
+                    subtotalPaise: Number(pricing.subtotalPaise),
+                    gstPaise: Number(pricing.taxPaise),
+                    platformFeePaise: Number(pricing.platformFeePaise),
+                    discountPaise: 0,
+                    totalPaise: Number(pricing.totalPaise)
+                };
+            } catch (e) {
+                // Fallback for safety if custom pricing service mock doesn't have calculateAuthoritativeCartTotal
+                if (Array.isArray(canonicalNewCart) && canonicalNewCart.length > 0) {
+                    itemsSnapshot = canonicalNewCart.map(it => {
+                        const kitId = String(it.kit_id || it.id);
+                        let name = it.name;
+                        let price = it.price;
+                        if (!name || price === undefined) {
                             try {
                                 const row = this.db.prepare('SELECT name, price FROM inventory WHERE kit_id = ?').get(kitId);
                                 if (row) {
-                                    kitName = row.name;
-                                    unitPrice = row.price;
+                                    name = row.name;
+                                    price = row.price;
                                 }
-                            } catch (e) {}
+                            } catch (err) {}
                         }
-                        const qty = Number(item.quantity || item.cartQuantity || 1);
-                        const priceNum = Number(unitPrice || 0);
+                        const qty = Number(it.quantity || it.cartQuantity || 1);
+                        const unitPricePaise = Math.round(Number(price || 0) * 100);
                         return {
-                            kit_id: kitId,
-                            name: kitName || kitId,
+                            kitId,
+                            name: name || kitId,
                             quantity: qty,
-                            price: priceNum,
-                            total: priceNum * qty
+                            unitPricePaise,
+                            lineTotalPaise: unitPricePaise * qty
                         };
                     });
-                    if (resolvedCart.length > 0) {
-                        primaryItemName = resolvedCart[0].name;
-                    }
                 }
-            } catch (e) {}
+            }
+        } else {
+            // Health Checkup or other service
+            itemsSnapshot = [
+                {
+                    kitId: 'HEALTH-CHECKUP',
+                    name: 'Comprehensive Health Screening',
+                    quantity: 1,
+                    unitPricePaise: authoritativeAmount,
+                    lineTotalPaise: authoritativeAmount
+                }
+            ];
+            breakdownSnapshot = {
+                subtotalPaise: authoritativeAmount,
+                gstPaise: 0,
+                platformFeePaise: 0,
+                discountPaise: 0,
+                totalPaise: authoritativeAmount
+            };
         }
 
         const customerData = session.customer_data ?
@@ -342,17 +375,22 @@ export class PaymentV2Service {
             serviceType: session.service_type || transaction.type,
             confirmationCode,
             issuedAt: now,
-            expiresAt
+            expiresAt,
+            items: itemsSnapshot,
+            breakdown: breakdownSnapshot,
+            customerName: customerData.name || undefined
         };
 
-        if (resolvedCart.length > 0) {
-            canonicalPayload.cart = resolvedCart;
-        }
-        if (primaryItemName) {
-            canonicalPayload.itemName = primaryItemName;
-        }
-        if (customerData && customerData.name) {
-            canonicalPayload.customerName = customerData.name;
+        // Legacy compatibility fields
+        if (itemsSnapshot.length > 0) {
+            canonicalPayload.cart = itemsSnapshot.map(it => ({
+                kit_id: it.kitId,
+                name: it.name,
+                quantity: it.quantity,
+                price: it.unitPricePaise / 100,
+                total: it.lineTotalPaise / 100
+            }));
+            canonicalPayload.itemName = itemsSnapshot[0].name;
         }
 
         // Sign with Kiosk Ed25519 Private Key

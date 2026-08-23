@@ -232,13 +232,39 @@ export function normalizeCloudReceiptData(order, recipientEmail) {
     const customerName = order.customer_name || order.customerName || null;
 
     let cartItems = null;
-    if (order.cart) {
+
+    // 1. PRIMARY: Read frozen payment-time snapshot from items_json
+    if (order.items_json) {
+        try {
+            const parsed = typeof order.items_json === 'string' ? JSON.parse(order.items_json) : order.items_json;
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                cartItems = parsed.map(item => {
+                    const itemName = String(item.name || item.kitId || 'Medicine Item');
+                    const qty = Number(item.quantity);
+                    const unitPrice = Number(item.unitPricePaise) / 100;
+                    const total = Number(item.lineTotalPaise) / 100;
+                    return {
+                        name: itemName,
+                        description: safe(item.description || item.desc, ''),
+                        qty,
+                        unitPrice,
+                        total
+                    };
+                });
+            }
+        } catch (e) {
+            cartItems = null;
+        }
+    }
+
+    // 2. SECONDARY: Fallback for transitional records with legacy cart
+    if (!cartItems && order.cart) {
         try {
             const parsed = typeof order.cart === 'string' ? JSON.parse(order.cart) : order.cart;
             if (Array.isArray(parsed) && parsed.length > 0) {
                 cartItems = parsed.map(item => {
                     const rawName = item.name || item.item_name || item.medicine_name || item.kit_name || item.kit_id;
-                    const resolvedName = resolveMedicineKitName(rawName) || (rawName && rawName !== 'Medicine Purchase' ? rawName : 'Paracetamol 500mg');
+                    const resolvedName = resolveMedicineKitName(rawName) || (rawName && rawName !== 'Medicine Purchase' ? rawName : 'Medicine Purchase');
                     const qty = Number(item.quantity ?? item.qty ?? item.cartQuantity ?? 1);
                     const unitPrice = Number(item.price ?? item.unit_price ?? item.unitPrice ?? 0);
                     const total = Number(item.total ?? (unitPrice * qty));
@@ -256,19 +282,28 @@ export function normalizeCloudReceiptData(order, recipientEmail) {
         }
     }
 
-    // Determine primary item label: Always display real medicine/kit name matching dispensing SQL
-    let primaryItemName = resolveMedicineKitName(order.item_name || order.medicine_name || order.package_name || order.kit_name || order.kit_id);
-    if (!primaryItemName && cartItems && cartItems.length > 0) {
+    // 3. TERTIARY: If NO snapshot exists at all (old legacy order without items_json or cart)
+    // DO NOT guess! DO NOT query current inventory! DO NOT display fake kit name or quantity!
+    let primaryItemName = null;
+    if (cartItems && cartItems.length > 0) {
         primaryItemName = cartItems[0].name;
-    }
-    if (!primaryItemName) {
+    } else {
         const normService = String(order.service_type || '').toUpperCase();
         if (normService === 'HEALTH_CHECKUP' || normService === 'CHECKUP') {
-            primaryItemName = 'Comprehensive Health Screening';
+            primaryItemName = 'Health Checkup';
         } else {
-            // Real medicine name
-            primaryItemName = 'Paracetamol 500mg';
+            primaryItemName = 'Medicine Purchase';
         }
+        // Single generic entry for legacy transactions where items_json does not exist
+        cartItems = [
+            {
+                name: primaryItemName,
+                description: '',
+                qty: '—',
+                unitPrice: '—',
+                total: amountInRupees
+            }
+        ];
     }
 
     return {
@@ -530,11 +565,11 @@ export async function generateCloudReceiptPdfBuffer(order, recipientEmail) {
                 doc.font(fontR).fontSize(isSingle ? 10 : 9).fillColor(C.bodyText);
                 doc.text(item.name, colItem, y + (isSingle ? 10 : 7), { width: 260, lineBreak: false, ellipsis: true });
                 doc.font(fontR).fontSize(isSingle ? 10 : 9).fillColor(C.bodyText)
-                   .text(String(item.qty), colQty, y + (isSingle ? 10 : 7), { width: 50, align: 'center' });
+                   .text(typeof item.qty === 'number' ? String(item.qty) : String(item.qty || '—'), colQty, y + (isSingle ? 10 : 7), { width: 50, align: 'center' });
                 doc.font(fontR).fontSize(isSingle ? 10 : 9).fillColor(C.bodyText)
-                   .text(fmtAmt(item.unitPrice, sym), colUnit, y + (isSingle ? 10 : 7), { width: 80, align: 'right' });
+                   .text(typeof item.unitPrice === 'number' ? fmtAmt(item.unitPrice, sym) : String(item.unitPrice || '—'), colUnit, y + (isSingle ? 10 : 7), { width: 80, align: 'right' });
                 doc.font(fontB).fontSize(isSingle ? 10 : 9).fillColor(C.bodyText)
-                   .text(fmtAmt(item.total, sym), colAmt - 80, y + (isSingle ? 10 : 7), { width: 80, align: 'right' });
+                   .text(typeof item.total === 'number' ? fmtAmt(item.total, sym) : fmtAmt(data.amountInRupees, sym), colAmt - 80, y + (isSingle ? 10 : 7), { width: 80, align: 'right' });
 
                 doc.moveTo(MARGIN_H, y + rowH - 1).lineTo(MARGIN_H + CONTENT_W, y + rowH - 1)
                    .strokeColor(C.divider).lineWidth(0.5).stroke();

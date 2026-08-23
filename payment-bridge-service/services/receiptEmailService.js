@@ -115,7 +115,30 @@ export function generateReceiptContent(order) {
     let itemsDetailText = '';
     let itemsDetailHtml = '';
 
-    if (order.cart) {
+    if (order.items_json) {
+        try {
+            const parsed = typeof order.items_json === 'string' ? JSON.parse(order.items_json) : order.items_json;
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                itemsDetailText = '\nItems Purchased:\n' + parsed.map(item => {
+                    const name = item.name || item.kitId || 'Medicine Item';
+                    const qty = item.quantity;
+                    return ` - ${name} (Qty: ${qty})`;
+                }).join('\n') + '\n';
+
+                itemsDetailHtml = `
+          <tr>
+            <td class="detail-label">Items</td>
+            <td class="detail-value" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+              ${parsed.map(item => {
+                  const name = item.name || item.kitId || 'Medicine Item';
+                  const qty = item.quantity;
+                  return `<div>• ${name} &times; ${qty}</div>`;
+              }).join('')}
+            </td>
+          </tr>`;
+            }
+        } catch (e) {}
+    } else if (order.cart) {
         try {
             const parsed = typeof order.cart === 'string' ? JSON.parse(order.cart) : order.cart;
             if (Array.isArray(parsed) && parsed.length > 0) {
