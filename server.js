@@ -2822,19 +2822,49 @@ app.post("/api/kits", (req, res) => {
             return res.status(400).json({ ok: false, message: "quantity must be a non-negative integer" });
         }
 
-        // Check for duplicate
+        // Validate max 3 physical slots
+        const countRow = inventoryManager.db.prepare('SELECT COUNT(*) as count FROM inventory').get();
+        if (countRow && countRow.count >= 3) {
+            return res.status(400).json({
+                ok: false,
+                code: 'MAX_SLOTS_REACHED',
+                message: 'The dispenser has exactly 3 physical slots. Edit existing slots instead of adding new ones.'
+            });
+        }
+
+        // Validate motor_id in {1, 2, 3}
+        const motorNum = Number(motor_id);
+        if (!Number.isInteger(motorNum) || ![1, 2, 3].includes(motorNum)) {
+            return res.status(400).json({
+                ok: false,
+                code: 'INVALID_DISPENSER_SLOT',
+                message: 'motor_id must be 1, 2, or 3'
+            });
+        }
+
+        // Check for duplicate kit_id
         const existing = inventoryManager.getInventoryItem(kitIdStr);
         if (existing) {
             return res.status(409).json({ ok: false, message: `Kit '${kitIdStr}' already exists` });
         }
 
+        // Check for unique slot/motor assignment
+        const existingMotor = inventoryManager.db.prepare('SELECT kit_id FROM inventory WHERE motor_id = ?').get(motorNum);
+        if (existingMotor) {
+            return res.status(409).json({
+                ok: false,
+                code: 'SLOT_ALREADY_ASSIGNED',
+                message: `Motor slot ${motorNum} is already assigned to kit '${existingMotor.kit_id}'`
+            });
+        }
+
         inventoryManager.db.prepare(`
             INSERT INTO inventory (kit_id, name, price, quantity, description, motor_id, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-        `).run(kitIdStr, String(name).trim(), priceNum, qtyNum, String(description), motor_id);
+        `).run(kitIdStr, String(name).trim(), priceNum, qtyNum, String(description), motorNum);
 
         const created = inventoryManager.getInventoryItem(kitIdStr);
-        log.info(`✅ Kit created: ${kitIdStr} (${name}, ₹${priceNum}, qty ${qtyNum})`);
+        log.info(`✅ Kit created: ${kitIdStr} (${name}, ₹${priceNum}, qty ${qtyNum}, motor ${motorNum})`);
         res.status(201).json({ ok: true, kit: formatKitResponse(created) });
 
     } catch (err) {
@@ -2890,8 +2920,26 @@ app.patch("/api/kits/:id", (req, res) => {
             values.push(q);
         }
         if (req.body.motor_id !== undefined) {
+            const motorNum = Number(req.body.motor_id);
+            if (!Number.isInteger(motorNum) || ![1, 2, 3].includes(motorNum)) {
+                return res.status(400).json({
+                    ok: false,
+                    code: 'INVALID_DISPENSER_SLOT',
+                    message: "motor_id must be 1, 2, or 3"
+                });
+            }
+
+            const existingMotor = inventoryManager.db.prepare('SELECT kit_id FROM inventory WHERE motor_id = ? AND kit_id != ?').get(motorNum, kitId);
+            if (existingMotor) {
+                return res.status(409).json({
+                    ok: false,
+                    code: 'SLOT_ALREADY_ASSIGNED',
+                    message: `Motor slot ${motorNum} is already assigned to kit '${existingMotor.kit_id}'`
+                });
+            }
+
             sets.push('motor_id = ?');
-            values.push(req.body.motor_id === null ? null : String(req.body.motor_id));
+            values.push(motorNum);
         }
 
         if (sets.length === 0) {

@@ -83,8 +83,8 @@ try {
     // Seed inventory:
     // KIT-A: price ₹150 (₹150 + 12% = ₹168 + ₹2 = ₹170 -> 17000 paise)
     // KIT-B: price ₹25 (₹25 + 12% = ₹28 + ₹2 = ₹30 -> 3000 paise)
-    db.prepare("INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity) VALUES ('KIT-A', 'Medicine A ₹150', 150, 100)").run();
-    db.prepare("INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity) VALUES ('KIT-B', 'Medicine B ₹25', 25, 100)").run();
+    db.prepare("INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id) VALUES ('KIT-A', 'Medicine A ₹150', 150, 100, 1)").run();
+    db.prepare("INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id) VALUES ('KIT-B', 'Medicine B ₹25', 25, 100, 2)").run();
 
     // ───────────────────────────────────────────────────────────────────────
     // TEST 1: REFRESH IDEMPOTENCY (SAME CART)

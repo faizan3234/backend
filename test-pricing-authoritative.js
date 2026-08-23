@@ -128,8 +128,7 @@ db.prepare(`
     VALUES 
         ('KIT-BASE-32', 'Reliv Test Kit ₹32', 32, 100, 1),
         ('KIT-BASE-50', 'Reliv First Aid ₹50', 50, 50, 2),
-        ('KIT-BASE-120', 'Reliv Vitamin Pack ₹120', 120, 30, 3),
-        ('KIT-OUT-OF-STOCK', 'Out of stock kit', 40, 0, 4)
+        ('KIT-BASE-120', 'Reliv Vitamin Pack ₹120', 120, 30, 3)
 `).run();
 
 // Explicitly set 12% GST and ₹2 platform fee in test DB settings
@@ -263,7 +262,7 @@ assert(tx.amount === 3784, 'Transaction amount is authoritatively ₹37.84 (3784
     // 6.4 Insufficient stock
     let stockThrown = false;
     try {
-        pricingService.calculateAuthoritativeCartTotal([{ kit_id: 'KIT-OUT-OF-STOCK', quantity: 1 }]);
+        pricingService.calculateAuthoritativeCartTotal([{ kit_id: 'KIT-BASE-32', quantity: 999 }]);
     } catch (e) {
         stockThrown = e.code === 'INSUFFICIENT_STOCK' || e.message.includes('Insufficient stock');
     }

@@ -144,15 +144,18 @@ export class PaymentFinalizationService {
                 for (const item of cart) {
                     const kitId = item.kit_id || item.id || item.inventory_id;
                     const qty = Number(item.quantity || item.cartQuantity || 1);
+                    const motorId = (item.motor_id !== undefined && item.motor_id !== null) ? Number(item.motor_id) : null;
                     if (!kitId) continue;
 
                     try {
                         // fulfillmentManager.createJob is idempotent on (transaction_id, kit_id)
+                        // Uses the frozen motor_id from checkout
                         const job = await this.fulfillmentManager.createJob(
                             sessionId,
                             transactionId,
                             kitId,
-                            qty
+                            qty,
+                            motorId
                         );
 
                         allJobs.push(job);

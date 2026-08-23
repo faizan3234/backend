@@ -143,7 +143,7 @@ export class PricingService {
             }
 
             const inventoryItem = this.db.prepare(`
-                SELECT kit_id, name, price, quantity
+                SELECT kit_id, name, price, quantity, motor_id
                 FROM inventory
                 WHERE kit_id = ?
             `).get(kitId);
@@ -151,6 +151,14 @@ export class PricingService {
             if (!inventoryItem) {
                 const err = new Error(`Medicine ${kitId} not found in inventory`);
                 err.code = 'KIT_NOT_FOUND';
+                throw err;
+            }
+
+            const motorIdNum = (inventoryItem.motor_id !== null && inventoryItem.motor_id !== undefined) ? Number(inventoryItem.motor_id) : null;
+            if (!Number.isInteger(motorIdNum) || ![1, 2, 3].includes(motorIdNum)) {
+                const err = new Error(`No valid dispenser motor configured for medicine ${kitId} (motor_id: ${inventoryItem.motor_id}). Must be 1, 2, or 3.`);
+                err.code = 'INVALID_DISPENSER_SLOT';
+                err.kitId = kitId;
                 throw err;
             }
 
@@ -179,6 +187,7 @@ export class PricingService {
             items.push({
                 kit_id: kitId,
                 name: inventoryItem.name || kitId,
+                motor_id: motorIdNum,
                 unitPricePaise,
                 unitPriceRupees: unitPricePaise / 100,
                 quantity,

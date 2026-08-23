@@ -61,6 +61,18 @@ export class TransactionManager {
         const pricing = this.calculateAuthoritativePrice(serviceType, cart);
         const amount = pricing.totalPaise;
 
+        // Freeze cart with authoritative motor_id and item details before payment
+        const frozenCart = (serviceType === 'MEDICINE' && Array.isArray(pricing.items) && pricing.items.length > 0)
+            ? pricing.items.map(item => ({
+                kit_id: item.kit_id,
+                name: item.name,
+                quantity: item.quantity,
+                motor_id: item.motor_id,
+                unitPricePaise: item.unitPricePaise,
+                lineTotalPaise: item.subtotalPaise || (item.unitPricePaise * item.quantity)
+            }))
+            : cart;
+
         // Generate unique transaction ID
         const timestamp = Date.now();
         const random = Math.random().toString(36).substring(2, 10).toUpperCase();
@@ -78,7 +90,7 @@ export class TransactionManager {
             sessionId,
             serviceType,
             amount,
-            JSON.stringify(cart),
+            JSON.stringify(frozenCart),
             TRANSACTION_STATES.PENDING  // Changed from CREATED to PENDING
         );
 

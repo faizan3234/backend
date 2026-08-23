@@ -86,18 +86,18 @@ class FulfillmentManager {
       resolvedMotorId = Number(resolvedMotorId);
     }
 
-    // FAIL CLOSED: Motor ID must be a strictly positive integer (> 0).
-    // null, undefined, NaN, 0, negative, or non-integer values MUST be rejected.
+    // FAIL CLOSED: Motor ID must be an integer in {1, 2, 3}.
+    // null, undefined, NaN, 0, negative, > 3, or non-integer values MUST be rejected.
     if (
       resolvedMotorId === null ||
       resolvedMotorId === undefined ||
       isNaN(resolvedMotorId) ||
       !Number.isInteger(resolvedMotorId) ||
-      resolvedMotorId <= 0
+      ![1, 2, 3].includes(resolvedMotorId)
     ) {
-      console.error(`[FulfillmentManager] ❌ Dispense refused: No dispenser motor is configured for kit ${kitId} (motor_id: ${resolvedMotorId})`);
-      const err = new Error(`No dispenser motor is configured for kit ${kitId}.`);
-      err.code = 'MOTOR_NOT_CONFIGURED';
+      console.error(`[FulfillmentManager] ❌ Dispense refused: Invalid dispenser slot for kit ${kitId} (motor_id: ${resolvedMotorId}). Must be 1, 2, or 3.`);
+      const err = new Error(`No valid dispenser motor configured for kit ${kitId} (motor_id: ${resolvedMotorId}). Must be 1, 2, or 3.`);
+      err.code = 'INVALID_DISPENSER_SLOT';
       err.kitId = kitId;
       throw err;
     }
@@ -169,15 +169,15 @@ class FulfillmentManager {
       return false;
     }
 
-    // FAIL CLOSED: Motor number MUST be a strictly positive integer (> 0).
+    // FAIL CLOSED: Motor number MUST be in {1, 2, 3}.
     // NEVER fallback to motor 1 or any other default!
     const rawMotor = job.motor_id;
     const motorNumber = (rawMotor !== null && rawMotor !== undefined && !isNaN(Number(rawMotor))) ? Number(rawMotor) : null;
 
-    if (motorNumber === null || !Number.isInteger(motorNumber) || motorNumber <= 0) {
-      console.error(`[FulfillmentManager] ❌ Refusing MQTT publish: Job ${jobId} has invalid or unconfigured motor_id (${rawMotor})`);
-      const err = new Error(`Cannot dispense job ${jobId}: No valid dispenser motor is configured for kit ${job.kit_id} (motor_id: ${rawMotor}).`);
-      err.code = 'MOTOR_NOT_CONFIGURED';
+    if (motorNumber === null || !Number.isInteger(motorNumber) || ![1, 2, 3].includes(motorNumber)) {
+      console.error(`[FulfillmentManager] ❌ Refusing MQTT publish: Job ${jobId} has invalid or unconfigured motor_id (${rawMotor}). Must be 1, 2, or 3.`);
+      const err = new Error(`Cannot dispense job ${jobId}: Invalid dispenser slot for kit ${job.kit_id} (motor_id: ${rawMotor}). Must be 1, 2, or 3.`);
+      err.code = 'INVALID_DISPENSER_SLOT';
       err.jobId = jobId;
       err.kitId = job.kit_id;
       throw err;

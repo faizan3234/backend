@@ -85,6 +85,11 @@ export function initializeDatabase(customPath = null) {
             db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fulfillment_jobs_txn_kit ON fulfillment_jobs(transaction_id, kit_id);");
         } catch (e) {}
 
+        // Migration helper: ensure unique motor index on inventory table
+        try {
+            db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_motor_unique ON inventory(motor_id) WHERE motor_id IS NOT NULL;");
+        } catch (e) {}
+
         // Migration helper: ensure event_queue check constraint allows EMAIL_REPORT & EMAIL_RECEIPT
         try {
             const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='event_queue'").get();

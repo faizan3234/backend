@@ -67,7 +67,7 @@ try {
   // Seed settings and inventory
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('tax_rate', '12')").run();
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('platform_fee', '2')").run();
-  db.prepare("INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity) VALUES ('KIT-PARACETAMOL', 'Paracetamol 650mg', 32, 150)").run();
+  db.prepare("INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id) VALUES ('KIT-PARACETAMOL', 'Paracetamol 650mg', 32, 150, 1)").run();
 
   // 1. Simulate Journey A: Customer 1 begins and adds 1 kit (stock=150, cartQuantity=1)
   const session1 = sessionManager.createSession('KSK-CUST-1-JOURNEY');

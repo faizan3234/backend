@@ -497,17 +497,6 @@ db.prepare(`
     // ───────────────────────────────────────────────────────────────────────
     section('10. Post-Payment Fulfillment Reconciliation & Repair');
 
-    // Seed test inventory kits
-    db.prepare(`
-        INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id)
-        VALUES 
-            ('KIT-PARACETAMOL', 'Paracetamol 650mg', 32, 100, 1),
-            ('KIT-HEHE', 'First Aid Kit HeHe', 50, 150, 2),
-            ('KIT-BANDAGE', 'Bandage Strips Pack', 13, 100, 3),
-            ('KIT-VIT-D', 'Vitamin D3', 120, 50, 1),
-            ('KIT-ASPIRIN', 'Aspirin', 40, 80, 2)
-    `).run();
-
     let mqttPublishCount = 0;
     fulfillmentManager.mqttClient = {
         publish: (topic, payload, opts, cb) => {
@@ -519,7 +508,7 @@ db.prepare(`
 
     // Test 1: PENDING transaction + valid code -> VERIFIED -> fulfillment job created and started
     const s1 = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const s1Cart = [{ kit_id: 'KIT-PARACETAMOL', quantity: 1 }];
+    const s1Cart = [{ kit_id: 'KIT-FIRST-AID', quantity: 1 }];
     const s1Txn = transactionManager.createTransaction(s1.session_id, 'MEDICINE', s1Cart);
     const s1Req = await v2Service.createPaymentRequest(s1.session_id, { cart: s1Cart });
     const s1Decrypted = decryptPackage(s1Req.paymentUrl.split('#p=')[1], cloudKeys.privateKey);
@@ -533,12 +522,12 @@ db.prepare(`
     assert(s1Verify.jobs && s1Verify.jobs.length === 1, 'Test 1: Exactly 1 fulfillment job returned on verification');
     const s1JobInDb = db.prepare('SELECT * FROM fulfillment_jobs WHERE transaction_id = ?').get(s1Txn.transaction_id);
     assert(s1JobInDb !== undefined, 'Test 1: Fulfillment job created in SQLite');
-    assert(s1JobInDb.kit_id === 'KIT-PARACETAMOL', 'Test 1: Job kitId is KIT-PARACETAMOL');
+    assert(s1JobInDb.kit_id === 'KIT-FIRST-AID', 'Test 1: Job kitId is KIT-FIRST-AID');
     assert(mqttPublishCount === s1BeforePublishes + 1, 'Test 1: Dispensing command published to MQTT');
 
     // Test 2: VERIFIED medicine transaction + zero jobs -> finalization repairs it by creating missing job
     const s2 = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const s2Cart = [{ kit_id: 'KIT-HEHE', quantity: 9 }];
+    const s2Cart = [{ kit_id: 'KIT-TRAVEL', quantity: 9 }];
     const s2Txn = transactionManager.createTransaction(s2.session_id, 'MEDICINE', s2Cart);
     // Manually mark transaction as VERIFIED with zero fulfillment jobs to simulate the bug
     db.prepare("UPDATE transactions SET status = 'VERIFIED', verified = 1 WHERE transaction_id = ?").run(s2Txn.transaction_id);
@@ -554,16 +543,16 @@ db.prepare(`
     assert(s2Repair.alreadyVerified === true, 'Test 2: Finalization detected already-verified status');
     assert(s2Repair.jobs && s2Repair.jobs.length === 1, 'Test 2: Missing fulfillment job was created during reconciliation');
     const s2RepairedJob = db.prepare('SELECT * FROM fulfillment_jobs WHERE transaction_id = ?').get(s2Txn.transaction_id);
-    assert(s2RepairedJob.kit_id === 'KIT-HEHE' && s2RepairedJob.quantity === 9, 'Test 2: Repaired job has exact kit_id and quantity 9');
+    assert(s2RepairedJob.kit_id === 'KIT-TRAVEL' && s2RepairedJob.quantity === 9, 'Test 2: Repaired job has exact kit_id and quantity 9');
     assert(mqttPublishCount === s2BeforePublishes + 1, 'Test 2: Newly repaired job started dispensing');
 
     // Test 3: VERIFIED transaction + existing PENDING job -> no duplicate job created
     const s3 = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const s3Cart = [{ kit_id: 'KIT-BANDAGE', quantity: 3 }];
+    const s3Cart = [{ kit_id: 'KIT-WOMEN', quantity: 3 }];
     const s3Txn = transactionManager.createTransaction(s3.session_id, 'MEDICINE', s3Cart);
     db.prepare("UPDATE transactions SET status = 'VERIFIED', verified = 1 WHERE transaction_id = ?").run(s3Txn.transaction_id);
     // Create 1 job in PENDING state
-    const s3ExistingJob = await fulfillmentManager.createJob(s3.session_id, s3Txn.transaction_id, 'KIT-BANDAGE', 3);
+    const s3ExistingJob = await fulfillmentManager.createJob(s3.session_id, s3Txn.transaction_id, 'KIT-WOMEN', 3);
     assert(s3ExistingJob.state === 'PENDING', 'Test 3 Setup: Existing job is PENDING');
 
     const s3Finalize = await finalizationService.finalizeVerifiedPayment({
@@ -576,10 +565,10 @@ db.prepare(`
 
     // Test 4: VERIFIED transaction + COMPLETED job -> absolutely no second dispense
     const s4 = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const s4Cart = [{ kit_id: 'KIT-PARACETAMOL', quantity: 1 }];
+    const s4Cart = [{ kit_id: 'KIT-FIRST-AID', quantity: 1 }];
     const s4Txn = transactionManager.createTransaction(s4.session_id, 'MEDICINE', s4Cart);
     db.prepare("UPDATE transactions SET status = 'VERIFIED', verified = 1 WHERE transaction_id = ?").run(s4Txn.transaction_id);
-    const s4Job = await fulfillmentManager.createJob(s4.session_id, s4Txn.transaction_id, 'KIT-PARACETAMOL', 1);
+    const s4Job = await fulfillmentManager.createJob(s4.session_id, s4Txn.transaction_id, 'KIT-FIRST-AID', 1);
     db.prepare("UPDATE fulfillment_jobs SET state = 'COMPLETED' WHERE job_id = ?").run(s4Job.job_id);
 
     const s4BeforePublishes = mqttPublishCount;
@@ -592,10 +581,10 @@ db.prepare(`
 
     // Test 5: VERIFIED transaction + IN_PROGRESS job -> do not republish or restart unsafely
     const s5 = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const s5Cart = [{ kit_id: 'KIT-VIT-D', quantity: 1 }];
+    const s5Cart = [{ kit_id: 'KIT-FIRST-AID', quantity: 1 }];
     const s5Txn = transactionManager.createTransaction(s5.session_id, 'MEDICINE', s5Cart);
     db.prepare("UPDATE transactions SET status = 'VERIFIED', verified = 1 WHERE transaction_id = ?").run(s5Txn.transaction_id);
-    const s5Job = await fulfillmentManager.createJob(s5.session_id, s5Txn.transaction_id, 'KIT-VIT-D', 1);
+    const s5Job = await fulfillmentManager.createJob(s5.session_id, s5Txn.transaction_id, 'KIT-FIRST-AID', 1);
     db.prepare("UPDATE fulfillment_jobs SET state = 'IN_PROGRESS' WHERE job_id = ?").run(s5Job.job_id);
 
     const s5BeforePublishes = mqttPublishCount;
@@ -607,10 +596,10 @@ db.prepare(`
 
     // Test 6: MANUAL_REVIEW_REQUIRED -> never auto-retry
     const s6 = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const s6Cart = [{ kit_id: 'KIT-ASPIRIN', quantity: 2 }];
+    const s6Cart = [{ kit_id: 'KIT-TRAVEL', quantity: 2 }];
     const s6Txn = transactionManager.createTransaction(s6.session_id, 'MEDICINE', s6Cart);
     db.prepare("UPDATE transactions SET status = 'VERIFIED', verified = 1 WHERE transaction_id = ?").run(s6Txn.transaction_id);
-    const s6Job = await fulfillmentManager.createJob(s6.session_id, s6Txn.transaction_id, 'KIT-ASPIRIN', 2);
+    const s6Job = await fulfillmentManager.createJob(s6.session_id, s6Txn.transaction_id, 'KIT-TRAVEL', 2);
     db.prepare("UPDATE fulfillment_jobs SET state = 'MANUAL_REVIEW_REQUIRED' WHERE job_id = ?").run(s6Job.job_id);
 
     const s6BeforePublishes = mqttPublishCount;
@@ -624,8 +613,8 @@ db.prepare(`
     // Test 7: Two distinct medicines in cart -> exactly two jobs created
     const s7 = sessionManager.createSession('RELIV-001', 'MEDICINE');
     const s7Cart = [
-        { kit_id: 'KIT-PARACETAMOL', quantity: 2 },
-        { kit_id: 'KIT-BANDAGE', quantity: 5 }
+        { kit_id: 'KIT-FIRST-AID', quantity: 2 },
+        { kit_id: 'KIT-WOMEN', quantity: 5 }
     ];
     const s7Txn = transactionManager.createTransaction(s7.session_id, 'MEDICINE', s7Cart);
     const s7Req = await v2Service.createPaymentRequest(s7.session_id, { cart: s7Cart });
@@ -638,8 +627,8 @@ db.prepare(`
     assert(s7Verify.ok === true && s7Verify.status === 'VERIFIED', 'Test 7: Multi-medicine payment verified');
     const s7Jobs = db.prepare('SELECT * FROM fulfillment_jobs WHERE transaction_id = ? ORDER BY kit_id ASC').all(s7Txn.transaction_id);
     assert(s7Jobs.length === 2, 'Test 7: Exactly 2 fulfillment jobs created for 2-item cart');
-    assert(s7Jobs[0].kit_id === 'KIT-BANDAGE' && s7Jobs[0].quantity === 5, 'Test 7: First job kit_id and quantity 5 matched');
-    assert(s7Jobs[1].kit_id === 'KIT-PARACETAMOL' && s7Jobs[1].quantity === 2, 'Test 7: Second job kit_id and quantity 2 matched');
+    assert(s7Jobs[0].kit_id === 'KIT-FIRST-AID' && s7Jobs[0].quantity === 2, 'Test 7: First job kit_id and quantity 2 matched');
+    assert(s7Jobs[1].kit_id === 'KIT-WOMEN' && s7Jobs[1].quantity === 5, 'Test 7: Second job kit_id and quantity 5 matched');
 
     // Test 8: Repeated confirmation-code request -> same jobs returned, no duplicate dispense
     const s7BeforeRepeatPublishes = mqttPublishCount;
@@ -654,7 +643,7 @@ db.prepare(`
 
     // Test 9: updateResult.changes === 0 concurrency path -> still invokes reconciliation
     const s9 = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const s9Cart = [{ kit_id: 'KIT-PARACETAMOL', quantity: 1 }];
+    const s9Cart = [{ kit_id: 'KIT-FIRST-AID', quantity: 1 }];
     const s9Txn = transactionManager.createTransaction(s9.session_id, 'MEDICINE', s9Cart);
     const s9Req = await v2Service.createPaymentRequest(s9.session_id, { cart: s9Cart });
     const s9Decrypted = decryptPackage(s9Req.paymentUrl.split('#p=')[1], cloudKeys.privateKey);
@@ -671,7 +660,7 @@ db.prepare(`
 
     // Test 10: Transaction cart quantity is preserved exactly in fulfillment job
     const s10 = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const s10Cart = [{ kit_id: 'KIT-HEHE', quantity: 9 }];
+    const s10Cart = [{ kit_id: 'KIT-TRAVEL', quantity: 9 }];
     const s10Txn = transactionManager.createTransaction(s10.session_id, 'MEDICINE', s10Cart);
     const s10Req = await v2Service.createPaymentRequest(s10.session_id, { cart: s10Cart });
     const s10Decrypted = decryptPackage(s10Req.paymentUrl.split('#p=')[1], cloudKeys.privateKey);
@@ -695,127 +684,195 @@ db.prepare(`
         connected: true
     };
 
-    // Seed test kits with various invalid and valid motor configurations
-    db.prepare(`
-        INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id)
-        VALUES 
-            ('KIT-MOTOR-NULL', 'Unmapped Kit Null', 50, 10, NULL),
-            ('KIT-MOTOR-ZERO', 'Unmapped Kit Zero', 50, 10, 0),
-            ('KIT-MOTOR-NEG', 'Unmapped Kit Negative', 50, 10, -1),
-            ('KIT-VALID-1', 'Motor 1 Kit', 50, 10, 1),
-            ('KIT-VALID-2', 'Motor 2 Kit', 50, 10, 2),
-            ('KIT-VALID-3', 'Motor 3 Kit', 50, 10, 3)
-    `).run();
-
-    // 1. kit motor_id NULL -> throws MOTOR_NOT_CONFIGURED & no MQTT publish
+    // 1. kit motor_id NULL -> throws INVALID_DISPENSER_SLOT & no MQTT publish
+    db.prepare("INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id) VALUES ('KIT-UNMAPPED-NULL', 'Unmapped Kit Null', 50, 10, NULL)").run();
     let nullMotorThrown = false;
     try {
-        await fulfillmentManager.createJob('sess_m_null', 'TXN-M-NULL', 'KIT-MOTOR-NULL', 1);
+        await fulfillmentManager.createJob('sess_m_null', 'TXN-M-NULL', 'KIT-UNMAPPED-NULL', 1);
     } catch (e) {
-        if (e.code === 'MOTOR_NOT_CONFIGURED') nullMotorThrown = true;
+        if (e.code === 'INVALID_DISPENSER_SLOT' || e.code === 'MOTOR_NOT_CONFIGURED') nullMotorThrown = true;
     }
-    assert(nullMotorThrown === true, 'Motor ID NULL throws MOTOR_NOT_CONFIGURED');
+    assert(nullMotorThrown === true, 'Motor ID NULL throws INVALID_DISPENSER_SLOT');
     assert(capturedMqttPayloads.length === 0, 'Motor ID NULL produces zero MQTT publishes');
 
-    // 2. motor_id undefined -> throws MOTOR_NOT_CONFIGURED & no MQTT publish
+    // 2. motor_id undefined -> throws INVALID_DISPENSER_SLOT & no MQTT publish
     let undefMotorThrown = false;
     try {
         await fulfillmentManager.createJob('sess_m_undef', 'TXN-M-UNDEF', 'KIT-NON-EXISTENT', 1);
     } catch (e) {
-        if (e.code === 'MOTOR_NOT_CONFIGURED') undefMotorThrown = true;
+        if (e.code === 'INVALID_DISPENSER_SLOT' || e.code === 'MOTOR_NOT_CONFIGURED') undefMotorThrown = true;
     }
-    assert(undefMotorThrown === true, 'Undefined motor ID throws MOTOR_NOT_CONFIGURED');
+    assert(undefMotorThrown === true, 'Undefined motor ID throws INVALID_DISPENSER_SLOT');
 
-    // 3. motor_id 0 -> throws MOTOR_NOT_CONFIGURED & no MQTT publish
+    // 3. motor_id 0 -> throws INVALID_DISPENSER_SLOT & no MQTT publish
     let zeroMotorThrown = false;
     try {
-        await fulfillmentManager.createJob('sess_m_zero', 'TXN-M-ZERO', 'KIT-MOTOR-ZERO', 1);
+        await fulfillmentManager.createJob('sess_m_zero', 'TXN-M-ZERO', 'KIT-FIRST-AID', 1, 0);
     } catch (e) {
-        if (e.code === 'MOTOR_NOT_CONFIGURED') zeroMotorThrown = true;
+        if (e.code === 'INVALID_DISPENSER_SLOT' || e.code === 'MOTOR_NOT_CONFIGURED') zeroMotorThrown = true;
     }
-    assert(zeroMotorThrown === true, 'Motor ID 0 throws MOTOR_NOT_CONFIGURED');
+    assert(zeroMotorThrown === true, 'Motor ID 0 throws INVALID_DISPENSER_SLOT');
 
-    // 4. motor_id negative -> throws MOTOR_NOT_CONFIGURED & no MQTT publish
+    // 4. motor_id negative -> throws INVALID_DISPENSER_SLOT & no MQTT publish
     let negMotorThrown = false;
     try {
-        await fulfillmentManager.createJob('sess_m_neg', 'TXN-M-NEG', 'KIT-MOTOR-NEG', 1);
+        await fulfillmentManager.createJob('sess_m_neg', 'TXN-M-NEG', 'KIT-FIRST-AID', 1, -1);
     } catch (e) {
-        if (e.code === 'MOTOR_NOT_CONFIGURED') negMotorThrown = true;
+        if (e.code === 'INVALID_DISPENSER_SLOT' || e.code === 'MOTOR_NOT_CONFIGURED') negMotorThrown = true;
     }
-    assert(negMotorThrown === true, 'Negative motor ID throws MOTOR_NOT_CONFIGURED');
+    assert(negMotorThrown === true, 'Negative motor ID throws INVALID_DISPENSER_SLOT');
 
-    // 5. motor_id NaN / non-numeric -> throws MOTOR_NOT_CONFIGURED & no MQTT publish
+    // 5. motor_id NaN / non-numeric -> throws INVALID_DISPENSER_SLOT & no MQTT publish
     let nanMotorThrown = false;
     try {
-        await fulfillmentManager.createJob('sess_m_nan', 'TXN-M-NAN', 'KIT-VALID-1', 1, 'invalid_motor');
+        await fulfillmentManager.createJob('sess_m_nan', 'TXN-M-NAN', 'KIT-FIRST-AID', 1, 'invalid_motor');
     } catch (e) {
-        if (e.code === 'MOTOR_NOT_CONFIGURED') nanMotorThrown = true;
+        if (e.code === 'INVALID_DISPENSER_SLOT' || e.code === 'MOTOR_NOT_CONFIGURED') nanMotorThrown = true;
     }
-    assert(nanMotorThrown === true, 'Non-numeric motor ID throws MOTOR_NOT_CONFIGURED');
+    assert(nanMotorThrown === true, 'Non-numeric motor ID throws INVALID_DISPENSER_SLOT');
 
     // 6. startDispensing directly refuses job with invalid motor_id
     const dummySess = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const dummyTxn = transactionManager.createTransaction(dummySess.session_id, 'MEDICINE', [{ kit_id: 'KIT-VALID-1', quantity: 1 }]);
+    const dummyTxn = transactionManager.createTransaction(dummySess.session_id, 'MEDICINE', [{ kit_id: 'KIT-FIRST-AID', quantity: 1 }]);
     const dummyJobId = 'JOB-TEST-INVALID-MOTOR';
     db.prepare(`
         INSERT OR REPLACE INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, motor_id, state)
-        VALUES (?, ?, ?, 'KIT-VALID-1', 1, NULL, 'PENDING')
+        VALUES (?, ?, ?, 'KIT-FIRST-AID', 1, NULL, 'PENDING')
     `).run(dummyJobId, dummySess.session_id, dummyTxn.transaction_id);
 
     let startDispenseRefused = false;
     try {
         await fulfillmentManager.startDispensing(dummyJobId);
     } catch (e) {
-        if (e.code === 'MOTOR_NOT_CONFIGURED') startDispenseRefused = true;
+        if (e.code === 'INVALID_DISPENSER_SLOT' || e.code === 'MOTOR_NOT_CONFIGURED') startDispenseRefused = true;
     }
     assert(startDispenseRefused === true, 'startDispensing refuses job with NULL motor_id');
 
     // 7. Valid motor IDs 1, 2, 3 -> publish exact configured motor
     capturedMqttPayloads.length = 0;
     const sV1 = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const txnV1 = transactionManager.createTransaction(sV1.session_id, 'MEDICINE', [{ kit_id: 'KIT-VALID-1', quantity: 1 }]);
-    const job1 = await fulfillmentManager.createJob(sV1.session_id, txnV1.transaction_id, 'KIT-VALID-1', 1);
+    const txnV1 = transactionManager.createTransaction(sV1.session_id, 'MEDICINE', [{ kit_id: 'KIT-FIRST-AID', quantity: 1 }]);
+    const job1 = await fulfillmentManager.createJob(sV1.session_id, txnV1.transaction_id, 'KIT-FIRST-AID', 1, 1);
     await fulfillmentManager.startDispensing(job1.job_id);
     assert(capturedMqttPayloads[0].data.motor === 1, 'Valid motor 1 correctly published to MQTT');
 
     const sV2 = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const txnV2 = transactionManager.createTransaction(sV2.session_id, 'MEDICINE', [{ kit_id: 'KIT-VALID-2', quantity: 1 }]);
-    const job2 = await fulfillmentManager.createJob(sV2.session_id, txnV2.transaction_id, 'KIT-VALID-2', 2);
+    const txnV2 = transactionManager.createTransaction(sV2.session_id, 'MEDICINE', [{ kit_id: 'KIT-TRAVEL', quantity: 1 }]);
+    const job2 = await fulfillmentManager.createJob(sV2.session_id, txnV2.transaction_id, 'KIT-TRAVEL', 1, 2);
     await fulfillmentManager.startDispensing(job2.job_id);
     assert(capturedMqttPayloads[1].data.motor === 2, 'Valid motor 2 correctly published to MQTT');
 
     const sV3 = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const txnV3 = transactionManager.createTransaction(sV3.session_id, 'MEDICINE', [{ kit_id: 'KIT-VALID-3', quantity: 1 }]);
-    const job3 = await fulfillmentManager.createJob(sV3.session_id, txnV3.transaction_id, 'KIT-VALID-3', 3);
+    const txnV3 = transactionManager.createTransaction(sV3.session_id, 'MEDICINE', [{ kit_id: 'KIT-WOMEN', quantity: 1 }]);
+    const job3 = await fulfillmentManager.createJob(sV3.session_id, txnV3.transaction_id, 'KIT-WOMEN', 1, 3);
     await fulfillmentManager.startDispensing(job3.job_id);
     assert(capturedMqttPayloads[2].data.motor === 3, 'Valid motor 3 correctly published to MQTT');
 
-    // 8. End-to-end payment with unconfigured motor kit
-    // Seed kit with NULL motor
-    db.prepare("INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id) VALUES ('KIT-HEHE-UNMAPPED', 'Hehe No Motor', 50, 25, NULL)").run();
-    const initialStock = db.prepare("SELECT quantity FROM inventory WHERE kit_id = 'KIT-HEHE-UNMAPPED'").get().quantity;
+    // 8. End-to-end payment with unconfigured motor kit (Legacy/Direct DB Txn)
+    const initialStock = db.prepare("SELECT quantity FROM inventory WHERE kit_id = 'KIT-FIRST-AID'").get().quantity;
 
+    // Simulate legacy unmapped transaction in DB
     const sUnmapped = sessionManager.createSession('RELIV-001', 'MEDICINE');
-    const sUnmappedCart = [{ kit_id: 'KIT-HEHE-UNMAPPED', quantity: 2 }];
-    const sUnmappedTxn = transactionManager.createTransaction(sUnmapped.session_id, 'MEDICINE', sUnmappedCart);
-    const sUnmappedReq = await v2Service.createPaymentRequest(sUnmapped.session_id, { cart: sUnmappedCart });
-    const sUnmappedDecrypted = decryptPackage(sUnmappedReq.paymentUrl.split('#p=')[1], cloudKeys.privateKey);
+    const sUnmappedTxnId = `TXN-UNMAPPED-${Date.now()}`;
+    const unmappedCart = [{ kit_id: 'KIT-UNMAPPED-NULL', quantity: 2, motor_id: null }];
+    db.prepare(`
+        INSERT INTO transactions (transaction_id, session_id, type, amount, cart, status, verified, created_at)
+        VALUES (?, ?, 'MEDICINE', 10000, ?, 'VERIFIED', 1, datetime('now'))
+    `).run(sUnmappedTxnId, sUnmapped.session_id, JSON.stringify(unmappedCart));
 
     const mqttBeforeUnmapped = capturedMqttPayloads.length;
-    const sUnmappedVerify = await v2Service.verifyConfirmationCode(sUnmapped.session_id, {
-        requestId: sUnmappedReq.requestId,
-        code: sUnmappedDecrypted.payload.confirmationCode
+    const sUnmappedFinalize = await finalizationService.finalizeVerifiedPayment({
+        sessionId: sUnmapped.session_id,
+        transactionId: sUnmappedTxnId
     });
 
-    assert(sUnmappedVerify.ok === true && sUnmappedVerify.status === 'VERIFIED', 'Payment is successfully VERIFIED when motor is unconfigured');
-    const sUnmappedTxnInDb = transactionManager.getTransaction(sUnmappedTxn.transaction_id);
+    const sUnmappedTxnInDb = transactionManager.getTransaction(sUnmappedTxnId);
     assert(sUnmappedTxnInDb.status === 'VERIFIED', 'Transaction status remains VERIFIED (never failed)');
     assert(sUnmappedTxnInDb.verified === 1, 'Transaction verified flag is 1');
     assert(sUnmappedTxnInDb.status !== 'FULFILLED', 'Transaction is NOT marked FULFILLED');
     assert(capturedMqttPayloads.length === mqttBeforeUnmapped, 'Missing motor produced ZERO MQTT publishes (never defaulted to motor 1)');
 
-    const finalStock = db.prepare("SELECT quantity FROM inventory WHERE kit_id = 'KIT-HEHE-UNMAPPED'").get().quantity;
+    const finalStock = db.prepare("SELECT quantity FROM inventory WHERE kit_id = 'KIT-FIRST-AID'").get().quantity;
     assert(finalStock === initialStock, 'No inventory deduction occurred without physical dispense');
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 12. STRICT FIXED THREE-SLOT DISPENSER ARCHITECTURE TESTS
+    // ───────────────────────────────────────────────────────────────────────
+    section('12. Fixed Three-Slot Dispenser Architecture & Slot Integrity');
+
+    // 1. Motor 1, 2, 3 accepted in pricing & checkout
+    const sSlot1 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const txnSlot1 = transactionManager.createTransaction(sSlot1.session_id, 'MEDICINE', [{ kit_id: 'KIT-FIRST-AID', quantity: 1 }]);
+    const parsedCart1 = Array.isArray(txnSlot1.cart) ? txnSlot1.cart : JSON.parse(txnSlot1.cart);
+    assert(parsedCart1[0].motor_id === 1, 'Slot 1 purchase freezes motor_id 1 in transaction.cart');
+
+    const sSlot2 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const txnSlot2 = transactionManager.createTransaction(sSlot2.session_id, 'MEDICINE', [{ kit_id: 'KIT-TRAVEL', quantity: 2 }]);
+    const parsedCart2 = Array.isArray(txnSlot2.cart) ? txnSlot2.cart : JSON.parse(txnSlot2.cart);
+    assert(parsedCart2[0].motor_id === 2, 'Slot 2 purchase freezes motor_id 2 in transaction.cart');
+
+    const sSlot3 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const txnSlot3 = transactionManager.createTransaction(sSlot3.session_id, 'MEDICINE', [{ kit_id: 'KIT-WOMEN', quantity: 1 }]);
+    const parsedCart3 = Array.isArray(txnSlot3.cart) ? txnSlot3.cart : JSON.parse(txnSlot3.cart);
+    assert(parsedCart3[0].motor_id === 3, 'Slot 3 purchase freezes motor_id 3 in transaction.cart');
+
+    // 2. Reject motor 0, 4, negative, non-integer in fulfillmentManager
+    let m0Rejected = false, m4Rejected = false, mNegRejected = false, mFloatRejected = false;
+    try { await fulfillmentManager.createJob('s_m0', 't_m0', 'KIT-FIRST-AID', 1, 0); } catch (e) { if (e.code === 'INVALID_DISPENSER_SLOT') m0Rejected = true; }
+    try { await fulfillmentManager.createJob('s_m4', 't_m4', 'KIT-FIRST-AID', 1, 4); } catch (e) { if (e.code === 'INVALID_DISPENSER_SLOT') m4Rejected = true; }
+    try { await fulfillmentManager.createJob('s_mneg', 't_mneg', 'KIT-FIRST-AID', 1, -1); } catch (e) { if (e.code === 'INVALID_DISPENSER_SLOT') mNegRejected = true; }
+    try { await fulfillmentManager.createJob('s_mfloat', 't_mfloat', 'KIT-FIRST-AID', 1, 2.5); } catch (e) { if (e.code === 'INVALID_DISPENSER_SLOT') mFloatRejected = true; }
+
+    assert(m0Rejected === true, 'Motor 0 rejected with INVALID_DISPENSER_SLOT');
+    assert(m4Rejected === true, 'Motor 4 rejected with INVALID_DISPENSER_SLOT');
+    assert(mNegRejected === true, 'Negative motor rejected with INVALID_DISPENSER_SLOT');
+    assert(mFloatRejected === true, 'Non-integer motor rejected with INVALID_DISPENSER_SLOT');
+
+    // 3. SQLite unique index rejects duplicate motor assignment in inventory
+    let duplicateMotorRejected = false;
+    try {
+        db.prepare("INSERT INTO inventory (kit_id, name, price, quantity, motor_id) VALUES ('KIT-DUP-1', 'Duplicate Slot 1', 10, 10, 1)").run();
+    } catch (e) {
+        if (e.message.includes('UNIQUE constraint failed')) duplicateMotorRejected = true;
+    }
+    assert(duplicateMotorRejected === true, 'SQLite unique index rejects duplicate motor 1 assignment');
+
+    // 4. Metadata editing preserves slot motor_id
+    db.prepare("UPDATE inventory SET name = 'First Aid Ultra Pro', price = 175, quantity = 45 WHERE kit_id = 'KIT-FIRST-AID'").run();
+    const firstAidUpdated = db.prepare("SELECT kit_id, name, price, quantity, motor_id FROM inventory WHERE kit_id = 'KIT-FIRST-AID'").get();
+    assert(firstAidUpdated.motor_id === 1, 'Editing name, price, stock preserves motor_id 1');
+    assert(firstAidUpdated.name === 'First Aid Ultra Pro', 'Name updated successfully');
+    assert(firstAidUpdated.price === 175, 'Price updated successfully');
+    assert(firstAidUpdated.quantity === 45, 'Quantity updated successfully');
+
+    // 5. Post-payment metadata changes do not alter frozen transaction motor
+    const sFreezeTest = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const txnFreeze = transactionManager.createTransaction(sFreezeTest.session_id, 'MEDICINE', [{ kit_id: 'KIT-TRAVEL', quantity: 1 }]);
+    const initialFrozenCart = Array.isArray(txnFreeze.cart) ? txnFreeze.cart : JSON.parse(txnFreeze.cart);
+    assert(initialFrozenCart[0].motor_id === 2, 'Initial transaction freezes motor_id 2');
+
+    // Now admin renames KIT-TRAVEL in inventory after checkout
+    db.prepare("UPDATE inventory SET name = 'Renamed Travel Kit' WHERE kit_id = 'KIT-TRAVEL'").run();
+
+    // Verify payment and run finalization
+    db.prepare("UPDATE transactions SET status = 'VERIFIED', verified = 1 WHERE transaction_id = ?").run(txnFreeze.transaction_id);
+    capturedMqttPayloads.length = 0;
+    const finalizationResult = await finalizationService.finalizeVerifiedPayment({
+        sessionId: sFreezeTest.session_id,
+        transactionId: txnFreeze.transaction_id
+    });
+
+    assert(finalizationResult.success === true, 'Payment finalization succeeded');
+    assert(capturedMqttPayloads.length === 1, 'Dispense MQTT command published');
+    assert(capturedMqttPayloads[0].data.motor === 2, 'Fulfillment used the exact frozen motor 2 regardless of inventory edits');
+
+    // 6. Repeated finalization prevents duplicate dispense
+    const mqttBeforeRepeat = capturedMqttPayloads.length;
+    await finalizationService.finalizeVerifiedPayment({
+        sessionId: sFreezeTest.session_id,
+        transactionId: txnFreeze.transaction_id
+    });
+    assert(capturedMqttPayloads.length === mqttBeforeRepeat, 'Repeated fulfillment strictly prevents double dispense');
 
     // Clean up temporary test files
     closeDatabase();

@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS inventory (
 );
 
 CREATE INDEX IF NOT EXISTS idx_inventory_motor ON inventory(motor_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_motor_unique ON inventory(motor_id) WHERE motor_id IS NOT NULL;
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- INVENTORY_RESERVATIONS - Prevent double-dispensing
