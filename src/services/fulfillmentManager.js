@@ -69,6 +69,39 @@ class FulfillmentManager {
    * @returns {Promise<object>} - Created or existing job
    */
   async createJob(sessionId, transactionId, kitId, quantity = 1, motorId = null) {
+    // Resolve and strictly validate dispenser motor ID before creating job
+    let resolvedMotorId = motorId;
+    if (resolvedMotorId === null || resolvedMotorId === undefined) {
+      try {
+        const invItem = this.db.prepare('SELECT motor_id FROM inventory WHERE kit_id = ?').get(kitId);
+        if (invItem && invItem.motor_id !== null && invItem.motor_id !== undefined) {
+          resolvedMotorId = Number(invItem.motor_id);
+        } else {
+          resolvedMotorId = null;
+        }
+      } catch (e) {
+        resolvedMotorId = null;
+      }
+    } else {
+      resolvedMotorId = Number(resolvedMotorId);
+    }
+
+    // FAIL CLOSED: Motor ID must be a strictly positive integer (> 0).
+    // null, undefined, NaN, 0, negative, or non-integer values MUST be rejected.
+    if (
+      resolvedMotorId === null ||
+      resolvedMotorId === undefined ||
+      isNaN(resolvedMotorId) ||
+      !Number.isInteger(resolvedMotorId) ||
+      resolvedMotorId <= 0
+    ) {
+      console.error(`[FulfillmentManager] ❌ Dispense refused: No dispenser motor is configured for kit ${kitId} (motor_id: ${resolvedMotorId})`);
+      const err = new Error(`No dispenser motor is configured for kit ${kitId}.`);
+      err.code = 'MOTOR_NOT_CONFIGURED';
+      err.kitId = kitId;
+      throw err;
+    }
+
     // Check if fulfillment job already exists for this specific (transaction_id, kit_id)
     const existing = this.db.prepare(`
       SELECT * FROM fulfillment_jobs
@@ -97,18 +130,7 @@ class FulfillmentManager {
       return existing;
     }
 
-    // Resolve motor from SQLite inventory if not explicitly provided
-    let resolvedMotorId = motorId;
-    if (resolvedMotorId === null || resolvedMotorId === undefined) {
-      try {
-        const invItem = this.db.prepare('SELECT motor_id FROM inventory WHERE kit_id = ?').get(kitId);
-        resolvedMotorId = (invItem && invItem.motor_id !== null && invItem.motor_id !== undefined) ? Number(invItem.motor_id) : null;
-      } catch (e) {
-        resolvedMotorId = null;
-      }
-    }
-
-    // Create new job with frozen motor_id
+    // Create new job with frozen verified motor_id
     const jobId = this.generateJobId();
     
     this.db.prepare(`
@@ -120,7 +142,7 @@ class FulfillmentManager {
     const job = this.db.prepare('SELECT * FROM fulfillment_jobs WHERE job_id = ?').get(jobId);
     
     console.log(`✅ Fulfillment job created: ${jobId}`);
-    console.log(`   Transaction: ${transactionId}, Kit: ${kitId}, Motor: ${resolvedMotorId ?? 'N/A'}, Quantity: ${quantity}`);
+    console.log(`   Transaction: ${transactionId}, Kit: ${kitId}, Motor: ${resolvedMotorId}, Quantity: ${quantity}`);
     
     return job;
   }
@@ -147,8 +169,19 @@ class FulfillmentManager {
       return false;
     }
 
-    // Resolve motor number (never kit id)
-    const motorNumber = (job.motor_id !== null && job.motor_id !== undefined) ? Number(job.motor_id) : 1;
+    // FAIL CLOSED: Motor number MUST be a strictly positive integer (> 0).
+    // NEVER fallback to motor 1 or any other default!
+    const rawMotor = job.motor_id;
+    const motorNumber = (rawMotor !== null && rawMotor !== undefined && !isNaN(Number(rawMotor))) ? Number(rawMotor) : null;
+
+    if (motorNumber === null || !Number.isInteger(motorNumber) || motorNumber <= 0) {
+      console.error(`[FulfillmentManager] ❌ Refusing MQTT publish: Job ${jobId} has invalid or unconfigured motor_id (${rawMotor})`);
+      const err = new Error(`Cannot dispense job ${jobId}: No valid dispenser motor is configured for kit ${job.kit_id} (motor_id: ${rawMotor}).`);
+      err.code = 'MOTOR_NOT_CONFIGURED';
+      err.jobId = jobId;
+      err.kitId = job.kit_id;
+      throw err;
+    }
 
     // Prepare canonical secure MQTT payload
     const topic = `reliv/dispense/${jobId}`;

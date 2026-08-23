@@ -138,36 +138,45 @@ export class PaymentFinalizationService {
             // Reconcile fulfillment jobs for every kit in cart
             const jobsToDispense = [];
 
+            let fulfillmentError = null;
+
             if (cart.length > 0) {
                 for (const item of cart) {
                     const kitId = item.kit_id || item.id || item.inventory_id;
                     const qty = Number(item.quantity || item.cartQuantity || 1);
                     if (!kitId) continue;
 
-                    // fulfillmentManager.createJob is idempotent on (transaction_id, kit_id)
-                    const job = await this.fulfillmentManager.createJob(
-                        sessionId,
-                        transactionId,
-                        kitId,
-                        qty
-                    );
+                    try {
+                        // fulfillmentManager.createJob is idempotent on (transaction_id, kit_id)
+                        const job = await this.fulfillmentManager.createJob(
+                            sessionId,
+                            transactionId,
+                            kitId,
+                            qty
+                        );
 
-                    allJobs.push(job);
+                        allJobs.push(job);
 
-                    // Safety Rule: Only newly created or safely PENDING jobs may be passed to startDispensing().
-                    // Existing COMPLETED, IN_PROGRESS, MANUAL_REVIEW_REQUIRED, or FAILED jobs must NOT be restarted unsafely.
-                    if (job && job.state === 'PENDING') {
-                        jobsToDispense.push(job);
+                        // Safety Rule: Only newly created or safely PENDING jobs may be passed to startDispensing().
+                        // Existing COMPLETED, IN_PROGRESS, MANUAL_REVIEW_REQUIRED, or FAILED jobs must NOT be restarted unsafely.
+                        if (job && job.state === 'PENDING') {
+                            jobsToDispense.push(job);
+                        }
+                    } catch (jobErr) {
+                        console.error(`[PaymentFinalization] ❌ Could not create fulfillment job for kit ${kitId}:`, jobErr.message);
+                        fulfillmentError = jobErr;
                     }
                 }
 
-                // Mark session fulfillment if in PAYMENT_VERIFIED or PAYMENT_REQUIRED
-                const freshSession = this.sessionManager.getSession(sessionId);
-                if (freshSession && (freshSession.status === 'PAYMENT_VERIFIED' || freshSession.status === 'PAYMENT_REQUIRED')) {
-                    try {
-                        this.sessionManager.markFulfillment(sessionId);
-                    } catch (e) {
-                        console.warn(`[PaymentFinalization] Could not mark session fulfillment:`, e.message);
+                // Mark session fulfillment ONLY if at least one job is actually in progress/dispensing
+                if (jobsToDispense.length > 0) {
+                    const freshSession = this.sessionManager.getSession(sessionId);
+                    if (freshSession && (freshSession.status === 'PAYMENT_VERIFIED' || freshSession.status === 'PAYMENT_REQUIRED')) {
+                        try {
+                            this.sessionManager.markFulfillment(sessionId);
+                        } catch (e) {
+                            console.warn(`[PaymentFinalization] Could not mark session fulfillment:`, e.message);
+                        }
                     }
                 }
             } else {
@@ -181,7 +190,7 @@ export class PaymentFinalizationService {
                 allJobs = this.fulfillmentManager.getJobsByTransaction(transactionId);
             }
 
-            // Start dispensing only for safe PENDING jobs
+            // Start dispensing only for safe PENDING jobs with configured motors
             for (const job of jobsToDispense) {
                 const jobId = job.job_id || job.jobId;
                 try {
@@ -189,10 +198,15 @@ export class PaymentFinalizationService {
                     console.log(`[PaymentFinalization] ✅ Dispensing started for job: ${jobId}`);
                 } catch (err) {
                     console.error(`[PaymentFinalization] ⚠️ Dispense publish failed for job ${jobId}:`, err.message);
+                    if (!fulfillmentError) fulfillmentError = err;
                 }
             }
 
-            completionStatus = 'dispensing';
+            if (fulfillmentError && allJobs.length === 0) {
+                completionStatus = 'fulfillment_unconfigured';
+            } else {
+                completionStatus = 'dispensing';
+            }
 
         } else if (serviceType === 'HEALTH_CHECKUP' || serviceType === 'CHECKUP') {
             const freshSession = this.sessionManager.getSession(sessionId);

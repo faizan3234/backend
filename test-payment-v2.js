@@ -681,6 +681,142 @@ db.prepare(`
     });
     assert(s10Verify.jobs[0].quantity === 9, 'Test 10: Cart purchase quantity 9 is preserved exactly in fulfillment job');
 
+    // ───────────────────────────────────────────────────────────────────────
+    // 11. FAIL-CLOSED DISPENSER MOTOR SAFETY TESTS
+    // ───────────────────────────────────────────────────────────────────────
+    section('11. Fail-Closed Dispenser Motor Safety');
+
+    const capturedMqttPayloads = [];
+    fulfillmentManager.mqttClient = {
+        publish: (topic, payload, opts, cb) => {
+            capturedMqttPayloads.push({ topic, data: JSON.parse(payload) });
+            if (cb) cb(null);
+        },
+        connected: true
+    };
+
+    // Seed test kits with various invalid and valid motor configurations
+    db.prepare(`
+        INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id)
+        VALUES 
+            ('KIT-MOTOR-NULL', 'Unmapped Kit Null', 50, 10, NULL),
+            ('KIT-MOTOR-ZERO', 'Unmapped Kit Zero', 50, 10, 0),
+            ('KIT-MOTOR-NEG', 'Unmapped Kit Negative', 50, 10, -1),
+            ('KIT-VALID-1', 'Motor 1 Kit', 50, 10, 1),
+            ('KIT-VALID-2', 'Motor 2 Kit', 50, 10, 2),
+            ('KIT-VALID-3', 'Motor 3 Kit', 50, 10, 3)
+    `).run();
+
+    // 1. kit motor_id NULL -> throws MOTOR_NOT_CONFIGURED & no MQTT publish
+    let nullMotorThrown = false;
+    try {
+        await fulfillmentManager.createJob('sess_m_null', 'TXN-M-NULL', 'KIT-MOTOR-NULL', 1);
+    } catch (e) {
+        if (e.code === 'MOTOR_NOT_CONFIGURED') nullMotorThrown = true;
+    }
+    assert(nullMotorThrown === true, 'Motor ID NULL throws MOTOR_NOT_CONFIGURED');
+    assert(capturedMqttPayloads.length === 0, 'Motor ID NULL produces zero MQTT publishes');
+
+    // 2. motor_id undefined -> throws MOTOR_NOT_CONFIGURED & no MQTT publish
+    let undefMotorThrown = false;
+    try {
+        await fulfillmentManager.createJob('sess_m_undef', 'TXN-M-UNDEF', 'KIT-NON-EXISTENT', 1);
+    } catch (e) {
+        if (e.code === 'MOTOR_NOT_CONFIGURED') undefMotorThrown = true;
+    }
+    assert(undefMotorThrown === true, 'Undefined motor ID throws MOTOR_NOT_CONFIGURED');
+
+    // 3. motor_id 0 -> throws MOTOR_NOT_CONFIGURED & no MQTT publish
+    let zeroMotorThrown = false;
+    try {
+        await fulfillmentManager.createJob('sess_m_zero', 'TXN-M-ZERO', 'KIT-MOTOR-ZERO', 1);
+    } catch (e) {
+        if (e.code === 'MOTOR_NOT_CONFIGURED') zeroMotorThrown = true;
+    }
+    assert(zeroMotorThrown === true, 'Motor ID 0 throws MOTOR_NOT_CONFIGURED');
+
+    // 4. motor_id negative -> throws MOTOR_NOT_CONFIGURED & no MQTT publish
+    let negMotorThrown = false;
+    try {
+        await fulfillmentManager.createJob('sess_m_neg', 'TXN-M-NEG', 'KIT-MOTOR-NEG', 1);
+    } catch (e) {
+        if (e.code === 'MOTOR_NOT_CONFIGURED') negMotorThrown = true;
+    }
+    assert(negMotorThrown === true, 'Negative motor ID throws MOTOR_NOT_CONFIGURED');
+
+    // 5. motor_id NaN / non-numeric -> throws MOTOR_NOT_CONFIGURED & no MQTT publish
+    let nanMotorThrown = false;
+    try {
+        await fulfillmentManager.createJob('sess_m_nan', 'TXN-M-NAN', 'KIT-VALID-1', 1, 'invalid_motor');
+    } catch (e) {
+        if (e.code === 'MOTOR_NOT_CONFIGURED') nanMotorThrown = true;
+    }
+    assert(nanMotorThrown === true, 'Non-numeric motor ID throws MOTOR_NOT_CONFIGURED');
+
+    // 6. startDispensing directly refuses job with invalid motor_id
+    const dummySess = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const dummyTxn = transactionManager.createTransaction(dummySess.session_id, 'MEDICINE', [{ kit_id: 'KIT-VALID-1', quantity: 1 }]);
+    const dummyJobId = 'JOB-TEST-INVALID-MOTOR';
+    db.prepare(`
+        INSERT OR REPLACE INTO fulfillment_jobs (job_id, session_id, transaction_id, kit_id, quantity, motor_id, state)
+        VALUES (?, ?, ?, 'KIT-VALID-1', 1, NULL, 'PENDING')
+    `).run(dummyJobId, dummySess.session_id, dummyTxn.transaction_id);
+
+    let startDispenseRefused = false;
+    try {
+        await fulfillmentManager.startDispensing(dummyJobId);
+    } catch (e) {
+        if (e.code === 'MOTOR_NOT_CONFIGURED') startDispenseRefused = true;
+    }
+    assert(startDispenseRefused === true, 'startDispensing refuses job with NULL motor_id');
+
+    // 7. Valid motor IDs 1, 2, 3 -> publish exact configured motor
+    capturedMqttPayloads.length = 0;
+    const sV1 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const txnV1 = transactionManager.createTransaction(sV1.session_id, 'MEDICINE', [{ kit_id: 'KIT-VALID-1', quantity: 1 }]);
+    const job1 = await fulfillmentManager.createJob(sV1.session_id, txnV1.transaction_id, 'KIT-VALID-1', 1);
+    await fulfillmentManager.startDispensing(job1.job_id);
+    assert(capturedMqttPayloads[0].data.motor === 1, 'Valid motor 1 correctly published to MQTT');
+
+    const sV2 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const txnV2 = transactionManager.createTransaction(sV2.session_id, 'MEDICINE', [{ kit_id: 'KIT-VALID-2', quantity: 1 }]);
+    const job2 = await fulfillmentManager.createJob(sV2.session_id, txnV2.transaction_id, 'KIT-VALID-2', 2);
+    await fulfillmentManager.startDispensing(job2.job_id);
+    assert(capturedMqttPayloads[1].data.motor === 2, 'Valid motor 2 correctly published to MQTT');
+
+    const sV3 = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const txnV3 = transactionManager.createTransaction(sV3.session_id, 'MEDICINE', [{ kit_id: 'KIT-VALID-3', quantity: 1 }]);
+    const job3 = await fulfillmentManager.createJob(sV3.session_id, txnV3.transaction_id, 'KIT-VALID-3', 3);
+    await fulfillmentManager.startDispensing(job3.job_id);
+    assert(capturedMqttPayloads[2].data.motor === 3, 'Valid motor 3 correctly published to MQTT');
+
+    // 8. End-to-end payment with unconfigured motor kit
+    // Seed kit with NULL motor
+    db.prepare("INSERT OR REPLACE INTO inventory (kit_id, name, price, quantity, motor_id) VALUES ('KIT-HEHE-UNMAPPED', 'Hehe No Motor', 50, 25, NULL)").run();
+    const initialStock = db.prepare("SELECT quantity FROM inventory WHERE kit_id = 'KIT-HEHE-UNMAPPED'").get().quantity;
+
+    const sUnmapped = sessionManager.createSession('RELIV-001', 'MEDICINE');
+    const sUnmappedCart = [{ kit_id: 'KIT-HEHE-UNMAPPED', quantity: 2 }];
+    const sUnmappedTxn = transactionManager.createTransaction(sUnmapped.session_id, 'MEDICINE', sUnmappedCart);
+    const sUnmappedReq = await v2Service.createPaymentRequest(sUnmapped.session_id, { cart: sUnmappedCart });
+    const sUnmappedDecrypted = decryptPackage(sUnmappedReq.paymentUrl.split('#p=')[1], cloudKeys.privateKey);
+
+    const mqttBeforeUnmapped = capturedMqttPayloads.length;
+    const sUnmappedVerify = await v2Service.verifyConfirmationCode(sUnmapped.session_id, {
+        requestId: sUnmappedReq.requestId,
+        code: sUnmappedDecrypted.payload.confirmationCode
+    });
+
+    assert(sUnmappedVerify.ok === true && sUnmappedVerify.status === 'VERIFIED', 'Payment is successfully VERIFIED when motor is unconfigured');
+    const sUnmappedTxnInDb = transactionManager.getTransaction(sUnmappedTxn.transaction_id);
+    assert(sUnmappedTxnInDb.status === 'VERIFIED', 'Transaction status remains VERIFIED (never failed)');
+    assert(sUnmappedTxnInDb.verified === 1, 'Transaction verified flag is 1');
+    assert(sUnmappedTxnInDb.status !== 'FULFILLED', 'Transaction is NOT marked FULFILLED');
+    assert(capturedMqttPayloads.length === mqttBeforeUnmapped, 'Missing motor produced ZERO MQTT publishes (never defaulted to motor 1)');
+
+    const finalStock = db.prepare("SELECT quantity FROM inventory WHERE kit_id = 'KIT-HEHE-UNMAPPED'").get().quantity;
+    assert(finalStock === initialStock, 'No inventory deduction occurred without physical dispense');
+
     // Clean up temporary test files
     closeDatabase();
     try {
