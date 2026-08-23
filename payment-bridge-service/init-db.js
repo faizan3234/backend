@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { initPaymentV2Schema } from './paymentV2Db.js';
 
 const DB_PATH = './bridge.db';
 
@@ -84,6 +85,10 @@ db.exec(`
 `);
 
 console.log('✅ Created table: verification_log');
+
+// Initialize Payment V2 Schema (orders, receipts, indexes)
+initPaymentV2Schema(db);
+console.log('✅ Initialized Payment V2 tables: payment_v2_orders, payment_v2_receipts');
 
 db.close();
 

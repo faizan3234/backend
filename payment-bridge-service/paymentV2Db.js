@@ -37,6 +37,20 @@ export function initPaymentV2Schema(db) {
         CREATE INDEX IF NOT EXISTS idx_v2_orders_fingerprint ON payment_v2_orders(payload_fingerprint);
         CREATE INDEX IF NOT EXISTS idx_v2_orders_status ON payment_v2_orders(status);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_orders_rzp_payment ON payment_v2_orders(razorpay_payment_id) WHERE razorpay_payment_id IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS payment_v2_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL,
+            email TEXT NOT NULL,
+            status TEXT NOT NULL,
+            message_id TEXT,
+            created_at INTEGER NOT NULL,
+            sent_at INTEGER,
+            last_error TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_payment_v2_receipts_request
+        ON payment_v2_receipts(request_id);
     `);
 
     // Migration helper: add payload_fingerprint if table was created in an earlier schema version

@@ -18,6 +18,7 @@ import {
     verifyRazorpayPaymentSignature
 } from './paymentV2Crypto.js';
 import { initPaymentV2Schema } from './paymentV2Db.js';
+import { sendPaymentReceipt } from './services/receiptEmailService.js';
 
 export class PaymentV2CloudService {
     constructor({
@@ -505,6 +506,54 @@ export class PaymentV2CloudService {
             expiresAt: order.expires_at,
             paid: order.status === 'PAID'
         };
+    }
+
+    /**
+     * Send authoritative payment receipt email for a PAID order
+     *
+     * @param {Object} params
+     * @param {string} params.requestId - Request ID (REQ-...)
+     * @param {string} params.email - Customer email address
+     * @param {import('nodemailer').Transporter} [params.transporterOverride] - Optional transporter
+     * @returns {Promise<Object>}
+     */
+    async sendEmailReceipt({ requestId, email, transporterOverride = null }) {
+        if (!requestId || typeof requestId !== 'string') {
+            const err = new Error('requestId is required');
+            err.code = 'MISSING_REQUEST_ID';
+            throw err;
+        }
+
+        if (!email || typeof email !== 'string') {
+            const err = new Error('email is required');
+            err.code = 'MISSING_EMAIL';
+            throw err;
+        }
+
+        // 1. Fetch order from SQLite database by request_id
+        const order = this.db.prepare('SELECT * FROM payment_v2_orders WHERE request_id = ?').get(requestId);
+        if (!order) {
+            console.warn(`[PaymentV2Cloud] ⚠️ Order not found for receipt dispatch: ${requestId}`);
+            const err = new Error(`Order for request ${requestId} not found`);
+            err.code = 'ORDER_NOT_FOUND';
+            throw err;
+        }
+
+        // 2. Authoritative check: Must be PAID with valid razorpay_payment_id
+        if (order.status !== 'PAID' || !order.razorpay_payment_id) {
+            console.warn(`[PaymentV2Cloud] ⚠️ Cannot send receipt for unpaid order: ${requestId} (status: ${order.status})`);
+            const err = new Error(`Payment is not completed for request ${requestId}`);
+            err.code = 'ORDER_NOT_PAID';
+            throw err;
+        }
+
+        // 3. Dispatch receipt email
+        return await sendPaymentReceipt({
+            db: this.db,
+            order,
+            email,
+            transporter: transporterOverride
+        });
     }
 }
 

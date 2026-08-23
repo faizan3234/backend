@@ -53,7 +53,8 @@ export function createV2RateLimiter({ windowMs = 60000, max = 60 } = {}) {
 
 export function createPaymentV2Router(paymentV2CloudService, {
     createOrderLimiter = createV2RateLimiter({ windowMs: 60000, max: 60 }),
-    verifyPaymentLimiter = createV2RateLimiter({ windowMs: 60000, max: 30 })
+    verifyPaymentLimiter = createV2RateLimiter({ windowMs: 60000, max: 30 }),
+    emailReceiptLimiter = createV2RateLimiter({ windowMs: 60000, max: 20 })
 } = {}) {
     const router = express.Router();
 
@@ -169,6 +170,56 @@ export function createPaymentV2Router(paymentV2CloudService, {
                 ok: false,
                 code: 'STATUS_FETCH_FAILED',
                 message: err.message || 'Failed to fetch order status'
+            });
+        }
+    });
+
+    /**
+     * POST /email-receipt (available at /v2/email-receipt and /api/v2/email-receipt)
+     * Body: { requestId, email }
+     */
+    router.post('/email-receipt', emailReceiptLimiter, async (req, res) => {
+        try {
+            const { requestId, email } = req.body || {};
+
+            if (!requestId || typeof requestId !== 'string') {
+                return res.status(400).json({
+                    ok: false,
+                    code: 'MISSING_REQUEST_ID',
+                    message: 'requestId is required'
+                });
+            }
+
+            if (!email || typeof email !== 'string') {
+                return res.status(400).json({
+                    ok: false,
+                    code: 'MISSING_EMAIL',
+                    message: 'email is required'
+                });
+            }
+
+            const result = await paymentV2CloudService.sendEmailReceipt({ requestId, email });
+            return res.json(result);
+
+        } catch (err) {
+            console.error('[PaymentV2Routes] ❌ Error sending email receipt:', err.message);
+
+            const statusCode = (
+                err.code === 'EMAIL_SERVICE_NOT_CONFIGURED' ||
+                err.code === 'PAYMENT_V2_NOT_CONFIGURED'
+            ) ? 503 : (
+                err.code === 'ORDER_NOT_FOUND'
+            ) ? 404 : (
+                err.code === 'ORDER_NOT_PAID' ||
+                err.code === 'INVALID_EMAIL' ||
+                err.code === 'MISSING_EMAIL' ||
+                err.code === 'MISSING_REQUEST_ID'
+            ) ? 400 : 500;
+
+            return res.status(statusCode).json({
+                ok: false,
+                code: err.code || 'EMAIL_RECEIPT_FAILED',
+                message: err.message || 'Failed to send payment receipt email'
             });
         }
     });

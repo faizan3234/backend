@@ -22,6 +22,15 @@ import {
 } from './paymentV2Crypto.js';
 import { PaymentV2CloudService } from './paymentV2Service.js';
 import { createV2RateLimiter } from './paymentV2Routes.js';
+import {
+    isReceiptEmailConfigured,
+    createReceiptTransporter,
+    formatServiceType,
+    formatAmount,
+    normalizeEmail,
+    generateReceiptContent,
+    sendPaymentReceipt
+} from './services/receiptEmailService.js';
 
 let passed = 0;
 let failed = 0;
@@ -802,6 +811,198 @@ const v2CloudService = new PaymentV2CloudService({
         if (e.code === 'PAYMENT_V2_NOT_CONFIGURED') verifyNotConfigured = true;
     }
     assert(verifyNotConfigured, 'verifyPaymentAndRevealCode throws PAYMENT_V2_NOT_CONFIGURED when unconfigured');
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 12. RECEIPT EMAIL SERVICE & DUPLICATE PROTECTION
+    // ───────────────────────────────────────────────────────────────────────
+    section('12. Receipt Email Service & Duplicate Protection');
+
+    // 1. Verify schema tables and indexes exist
+    const receiptTables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payment_v2_receipts'").all();
+    assert(receiptTables.length === 1, 'payment_v2_receipts table exists in SQLite schema');
+
+    const receiptIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_payment_v2_receipts_request'").all();
+    assert(receiptIndexes.length === 1, 'idx_payment_v2_receipts_request index exists');
+
+    // 2. formatAmount & formatServiceType
+    assert(formatAmount(3784) === '₹37.84', 'formatAmount(3784) correctly formats to ₹37.84');
+    assert(formatAmount(50000) === '₹500.00', 'formatAmount(50000) correctly formats to ₹500.00');
+    assert(formatServiceType('MEDICINE_PURCHASE') === 'Medicine Purchase', 'formatServiceType maps MEDICINE_PURCHASE to Medicine Purchase');
+    assert(formatServiceType('HEALTH_CHECKUP') === 'Health Checkup', 'formatServiceType maps HEALTH_CHECKUP to Health Checkup');
+
+    // 3. Email normalization and validation
+    assert(normalizeEmail('  Customer.Test@Gmail.Com  ') === 'customer.test@gmail.com', 'normalizeEmail trims and lowercases email');
+    let invalidEmailThrown = false;
+    try {
+        normalizeEmail('invalid-email-address');
+    } catch (e) {
+        if (e.code === 'INVALID_EMAIL') invalidEmailThrown = true;
+    }
+    assert(invalidEmailThrown, 'normalizeEmail rejects invalid email format');
+
+    // 4. Test order setup in DB
+    const receiptRequestId = 'REQ-RECEIPT-TEST-1';
+    const receiptOrderId = 'order_receipt_test_1';
+    const receiptPaymentId = 'pay_receipt_test_1';
+    const receiptKioskCode = '4829'; // Code that MUST NEVER appear in receipt
+
+    db.prepare(`
+        INSERT INTO payment_v2_orders (
+            order_id, request_id, request_nonce, payload_fingerprint,
+            session_id, transaction_id, kiosk_id, amount, currency,
+            service_type, encrypted_code, status, razorpay_payment_id,
+            created_at, expires_at, verified_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, 'PAID', ?, ?, ?, ?)
+    `).run(
+        receiptOrderId,
+        receiptRequestId,
+        'nonce_receipt_1',
+        'fingerprint_receipt_1',
+        'sess_receipt_1',
+        'TXN-RECEIPT-001',
+        'KIOSK-001',
+        3784, // ₹37.84
+        'MEDICINE_PURCHASE',
+        encryptConfirmationCodeAtRest(receiptKioskCode, TEST_SECRET),
+        receiptPaymentId,
+        Date.now() - 60000,
+        Date.now() + 300000,
+        Date.now()
+    );
+
+    const receiptPaidOrder = db.prepare('SELECT * FROM payment_v2_orders WHERE request_id = ?').get(receiptRequestId);
+
+    // 5. Generate receipt content and verify strict security
+    const receiptContent = generateReceiptContent(receiptPaidOrder);
+    assert(receiptContent.text.includes('₹37.84'), 'Plain text receipt includes authoritative amount ₹37.84');
+    assert(receiptContent.text.includes('PAID'), 'Plain text receipt includes status PAID');
+    assert(receiptContent.text.includes(receiptPaymentId), 'Plain text receipt includes Payment ID');
+    assert(receiptContent.text.includes(receiptOrderId), 'Plain text receipt includes Order ID');
+    assert(receiptContent.text.includes(receiptRequestId), 'Plain text receipt includes Request ID');
+    assert(receiptContent.text.includes('TXN-RECEIPT-001'), 'Plain text receipt includes Transaction ID');
+    assert(receiptContent.text.includes('Medicine Purchase'), 'Plain text receipt includes formatted service label');
+    assert(!receiptContent.text.includes(receiptKioskCode), 'CRITICAL: Plain text receipt NEVER includes the 4-digit kiosk code');
+    assert(!receiptContent.html.includes(receiptKioskCode), 'CRITICAL: HTML receipt NEVER includes the 4-digit kiosk code');
+    assert(receiptContent.html.includes('₹37.84'), 'HTML receipt contains authoritative formatted amount');
+
+    // 6. Mock Nodemailer Transporter
+    let sentMails = [];
+    const mockTransporter = {
+        sendMail: async (options) => {
+            sentMails.push(options);
+            return { messageId: `<mock-${Date.now()}@reliv.test>` };
+        }
+    };
+
+    // 7. Reject unpaid order
+    const unpaidOrder = { ...receiptPaidOrder, status: 'CREATED', razorpay_payment_id: null };
+    let unpaidRejected = false;
+    try {
+        await sendPaymentReceipt({
+            db,
+            order: unpaidOrder,
+            email: 'customer@gmail.com',
+            transporter: mockTransporter
+        });
+    } catch (e) {
+        if (e.code === 'ORDER_NOT_PAID') unpaidRejected = true;
+    }
+    assert(unpaidRejected, 'sendPaymentReceipt rejects unpaid order with ORDER_NOT_PAID');
+
+    // 8. Successful receipt dispatch
+    const sendRes1 = await sendPaymentReceipt({
+        db,
+        order: receiptPaidOrder,
+        email: 'Customer.One@gmail.com',
+        transporter: mockTransporter
+    });
+
+    assert(sendRes1.ok === true, 'Receipt sent successfully');
+    assert(sendRes1.alreadySent === false, 'First send reports alreadySent: false');
+    assert(sendRes1.email === 'customer.one@gmail.com', 'Recipient email normalized in response');
+    assert(sentMails.length === 1, 'Transporter sendMail called exactly once');
+    assert(sentMails[0].to === 'customer.one@gmail.com', 'Sent email addressed to normalized recipient');
+
+    const dbReceiptRecord = db.prepare('SELECT * FROM payment_v2_receipts WHERE request_id = ? AND email = ?').get(receiptRequestId, 'customer.one@gmail.com');
+    assert(dbReceiptRecord && dbReceiptRecord.status === 'SENT', 'Receipt record saved in SQLite with status SENT');
+    assert(Boolean(dbReceiptRecord.message_id), 'Receipt record contains message_id');
+    assert(Boolean(dbReceiptRecord.sent_at), 'Receipt record contains sent_at timestamp');
+
+    // 9. Duplicate protection test: Repeated request for same requestId + normalized email
+    const sendRes2 = await sendPaymentReceipt({
+        db,
+        order: receiptPaidOrder,
+        email: '  customer.one@GMAIL.COM  ',
+        transporter: mockTransporter
+    });
+
+    assert(sendRes2.ok === true, 'Duplicate request returns ok: true');
+    assert(sendRes2.alreadySent === true, 'Duplicate request reports alreadySent: true');
+    assert(sendRes2.messageId === dbReceiptRecord.message_id, 'Duplicate request returns original messageId');
+    assert(sentMails.length === 1, 'Duplicate request does NOT call transporter sendMail again (prevented duplicate email)');
+
+    // 10. Send to different email for same requestId is allowed
+    const sendRes3 = await sendPaymentReceipt({
+        db,
+        order: receiptPaidOrder,
+        email: 'secondary@reliv.test',
+        transporter: mockTransporter
+    });
+
+    assert(sendRes3.ok === true && sendRes3.alreadySent === false, 'Sending to different email is permitted');
+    assert(sentMails.length === 2, 'Transporter called for new recipient');
+
+    // 11. PaymentV2CloudService.sendEmailReceipt end-to-end method
+    const cloudService = new PaymentV2CloudService({
+        db,
+        razorpay: { key_id: RZP_KEY_ID, key_secret: RZP_KEY_SECRET },
+        cloudPrivateKey: cloudKeys4096.privateKey,
+        kioskPublicKeysMap: { 'KIOSK-001': kioskKeys.publicKey },
+        codeSecret: TEST_SECRET
+    });
+
+    const svcSendRes = await cloudService.sendEmailReceipt({
+        requestId: receiptRequestId,
+        email: 'customer.one@gmail.com',
+        transporterOverride: mockTransporter
+    });
+    assert(svcSendRes.alreadySent === true, 'cloudService.sendEmailReceipt recognizes already sent receipt');
+
+    // 12. cloudService.sendEmailReceipt for non-existent requestId
+    let notFoundThrown = false;
+    try {
+        await cloudService.sendEmailReceipt({
+            requestId: 'REQ-DOES-NOT-EXIST',
+            email: 'customer@gmail.com',
+            transporterOverride: mockTransporter
+        });
+    } catch (e) {
+        if (e.code === 'ORDER_NOT_FOUND') notFoundThrown = true;
+    }
+    assert(notFoundThrown, 'cloudService.sendEmailReceipt rejects non-existent requestId with ORDER_NOT_FOUND');
+
+    // 13. Failed SMTP send error handling
+    const failingTransporter = {
+        sendMail: async () => {
+            throw new Error('SMTP connection timeout: 554 Authentication Failed');
+        }
+    };
+
+    let smtpFailThrown = false;
+    try {
+        await sendPaymentReceipt({
+            db,
+            order: receiptPaidOrder,
+            email: 'smtp-fail@test.com',
+            transporter: failingTransporter
+        });
+    } catch (e) {
+        if (e.code === 'EMAIL_SEND_FAILED') smtpFailThrown = true;
+    }
+    assert(smtpFailThrown, 'sendPaymentReceipt throws EMAIL_SEND_FAILED on SMTP error');
+
+    const failedRecord = db.prepare("SELECT * FROM payment_v2_receipts WHERE request_id = ? AND email = ? AND status = 'FAILED'").get(receiptRequestId, 'smtp-fail@test.com');
+    assert(failedRecord && failedRecord.last_error.includes('SMTP connection timeout'), 'Failed attempt logs error in SQLite audit table');
 
     // ───────────────────────────────────────────────────────────────────────
     // CLEANUP
