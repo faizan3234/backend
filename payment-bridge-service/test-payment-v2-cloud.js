@@ -1137,6 +1137,59 @@ const v2CloudService = new PaymentV2CloudService({
     const cartPdfBuf = await generateCloudReceiptPdfBuffer(orderWithCart, 'cart-user@test.com');
     assert(Buffer.isBuffer(cartPdfBuf) && cartPdfBuf.slice(0, 5).toString() === '%PDF-', 'PDF generated with authoritative cart snapshot');
 
+    // 9. Pagination & Single-Page Guarantee Tests
+    function countPdfPages(buffer) {
+        const s = buffer.toString('latin1');
+        const m = s.match(/\/Type\s*\/Page(?!s)/g);
+        return m ? m.length : 0;
+    }
+
+    // Standard 1-item receipt must be exactly 1 page
+    const standardPageCount = countPdfPages(pdfBuf);
+    assert(standardPageCount === 1, `Standard receipt PDF page count is exactly 1 (got: ${standardPageCount})`);
+
+    // No trailing blank page
+    assert(countPdfPages(pdfBuf) === 1, 'No trailing blank page generated for standard receipt');
+
+    // Footer does not push to a second page
+    const footerPageCount = countPdfPages(await generateCloudReceiptPdfBuffer({
+        ...receiptPaidOrder,
+        service_type: 'HEALTH_CHECKUP'
+    }, 'test-footer@example.com'));
+    assert(footerPageCount === 1, 'Footer does not create a new page by itself');
+
+    // Small multi-item carts (2 to 5 items) fit comfortably on 1 page
+    assert(countPdfPages(cartPdfBuf) === 1, '2-item cart receipt fits completely on 1 page');
+
+    const fiveItemCartBuf = await generateCloudReceiptPdfBuffer({
+        ...receiptPaidOrder,
+        cart: JSON.stringify([
+            { name: 'Paracetamol 500mg', quantity: 2, price: 25, total: 50 },
+            { name: 'Vitamin C 500mg', quantity: 1, price: 37, total: 37 },
+            { name: 'Cetirizine 10mg', quantity: 1, price: 15, total: 15 },
+            { name: 'Antacid Gel', quantity: 1, price: 80, total: 80 },
+            { name: 'Bandage Strips', quantity: 5, price: 5, total: 25 }
+        ])
+    }, 'five-items@example.com');
+    assert(countPdfPages(fiveItemCartBuf) === 1, '5-item cart receipt fits completely on 1 page');
+
+    // Large cart (15 items) paginates cleanly to 2 pages without blank trailing page
+    const fifteenItems = [];
+    for (let i = 1; i <= 15; i++) {
+        fifteenItems.push({ name: `Medicine Item ${i}`, quantity: 1, price: 10 * i, total: 10 * i });
+    }
+    const fifteenItemCartBuf = await generateCloudReceiptPdfBuffer({
+        ...receiptPaidOrder,
+        cart: JSON.stringify(fifteenItems)
+    }, 'large-cart@example.com');
+    const largePageCount = countPdfPages(fifteenItemCartBuf);
+    assert(largePageCount === 2, `Large 15-item cart paginates cleanly to 2 pages (got: ${largePageCount})`);
+
+    // Clickable links present in PDF
+    const pdfLatin = pdfBuf.toString('latin1');
+    assert(pdfLatin.includes('mailto:relivcustomercare.in@gmail.com'), 'Clickable mailto link present in PDF annotations');
+    assert(pdfLatin.includes('instagram.com/reliv_care'), 'Clickable Instagram link present in PDF annotations');
+
     // ───────────────────────────────────────────────────────────────────────
     // CLEANUP
     // ───────────────────────────────────────────────────────────────────────
