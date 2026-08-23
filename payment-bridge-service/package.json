@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check paymentV2Crypto.js && node --check paymentV2Service.js && node --check paymentV2Routes.js && node --check paymentV2Db.js && node --check generate-payment-v2-cloud-key.js && node --check services/receiptEmailService.js",
+    "check": "node --check index.js && node --check paymentV2Crypto.js && node --check paymentV2Service.js && node --check paymentV2Routes.js && node --check paymentV2Db.js && node --check generate-payment-v2-cloud-key.js && node --check services/receiptEmailService.js && node --check services/receiptPdfBuilder.js",
     "test": "node test-payment-v2-cloud.js",
     "dev": "node --watch index.js",
     "generate-keys": "node generate-keys.js",
@@ -19,6 +19,7 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "nodemailer": "^9.0.5",
+    "pdfkit": "^0.17.2",
     "razorpay": "^2.9.2"
   },
   "engines": {

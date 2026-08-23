@@ -29,8 +29,10 @@ import {
     formatAmount,
     normalizeEmail,
     generateReceiptContent,
+    generateCloudReceiptPdfBuffer,
     sendPaymentReceipt
 } from './services/receiptEmailService.js';
+import { normalizeCloudReceiptData } from './services/receiptPdfBuilder.js';
 
 let passed = 0;
 let failed = 0;
@@ -1003,6 +1005,137 @@ const v2CloudService = new PaymentV2CloudService({
 
     const failedRecord = db.prepare("SELECT * FROM payment_v2_receipts WHERE request_id = ? AND email = ? AND status = 'FAILED'").get(receiptRequestId, 'smtp-fail@test.com');
     assert(failedRecord && failedRecord.last_error.includes('SMTP connection timeout'), 'Failed attempt logs error in SQLite audit table');
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  13. Authoritative Cloud PDF Receipt Generation & Security Integrity
+    // ══════════════════════════════════════════════════════════════════════════
+    console.log('\n══════════════════════════════════════════════════');
+    console.log('  13. Authoritative Cloud PDF Receipt Generation & Security');
+    console.log('══════════════════════════════════════════════════');
+
+    // 1. Valid PDF Buffer & Header
+    const pdfBuf = await generateCloudReceiptPdfBuffer(receiptPaidOrder, 'customer.one@gmail.com');
+    assert(Buffer.isBuffer(pdfBuf), 'Generated PDF is a valid Buffer');
+    assert(pdfBuf.slice(0, 5).toString() === '%PDF-', 'PDF Buffer has standard %PDF- header');
+    assert(pdfBuf.length > 10000, `PDF Buffer has non-trivial size (${pdfBuf.length} bytes)`);
+
+    // 2. Authoritative Normalization & Zero Data Fabrication
+    const normNoCust = normalizeCloudReceiptData(receiptPaidOrder, '  USER@Test.COM ');
+    assert(normNoCust.amountInRupees === 37.84, 'Authoritative amount ₹37.84 parsed correctly from 3784 paise');
+    assert(normNoCust.recipientEmail === 'user@test.com', 'Recipient email normalized correctly');
+    assert(normNoCust.customerName === null, 'Customer name is null when not in authoritative record (no fabrication)');
+    assert(!('phone' in normNoCust) && !('customerPhone' in normNoCust), 'Customer phone is completely absent (never collected/fabricated)');
+    assert(normNoCust.status === 'PAID', 'Status is authoritative PAID');
+
+    const orderWithCust = { ...receiptPaidOrder, customer_name: 'Aarav Sharma' };
+    const normWithCust = normalizeCloudReceiptData(orderWithCust, 'user@test.com');
+    assert(normWithCust.customerName === 'Aarav Sharma', 'Customer name populated when genuinely present in record');
+
+    // 3. Nodemailer Attachment Verification
+    assert(sentMails.length > 0 && Array.isArray(sentMails[0].attachments), 'Sent mail options include attachments array');
+    assert(sentMails[0].attachments.length === 1, 'Sent email includes exactly 1 attachment');
+    const att = sentMails[0].attachments[0];
+    assert(att.filename.startsWith('Reliv-Receipt-') && att.filename.endsWith('.pdf'), `Attachment filename is valid (${att.filename})`);
+    assert(att.contentType === 'application/pdf', 'Attachment contentType is application/pdf');
+    assert(Buffer.isBuffer(att.content) && att.content.slice(0, 5).toString() === '%PDF-', 'Attachment content is a valid PDF Buffer');
+
+    // 4. Client Tampering Rejection
+    // An attacker tries sending malicious client payload to sendEmailReceipt
+    let tamperedOrderMails = [];
+    const tamperMockTransporter = {
+        sendMail: async (opts) => {
+            tamperedOrderMails.push(opts);
+            return { messageId: `<tamper-${Date.now()}@reliv.test>` };
+        }
+    };
+
+    // Client passes spoofed amount, status, paymentId, etc.
+    const spoofedSendRes = await cloudService.sendEmailReceipt({
+        requestId: receiptRequestId,
+        email: 'tamper-check@test.com',
+        amount: 1, // Spoofed ₹0.01
+        paymentId: 'pay_spoofed_fake',
+        status: 'PENDING',
+        confirmationCode: '9999',
+        transporterOverride: tamperMockTransporter
+    });
+
+    assert(spoofedSendRes.ok === true, 'sendEmailReceipt succeeds using authoritative DB record');
+    assert(tamperedOrderMails.length === 1, 'Transporter called for tamper check');
+    assert(tamperedOrderMails[0].subject.includes('₹37.84'), 'Email subject contains authoritative ₹37.84 (spoofed amount ignored)');
+    assert(!tamperedOrderMails[0].text.includes('pay_spoofed_fake'), 'Email body contains authoritative payment ID (spoofed paymentId ignored)');
+    assert(!tamperedOrderMails[0].text.includes('9999'), 'Spoofed confirmation code never included in receipt');
+
+    // 5. Strict Confirmation Code Absence
+    assert(!tamperedOrderMails[0].text.includes(receiptKioskCode), 'CRITICAL: Plain text never contains the 4-digit code');
+    assert(!tamperedOrderMails[0].html.includes(receiptKioskCode), 'CRITICAL: HTML never contains the 4-digit code');
+
+    // 6. Support Email Integrity
+    assert(tamperedOrderMails[0].text.includes('relivcustomercare.in@gmail.com'), 'Text receipt contains relivcustomercare.in@gmail.com');
+    assert(tamperedOrderMails[0].html.includes('relivcustomercare.in@gmail.com'), 'HTML receipt contains relivcustomercare.in@gmail.com');
+
+    // 7. PDF Generation Failure Handling & State Immutability
+    const failingPdfOrder = { ...receiptPaidOrder, request_id: 'REQ-PDF-FAIL-TEST' };
+    db.prepare(`
+        INSERT INTO payment_v2_orders (
+            order_id, request_id, request_nonce, payload_fingerprint,
+            session_id, transaction_id, kiosk_id, amount, currency,
+            service_type, encrypted_code, status, razorpay_payment_id,
+            created_at, expires_at, verified_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, 'PAID', ?, ?, ?, ?)
+    `).run(
+        'order_pdf_fail_test',
+        'REQ-PDF-FAIL-TEST',
+        'nonce_pdf_fail',
+        'fingerprint_pdf_fail',
+        'sess_pdf_fail',
+        'TXN-PDF-FAIL',
+        'KIOSK-001',
+        50000, // ₹500.00
+        'MEDICINE_PURCHASE',
+        encryptConfirmationCodeAtRest('1234', TEST_SECRET),
+        'pay_pdf_fail_test',
+        Date.now() - 60000,
+        Date.now() + 300000,
+        Date.now()
+    );
+
+    let pdfFailThrown = false;
+    try {
+        await sendPaymentReceipt({
+            db,
+            order: failingPdfOrder,
+            email: 'fail-pdf@test.com',
+            transporter: mockTransporter,
+            pdfBuilderOverride: async () => {
+                throw new Error('Canvas render memory allocation failed');
+            }
+        });
+    } catch (e) {
+        if (e.code === 'EMAIL_RECEIPT_GENERATION_FAILED') pdfFailThrown = true;
+    }
+
+    assert(pdfFailThrown, 'sendPaymentReceipt throws EMAIL_RECEIPT_GENERATION_FAILED on PDF generation failure');
+
+    const pdfFailedReceiptRecord = db.prepare("SELECT * FROM payment_v2_receipts WHERE request_id = 'REQ-PDF-FAIL-TEST'").get();
+    assert(pdfFailedReceiptRecord && pdfFailedReceiptRecord.status === 'FAILED', 'Receipt audit record marked FAILED on PDF error');
+    assert(pdfFailedReceiptRecord.last_error.includes('PDF Generation Failed'), 'Receipt audit record records PDF error message');
+
+    const orderAfterPdfFail = db.prepare("SELECT status FROM payment_v2_orders WHERE request_id = 'REQ-PDF-FAIL-TEST'").get();
+    assert(orderAfterPdfFail.status === 'PAID', 'Payment record strictly remains PAID even when PDF receipt fails');
+
+    // 8. Multi-Item Cart Snapshot Support
+    const orderWithCart = {
+        ...receiptPaidOrder,
+        request_id: 'REQ-CART-SNAPSHOT',
+        amount: 8700, // ₹87.00
+        cart: JSON.stringify([
+            { name: 'Paracetamol 500mg', quantity: 2, price: 25.00, total: 50.00 },
+            { name: 'Vitamin C 500mg', quantity: 1, price: 37.00, total: 37.00 }
+        ])
+    };
+    const cartPdfBuf = await generateCloudReceiptPdfBuffer(orderWithCart, 'cart-user@test.com');
+    assert(Buffer.isBuffer(cartPdfBuf) && cartPdfBuf.slice(0, 5).toString() === '%PDF-', 'PDF generated with authoritative cart snapshot');
 
     // ───────────────────────────────────────────────────────────────────────
     // CLEANUP

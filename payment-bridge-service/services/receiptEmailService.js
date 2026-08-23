@@ -7,6 +7,9 @@
  */
 
 import nodemailer from 'nodemailer';
+import { generateCloudReceiptPdfBuffer } from './receiptPdfBuilder.js';
+
+export { generateCloudReceiptPdfBuffer };
 
 /**
  * Check if Gmail SMTP credentials are configured
@@ -330,9 +333,10 @@ For queries, contact relivcustomercare.in@gmail.com
  * @param {Object} params.order - Authoritative order from payment_v2_orders
  * @param {string} params.email - Recipient email
  * @param {import('nodemailer').Transporter} [params.transporter] - Optional transporter override
+ * @param {Function} [params.pdfBuilderOverride] - Optional PDF builder override for testing
  * @returns {Promise<Object>}
  */
-export async function sendPaymentReceipt({ db, order, email, transporter = null }) {
+export async function sendPaymentReceipt({ db, order, email, transporter = null, pdfBuilderOverride = null }) {
     if (!db) {
         throw new Error('Database connection is required to send receipt');
     }
@@ -399,18 +403,49 @@ export async function sendPaymentReceipt({ db, order, email, transporter = null 
     // 6. Generate authoritative receipt content
     const { text, html, formattedAmount } = generateReceiptContent(order);
 
+    // 7. Generate PDF receipt buffer
+    let pdfBuffer;
+    try {
+        const builderFn = pdfBuilderOverride || generateCloudReceiptPdfBuffer;
+        pdfBuffer = await builderFn(order, normalizedEmail);
+        if (!pdfBuffer || !Buffer.isBuffer(pdfBuffer)) {
+            throw new Error('PDF generator returned an invalid or empty buffer');
+        }
+    } catch (pdfErr) {
+        console.error(`[ReceiptEmail] ❌ Failed to generate PDF receipt for request ${requestId}:`, pdfErr.message);
+
+        db.prepare(`
+            UPDATE payment_v2_receipts
+            SET status = 'FAILED',
+                last_error = ?
+            WHERE id = ?
+        `).run(`PDF Generation Failed: ${pdfErr.message}`, receiptLogId);
+
+        const err = new Error(`Failed to generate receipt PDF: ${pdfErr.message}`);
+        err.code = 'EMAIL_RECEIPT_GENERATION_FAILED';
+        throw err;
+    }
+
     const fromName = process.env.RECEIPT_FROM_NAME || 'Reliv Health';
     const fromUser = process.env.RECEIPT_GMAIL_USER || 'no-reply@reliv.in';
+    const safeReceiptId = String(order.request_id || order.order_id || 'RECEIPT').replace(/[^a-zA-Z0-9_-]/g, '_');
 
     const mailOptions = {
         from: `"${fromName}" <${fromUser}>`,
         to: normalizedEmail,
         subject: `Payment Receipt: ${formattedAmount} - ${requestId}`,
         text,
-        html
+        html,
+        attachments: [
+            {
+                filename: `Reliv-Receipt-${safeReceiptId}.pdf`,
+                content: pdfBuffer,
+                contentType: 'application/pdf'
+            }
+        ]
     };
 
-    // 7. Dispatch email via Nodemailer
+    // 8. Dispatch email via Nodemailer
     try {
         const info = await mailTransporter.sendMail(mailOptions);
         const sentAt = Date.now();
@@ -424,7 +459,7 @@ export async function sendPaymentReceipt({ db, order, email, transporter = null 
             WHERE id = ?
         `).run(messageId, sentAt, receiptLogId);
 
-        console.log(`[ReceiptEmail] ✅ Payment receipt sent for request ${requestId} to ${normalizedEmail} (MessageId: ${messageId})`);
+        console.log(`[ReceiptEmail] ✅ Payment receipt sent with PDF for request ${requestId} to ${normalizedEmail} (MessageId: ${messageId})`);
 
         return {
             ok: true,
@@ -459,5 +494,6 @@ export default {
     formatAmount,
     normalizeEmail,
     generateReceiptContent,
+    generateCloudReceiptPdfBuffer,
     sendPaymentReceipt
 };
