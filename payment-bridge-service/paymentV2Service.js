@@ -517,6 +517,166 @@ export class PaymentV2CloudService {
     }
 
     /**
+     * Reconcile / Recover payment status for an authoritative order
+     * Handles lost frontend browser callbacks after successful Razorpay checkout.
+     *
+     * SECURITY RULES:
+     * 1. Only requestId is accepted (client amounts/paymentIds/codes are never trusted).
+     * 2. If already PAID: returns the existing confirmation code idempotently without second charge/order.
+     * 3. If CREATED / PENDING: queries Razorpay API directly using authoritative order_id.
+     * 4. Matches captured status, order_id, amount, and currency strictly.
+     * 5. Atomically transitions status to PAID and unlocks the 4-digit code.
+     *
+     * @param {Object} params
+     * @param {string} params.requestId
+     * @returns {Promise<Object>}
+     */
+    async recoverPayment({ requestId }) {
+        if (!this.isConfigured()) {
+            const err = new Error('Payment V2 is not configured on this bridge. Required keys or secrets missing.');
+            err.code = 'PAYMENT_V2_NOT_CONFIGURED';
+            throw err;
+        }
+
+        if (!requestId || typeof requestId !== 'string') {
+            const err = new Error('requestId is required');
+            err.code = 'MISSING_REQUEST_ID';
+            throw err;
+        }
+
+        const normalizedRequestId = requestId.trim();
+
+        // 1. Fetch authoritative order from SQLite DB
+        const order = this.db.prepare('SELECT * FROM payment_v2_orders WHERE request_id = ?').get(normalizedRequestId);
+        if (!order) {
+            console.warn(`[PaymentV2Cloud] ⚠️ Order not found for recovery: ${normalizedRequestId}`);
+            const err = new Error(`Order for request ${normalizedRequestId} not found`);
+            err.code = 'ORDER_NOT_FOUND';
+            throw err;
+        }
+
+        // 2. CASE A: Order is already PAID
+        if (order.status === 'PAID' && order.razorpay_payment_id) {
+            console.log(`[PaymentV2Cloud] ℹ️ Order for request ${normalizedRequestId} is already PAID (${order.order_id}). Returning unlocked code.`);
+            const confirmationCode = decryptConfirmationCodeAtRest(order.encrypted_code, this.codeSecret);
+
+            return {
+                ok: true,
+                paid: true,
+                recovered: true,
+                alreadyPaid: true,
+                status: 'PAID',
+                confirmationCode,
+                requestId: order.request_id,
+                orderId: order.order_id,
+                paymentId: order.razorpay_payment_id,
+                amount: order.amount,
+                currency: order.currency,
+                serviceType: order.service_type
+            };
+        }
+
+        // 3. CASE B: Query Razorpay directly for payments linked to this order_id
+        let payments;
+        try {
+            payments = await this.razorpay.orders.fetchPayments(order.order_id);
+        } catch (rzpErr) {
+            console.error(`[PaymentV2Cloud] ❌ Razorpay order fetchPayments failed for order ${order.order_id}: ${rzpErr.message}`);
+            const err = new Error(`Failed to query Razorpay API for order ${order.order_id}: ${rzpErr.message}`);
+            err.code = 'RAZORPAY_FETCH_FAILED';
+            throw err;
+        }
+
+        const paymentList = Array.isArray(payments) ? payments : (payments?.items || []);
+
+        // Find a valid captured payment matching authoritative order properties
+        const capturedPayment = paymentList.find(p => {
+            const status = String(p.status || '').toLowerCase();
+            const orderIdMatches = p.order_id === order.order_id;
+            const amountMatches = Number(p.amount) === Number(order.amount);
+            const currencyMatches = String(p.currency || 'INR').toUpperCase() === String(order.currency || 'INR').toUpperCase();
+            const isCaptured = status === 'captured' || (status === 'authorized' && p.captured === true);
+
+            return orderIdMatches && amountMatches && currencyMatches && isCaptured;
+        });
+
+        if (!capturedPayment) {
+            console.log(`[PaymentV2Cloud] ℹ️ No captured payment found for order ${order.order_id} (request: ${normalizedRequestId})`);
+            return {
+                ok: true,
+                paid: false,
+                recovered: false,
+                status: order.status,
+                requestId: order.request_id,
+                orderId: order.order_id,
+                amount: order.amount,
+                currency: order.currency,
+                message: 'Payment has not yet been captured or completed'
+            };
+        }
+
+        // 4. Unique Payment ID Check (Replay Prevention)
+        const dupCheck = this.db.prepare('SELECT * FROM payment_v2_orders WHERE razorpay_payment_id = ? AND order_id != ?').get(capturedPayment.id, order.order_id);
+        if (dupCheck) {
+            console.error(`[PaymentV2Cloud] ❌ Replay prevention: Payment ID ${capturedPayment.id} already bound to order ${dupCheck.order_id}`);
+            const err = new Error('Payment ID has already been verified for another order');
+            err.code = 'PAYMENT_ID_ALREADY_USED';
+            throw err;
+        }
+
+        // 5. Atomic DB Status Transition to PAID
+        const now = Date.now();
+        const updateRes = this.db.prepare(`
+            UPDATE payment_v2_orders
+            SET status = 'PAID',
+                razorpay_payment_id = ?,
+                verified_at = ?
+            WHERE order_id = ? AND status != 'PAID'
+        `).run(capturedPayment.id, now, order.order_id);
+
+        if (updateRes.changes === 0) {
+            // Already updated concurrently
+            const current = this.db.prepare('SELECT * FROM payment_v2_orders WHERE order_id = ?').get(order.order_id);
+            if (current && current.status === 'PAID') {
+                const code = decryptConfirmationCodeAtRest(current.encrypted_code, this.codeSecret);
+                return {
+                    ok: true,
+                    paid: true,
+                    recovered: true,
+                    alreadyPaid: true,
+                    status: 'PAID',
+                    confirmationCode: code,
+                    requestId: current.request_id,
+                    orderId: current.order_id,
+                    paymentId: current.razorpay_payment_id,
+                    amount: current.amount,
+                    currency: current.currency,
+                    serviceType: current.service_type
+                };
+            }
+        }
+
+        // 6. Decrypt confirmation code at rest
+        const confirmationCode = decryptConfirmationCodeAtRest(order.encrypted_code, this.codeSecret);
+        console.log(`[PaymentV2Cloud] ✅ Recovered and verified payment ${capturedPayment.id} for order ${order.order_id}, request ${order.request_id} (Code revealed)`);
+
+        return {
+            ok: true,
+            paid: true,
+            recovered: true,
+            newlyVerified: true,
+            status: 'PAID',
+            confirmationCode,
+            requestId: order.request_id,
+            orderId: order.order_id,
+            paymentId: capturedPayment.id,
+            amount: order.amount,
+            currency: order.currency,
+            serviceType: order.service_type
+        };
+    }
+
+    /**
      * Send authoritative payment receipt email for a PAID order
      *
      * @param {Object} params

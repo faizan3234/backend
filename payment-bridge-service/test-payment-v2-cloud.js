@@ -133,6 +133,9 @@ function createPiHybridPackage(payload, kioskPrivateKey, cloudPublicKey) {
 // Track Razorpay order creations
 let rzpOrderCreateCount = 0;
 
+// Map for mock Razorpay payments by order
+const mockRazorpayOrdersFetchPaymentsMap = {};
+
 // Mock Razorpay Client
 const mockRazorpay = {
     key_id: RZP_KEY_ID,
@@ -149,6 +152,16 @@ const mockRazorpay = {
                 status: 'created',
                 notes: params.notes
             };
+        },
+        fetchPayments: async (orderId) => {
+            if (mockRazorpayOrdersFetchPaymentsMap[orderId]) {
+                return {
+                    entity: 'collection',
+                    count: mockRazorpayOrdersFetchPaymentsMap[orderId].length,
+                    items: mockRazorpayOrdersFetchPaymentsMap[orderId]
+                };
+            }
+            return { entity: 'collection', count: 0, items: [] };
         }
     },
     payments: {
@@ -1189,6 +1202,160 @@ const v2CloudService = new PaymentV2CloudService({
     const pdfLatin = pdfBuf.toString('latin1');
     assert(pdfLatin.includes('mailto:relivcustomercare.in@gmail.com'), 'Clickable mailto link present in PDF annotations');
     assert(pdfLatin.includes('instagram.com/reliv_care'), 'Clickable Instagram link present in PDF annotations');
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 14. SECURE PAYMENT RECOVERY & RECONCILIATION
+    // ───────────────────────────────────────────────────────────────────────
+    section('14. Secure Payment Recovery & Reconciliation (Lost Browser Callback)');
+
+    // 1. Missing or invalid requestId rejected
+    let missingReqIdThrown = false;
+    try {
+        await v2CloudService.recoverPayment({});
+    } catch (e) {
+        if (e.code === 'MISSING_REQUEST_ID') missingReqIdThrown = true;
+    }
+    assert(missingReqIdThrown, 'recoverPayment rejects missing requestId with MISSING_REQUEST_ID');
+
+    // 2. Non-existent requestId rejected
+    let orderNotFoundThrown = false;
+    try {
+        await v2CloudService.recoverPayment({ requestId: 'REQ-DOES-NOT-EXIST-999' });
+    } catch (e) {
+        if (e.code === 'ORDER_NOT_FOUND') orderNotFoundThrown = true;
+    }
+    assert(orderNotFoundThrown, 'recoverPayment rejects non-existent request with ORDER_NOT_FOUND');
+
+    // 3. Setup test order in CREATED (pending) status
+    const recoveryOrderNonce = 'nonce_recovery_test_1';
+    const recoveryOrderId = 'order_recovery_test_1';
+    const recoveryReqId = 'REQ-RECOVERY-TEST-1';
+    const recoverySecretCode = '8392';
+    const recoveryAmount = 45000; // ₹450.00
+
+    db.prepare(`
+        INSERT INTO payment_v2_orders (
+            order_id, request_id, request_nonce, payload_fingerprint,
+            session_id, transaction_id, kiosk_id, amount, currency,
+            service_type, item_name, encrypted_code, status,
+            created_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, ?, 'CREATED', ?, ?)
+    `).run(
+        recoveryOrderId,
+        recoveryReqId,
+        recoveryOrderNonce,
+        'fingerprint_recovery_1',
+        'sess_recovery_1',
+        'TXN-RECOVERY-1',
+        'KIOSK-001',
+        recoveryAmount,
+        'MEDICINE_PURCHASE',
+        'Paracetamol 500mg',
+        encryptConfirmationCodeAtRest(recoverySecretCode, TEST_SECRET),
+        Date.now() - 30000,
+        Date.now() + 300000
+    );
+
+    // 4. Recovery when Razorpay has NO captured payments yet
+    const pendingRecoveryRes = await v2CloudService.recoverPayment({ requestId: recoveryReqId });
+    assert(pendingRecoveryRes.ok === true, 'recoverPayment returns ok: true when pending');
+    assert(pendingRecoveryRes.paid === false, 'recoverPayment reports paid: false when no payment captured on Razorpay');
+    assert(pendingRecoveryRes.recovered === false, 'recoverPayment reports recovered: false when pending');
+    assert(pendingRecoveryRes.confirmationCode === undefined, 'CRITICAL: Confirmation code NOT exposed while payment is pending');
+
+    const dbCheckPending = db.prepare('SELECT status FROM payment_v2_orders WHERE request_id = ?').get(recoveryReqId);
+    assert(dbCheckPending.status === 'CREATED', 'Order status remains CREATED in database when unpaid');
+
+    // 5. Simulate Razorpay webhook/callback loss: Customer paid on Razorpay, but phone callback never reached bridge
+    const mockRzpPaymentId = 'pay_recovery_captured_999';
+    mockRazorpayOrdersFetchPaymentsMap[recoveryOrderId] = [
+        {
+            id: mockRzpPaymentId,
+            order_id: recoveryOrderId,
+            amount: recoveryAmount,
+            currency: 'INR',
+            status: 'captured',
+            captured: true
+        }
+    ];
+
+    // 6. Execute recovery
+    const successfulRecoveryRes = await v2CloudService.recoverPayment({
+        requestId: recoveryReqId,
+        // Browser sending spoofed / malicious inputs should be completely ignored:
+        spoofedAmount: 100,
+        spoofedPaymentId: 'pay_hacked',
+        spoofedCode: '0000'
+    });
+
+    assert(successfulRecoveryRes.ok === true, 'recoverPayment succeeds on captured payment');
+    assert(successfulRecoveryRes.paid === true, 'recoverPayment reports paid: true');
+    assert(successfulRecoveryRes.recovered === true, 'recoverPayment reports recovered: true');
+    assert(successfulRecoveryRes.newlyVerified === true, 'recoverPayment reports newlyVerified: true on first recovery');
+    assert(successfulRecoveryRes.confirmationCode === recoverySecretCode, 'Confirmation code decrypted and revealed on recovery');
+    assert(successfulRecoveryRes.paymentId === mockRzpPaymentId, 'Authoritative payment ID bound from Razorpay');
+    assert(successfulRecoveryRes.orderId === recoveryOrderId, 'Authoritative order ID returned');
+    assert(successfulRecoveryRes.amount === recoveryAmount, 'Authoritative amount returned (spoofed amount ignored)');
+
+    // 7. Verify SQLite DB state transitioned atomically to PAID
+    const dbCheckPaid = db.prepare('SELECT * FROM payment_v2_orders WHERE request_id = ?').get(recoveryReqId);
+    assert(dbCheckPaid.status === 'PAID', 'Order transitioned to PAID in SQLite database');
+    assert(dbCheckPaid.razorpay_payment_id === mockRzpPaymentId, 'Razorpay payment ID stored in SQLite database');
+    assert(dbCheckPaid.verified_at > 0, 'verified_at timestamp set in SQLite database');
+
+    // 8. Idempotent Repeated Recovery on already PAID order
+    const repeatedRecoveryRes = await v2CloudService.recoverPayment({ requestId: recoveryReqId });
+    assert(repeatedRecoveryRes.ok === true, 'Repeated recoverPayment returns ok: true');
+    assert(repeatedRecoveryRes.paid === true, 'Repeated recoverPayment reports paid: true');
+    assert(repeatedRecoveryRes.alreadyPaid === true, 'Repeated recoverPayment reports alreadyPaid: true');
+    assert(repeatedRecoveryRes.confirmationCode === recoverySecretCode, 'Repeated recovery returns exact same confirmation code');
+    assert(repeatedRecoveryRes.paymentId === mockRzpPaymentId, 'Repeated recovery returns exact same payment ID');
+
+    // 9. Replay Attack Prevention on Recovery
+    // Another order attempts to bind the exact same payment ID
+    const replayOrderId = 'order_recovery_replay_2';
+    const replayReqId = 'REQ-RECOVERY-REPLAY-2';
+    db.prepare(`
+        INSERT INTO payment_v2_orders (
+            order_id, request_id, request_nonce, payload_fingerprint,
+            session_id, transaction_id, kiosk_id, amount, currency,
+            service_type, item_name, encrypted_code, status,
+            created_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, ?, 'CREATED', ?, ?)
+    `).run(
+        replayOrderId,
+        replayReqId,
+        'nonce_recovery_replay_2',
+        'fingerprint_recovery_replay',
+        'sess_recovery_replay',
+        'TXN-RECOVERY-REPLAY',
+        'KIOSK-001',
+        recoveryAmount,
+        'MEDICINE_PURCHASE',
+        'Paracetamol 500mg',
+        encryptConfirmationCodeAtRest('9999', TEST_SECRET),
+        Date.now() - 30000,
+        Date.now() + 300000
+    );
+
+    // Mock Razorpay returning the ALREADY USED payment ID for this new order
+    mockRazorpayOrdersFetchPaymentsMap[replayOrderId] = [
+        {
+            id: mockRzpPaymentId, // Already bound to recoveryOrderId!
+            order_id: replayOrderId,
+            amount: recoveryAmount,
+            currency: 'INR',
+            status: 'captured'
+        }
+    ];
+
+    let replayPaymentIdThrown = false;
+    try {
+        await v2CloudService.recoverPayment({ requestId: replayReqId });
+    } catch (e) {
+        if (e.code === 'PAYMENT_ID_ALREADY_USED') replayPaymentIdThrown = true;
+    }
+    assert(replayPaymentIdThrown, 'recoverPayment rejects already-bound payment ID with PAYMENT_ID_ALREADY_USED (anti-replay)');
 
     // ───────────────────────────────────────────────────────────────────────
     // CLEANUP

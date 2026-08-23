@@ -54,6 +54,7 @@ export function createV2RateLimiter({ windowMs = 60000, max = 60 } = {}) {
 export function createPaymentV2Router(paymentV2CloudService, {
     createOrderLimiter = createV2RateLimiter({ windowMs: 60000, max: 60 }),
     verifyPaymentLimiter = createV2RateLimiter({ windowMs: 60000, max: 30 }),
+    recoverPaymentLimiter = createV2RateLimiter({ windowMs: 60000, max: 30 }),
     emailReceiptLimiter = createV2RateLimiter({ windowMs: 60000, max: 20 })
 } = {}) {
     const router = express.Router();
@@ -152,6 +153,47 @@ export function createPaymentV2Router(paymentV2CloudService, {
                 ok: false,
                 code: err.code || 'PAYMENT_VERIFICATION_FAILED',
                 message: err.message || 'Payment verification failed'
+            });
+        }
+    });
+
+    /**
+     * POST /recover-payment (available at /v2/recover-payment and /api/v2/recover-payment)
+     * Body: { requestId }
+     *
+     * Purpose: Secure payment reconciliation when frontend browser callback is lost.
+     */
+    router.post('/recover-payment', recoverPaymentLimiter, async (req, res) => {
+        try {
+            const { requestId } = req.body || {};
+
+            if (!requestId || typeof requestId !== 'string') {
+                return res.status(400).json({
+                    ok: false,
+                    code: 'MISSING_REQUEST_ID',
+                    message: 'requestId is required'
+                });
+            }
+
+            const result = await paymentV2CloudService.recoverPayment({ requestId });
+            return res.json(result);
+
+        } catch (err) {
+            console.error('[PaymentV2Routes] ❌ Error in recover-payment:', err.message);
+
+            const statusCode = (
+                err.code === 'PAYMENT_V2_NOT_CONFIGURED'
+            ) ? 503 : (
+                err.code === 'ORDER_NOT_FOUND'
+            ) ? 404 : (
+                err.code === 'MISSING_REQUEST_ID' ||
+                err.code === 'PAYMENT_ID_ALREADY_USED'
+            ) ? 400 : (err.code === 'REQUEST_EXPIRED' ? 410 : 500);
+
+            return res.status(statusCode).json({
+                ok: false,
+                code: err.code || 'PAYMENT_RECOVERY_FAILED',
+                message: err.message || 'Failed to recover payment status'
             });
         }
     });
