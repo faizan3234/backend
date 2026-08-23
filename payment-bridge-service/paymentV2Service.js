@@ -274,8 +274,19 @@ export class PaymentV2CloudService {
             // Encrypt Confirmation Code At Rest
             const encryptedCode = encryptConfirmationCodeAtRest(payload.confirmationCode, this.codeSecret);
 
-            const itemName = payload.itemName || payload.medicineName || payload.item_name || payload.medicine_name || null;
-            const cartJson = payload.cart ? (typeof payload.cart === 'string' ? payload.cart : JSON.stringify(payload.cart)) : null;
+            let itemName = payload.itemName || payload.medicineName || payload.item_name || payload.medicine_name || null;
+            let cartJson = null;
+            if (payload.cart) {
+                try {
+                    const parsed = typeof payload.cart === 'string' ? JSON.parse(payload.cart) : payload.cart;
+                    cartJson = JSON.stringify(parsed);
+                    if (!itemName && Array.isArray(parsed) && parsed.length > 0) {
+                        itemName = parsed[0].name || parsed[0].item_name || parsed[0].medicine_name || parsed[0].kit_id || null;
+                    }
+                } catch (e) {
+                    cartJson = typeof payload.cart === 'string' ? payload.cart : JSON.stringify(payload.cart);
+                }
+            }
             const customerName = payload.customerName || payload.customer_name || null;
 
             // Persist Order in SQLite

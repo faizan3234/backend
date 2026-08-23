@@ -188,6 +188,34 @@ export function setupPdfFonts(doc) {
     };
 }
 
+export const KNOWN_KIT_NAMES = {
+    'KIT-PARACETAMOL': 'Paracetamol 650mg',
+    'KIT-ASPIRIN': 'Aspirin 75mg',
+    'KIT-VITAMIN-D': 'Vitamin D3 60k IU',
+    'KIT-VITAMIN-C': 'Vitamin C 500mg',
+    'KIT-CETIRIZINE': 'Cetirizine 10mg',
+    'KIT-ANTACID': 'Antacid Gel',
+    'KIT-BANDAGE': 'Bandage Strips Pack',
+    'KIT-BASE-32': 'Essential First Aid & Pain Relief Kit',
+    'KIT-FIRST-AID': 'Essential First Aid Kit'
+};
+
+/**
+ * Resolve human-friendly kit/medicine name from inventory kit_id or raw name
+ * @param {*} rawName
+ * @returns {string|null}
+ */
+export function resolveMedicineKitName(rawName) {
+    if (!rawName) return null;
+    const str = String(rawName).trim();
+    if (KNOWN_KIT_NAMES[str]) return KNOWN_KIT_NAMES[str];
+    if (KNOWN_KIT_NAMES[str.toUpperCase()]) return KNOWN_KIT_NAMES[str.toUpperCase()];
+    if (str === 'Medicine Item' || str === 'Medicine Purchase' || str === 'MEDICINE_PURCHASE' || str === 'MEDICINE') {
+        return null;
+    }
+    return str;
+}
+
 /**
  * Build authoritative receipt dataset strictly from Cloud Payment V2 order record
  * @param {Object} order - Authoritative payment_v2_orders row
@@ -209,16 +237,17 @@ export function normalizeCloudReceiptData(order, recipientEmail) {
             const parsed = typeof order.cart === 'string' ? JSON.parse(order.cart) : order.cart;
             if (Array.isArray(parsed) && parsed.length > 0) {
                 cartItems = parsed.map(item => {
-                    let itemName = safe(item.name || item.item_name || item.medicine_name || item.kit_id);
-                    if (!itemName || itemName === 'Medicine Item' || itemName === 'Medicine Purchase' || itemName === 'MEDICINE') {
-                        itemName = 'Paracetamol 500mg';
-                    }
+                    const rawName = item.name || item.item_name || item.medicine_name || item.kit_name || item.kit_id;
+                    const resolvedName = resolveMedicineKitName(rawName) || (rawName && rawName !== 'Medicine Purchase' ? rawName : 'Paracetamol 500mg');
+                    const qty = Number(item.quantity ?? item.qty ?? item.cartQuantity ?? 1);
+                    const unitPrice = Number(item.price ?? item.unit_price ?? item.unitPrice ?? 0);
+                    const total = Number(item.total ?? (unitPrice * qty));
                     return {
-                        name: itemName,
+                        name: resolvedName,
                         description: safe(item.description || item.desc, ''),
-                        qty: Number(item.cartQuantity || item.quantity || 1),
-                        unitPrice: Number(item.price || item.unit_price || 0),
-                        total: Number(item.total || ((item.price || 0) * (item.quantity || 1)))
+                        qty,
+                        unitPrice,
+                        total
                     };
                 });
             }
@@ -227,9 +256,12 @@ export function normalizeCloudReceiptData(order, recipientEmail) {
         }
     }
 
-    // Determine primary item label: Always display real medicine/kit name
-    let primaryItemName = order.item_name || order.medicine_name || order.package_name || order.kit_name;
-    if (!primaryItemName || primaryItemName === 'Medicine Purchase' || primaryItemName === 'MEDICINE_PURCHASE' || primaryItemName === 'MEDICINE') {
+    // Determine primary item label: Always display real medicine/kit name matching dispensing SQL
+    let primaryItemName = resolveMedicineKitName(order.item_name || order.medicine_name || order.package_name || order.kit_name || order.kit_id);
+    if (!primaryItemName && cartItems && cartItems.length > 0) {
+        primaryItemName = cartItems[0].name;
+    }
+    if (!primaryItemName) {
         const normService = String(order.service_type || '').toUpperCase();
         if (normService === 'HEALTH_CHECKUP' || normService === 'CHECKUP') {
             primaryItemName = 'Comprehensive Health Screening';

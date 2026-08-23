@@ -192,18 +192,24 @@ export class PaymentV2Service {
         this.expireStaleRequests();
 
         const effectiveServiceType = serviceType || session.service_type || 'HEALTH_CHECKUP';
-        const canonicalNewCart = getCanonicalCart(cart);
         const now = Date.now();
 
         // 1. Resolve or create authoritative transaction with cart-aware idempotency
         let transaction = this.transactionManager.getTransactionBySession(sessionId);
+        const transactionCart = transaction?.cart
+            ? (Array.isArray(transaction.cart) ? transaction.cart : (typeof transaction.cart === 'string' ? JSON.parse(transaction.cart || '[]') : []))
+            : [];
+
+        // If cart is not explicitly provided in options, preserve existing transaction cart for idempotency
+        const cartPassed = Array.isArray(cart) && cart.length > 0;
+        const targetCart = cartPassed ? cart : (transactionCart.length > 0 ? transactionCart : cart);
+        const canonicalNewCart = getCanonicalCart(targetCart);
 
         if (transaction) {
             if (transaction.status === 'VERIFIED' || transaction.status === 'FULFILLED' || transaction.verified === 1) {
                 throw new Error(`Transaction ${transaction.transaction_id} is already paid`);
             }
 
-            const transactionCart = Array.isArray(transaction.cart) ? transaction.cart : (typeof transaction.cart === 'string' ? JSON.parse(transaction.cart || '[]') : []);
             const isSameCart = areCartsEqual(transactionCart, canonicalNewCart);
             const isSameServiceType = (transaction.type === effectiveServiceType);
 
@@ -282,6 +288,46 @@ export class PaymentV2Service {
             confirmationCode
         });
 
+        // Resolve itemized cart with real medicine/kit names from SQL database
+        let resolvedCart = [];
+        let primaryItemName = null;
+        if (transaction.cart) {
+            try {
+                const parsedCart = typeof transaction.cart === 'string' ? JSON.parse(transaction.cart) : transaction.cart;
+                if (Array.isArray(parsedCart) && parsedCart.length > 0) {
+                    resolvedCart = parsedCart.map(item => {
+                        const kitId = item.kit_id || item.id || item.inventory_id;
+                        let kitName = item.name;
+                        let unitPrice = item.price || item.unit_price;
+                        if (!kitName || unitPrice === undefined) {
+                            try {
+                                const row = this.db.prepare('SELECT name, price FROM inventory WHERE kit_id = ?').get(kitId);
+                                if (row) {
+                                    kitName = row.name;
+                                    unitPrice = row.price;
+                                }
+                            } catch (e) {}
+                        }
+                        const qty = Number(item.quantity || item.cartQuantity || 1);
+                        const priceNum = Number(unitPrice || 0);
+                        return {
+                            kit_id: kitId,
+                            name: kitName || kitId,
+                            quantity: qty,
+                            price: priceNum,
+                            total: priceNum * qty
+                        };
+                    });
+                    if (resolvedCart.length > 0) {
+                        primaryItemName = resolvedCart[0].name;
+                    }
+                }
+            } catch (e) {}
+        }
+
+        const customerData = session.customer_data ?
+            (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) : {};
+
         // Build canonical payload
         const canonicalPayload = {
             v: 2,
@@ -298,6 +344,16 @@ export class PaymentV2Service {
             issuedAt: now,
             expiresAt
         };
+
+        if (resolvedCart.length > 0) {
+            canonicalPayload.cart = resolvedCart;
+        }
+        if (primaryItemName) {
+            canonicalPayload.itemName = primaryItemName;
+        }
+        if (customerData && customerData.name) {
+            canonicalPayload.customerName = customerData.name;
+        }
 
         // Sign with Kiosk Ed25519 Private Key
         const kioskPrivateKey = this._getKioskPrivateKey();
