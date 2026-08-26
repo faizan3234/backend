@@ -755,33 +755,33 @@ const app = express();
 
 // Production-ready CORS configuration
 const allowedOrigins = [
-  // Local Kiosk Base URL
-  KIOSK_BASE_URL,
-  "http://192.168.50.1:5000",
-  "http://192.168.50.1",
+    // Local Kiosk Base URL
+    KIOSK_BASE_URL,
+    "http://192.168.50.1:5000",
+    "http://192.168.50.1",
 
-  // Local Development
-  "http://localhost:3000",
-  "http://localhost:5001",
-  "http://localhost:5173",
-  "http://localhost:5174",
-  "http://127.0.0.1:3000",
-  "http://127.0.0.1:5001",
-  "http://127.0.0.1:5173",
-  "http://127.0.0.1:5174",
+    // Local Development
+    "http://localhost:3000",
+    "http://localhost:5001",
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5001",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
 
-  // Local Network
-  "http://192.168.1.8:5173",
-  "http://192.168.1.8:5174",
-  "http://192.168.0.101:5173",
+    // Local Network
+    "http://192.168.1.8:5173",
+    "http://192.168.1.8:5174",
+    "http://192.168.0.101:5173",
 
-  // Vercel Deployments
-  "https://reliv.vercel.app",
-  "https://reliv-frontend-henna.vercel.app",
-  "https://mail-request-m33c.vercel.app",
+    // Vercel Deployments
+    "https://reliv.vercel.app",
+    "https://reliv-frontend-henna.vercel.app",
+    "https://mail-request-m33c.vercel.app",
 
-  // Production URL from environment
-  process.env.FRONTEND_URL,
+    // Production URL from environment
+    process.env.FRONTEND_URL,
 ].filter(Boolean);
 
 app.use(
@@ -948,11 +948,11 @@ async function start() {
         db = initializeDatabase();
         sessionManager.initialize();
         transactionManager.initialize();
-        
+
         // ✅ PHASE 1: Initialize fulfillment manager with MQTT client
         fulfillmentManager.setMqttClient(mqttClient);
         log.info('✅ Local database, session manager, transaction manager, and fulfillment manager initialized');
-        
+
         // ✅ PHASE 1: Recover pending/in-progress fulfillment jobs after restart
         // IN_PROGRESS jobs → MANUAL_REVIEW_REQUIRED (never auto-retry uncertain physical ops)
         // PENDING jobs → ready for retry
@@ -969,7 +969,7 @@ async function start() {
                     }
                 }
             }
-            
+
             // Log any jobs needing manual review
             const manualReviewJobs = fulfillmentManager.getManualReviewJobs();
             if (manualReviewJobs.length > 0) {
@@ -1002,7 +1002,7 @@ async function start() {
             inventoryManager = new InventoryManager(sqliteDb);
             settingsManager.initialize();
             reportPrice = settingsManager.getReportPrice();
-            
+
             // Start email worker if Gmail configured
             if (transporter) {
                 emailQueue.startWorker(1); // Process every 1 minute
@@ -1064,25 +1064,25 @@ async function start() {
                 // Migrate admin auth data from files to MongoDB (one-time sync)
                 await migrateAdminDataToMongo();
 
-            // Start proactive inventory monitoring only after DB is ready
-            startInventoryMonitoring();
+                // Start proactive inventory monitoring only after DB is ready
+                startInventoryMonitoring();
 
-            return; // Success, exit retry loop
-        } catch (err) {
-            retries--;
-            log.error(`❌ Failed to connect to MongoDB (${retries} retries left):`, err.message);
-            if (retries === 0) {
-                log.error('⚠️ Could not connect to MongoDB - server running in degraded mode');
-                log.warn('Database-dependent features will be unavailable');
-                // Don't exit! Keep server running for health checks
-                // Schedule background reconnection attempts
-                setTimeout(reconnectDB, 30000);
-                return;
+                return; // Success, exit retry loop
+            } catch (err) {
+                retries--;
+                log.error(`❌ Failed to connect to MongoDB (${retries} retries left):`, err.message);
+                if (retries === 0) {
+                    log.error('⚠️ Could not connect to MongoDB - server running in degraded mode');
+                    log.warn('Database-dependent features will be unavailable');
+                    // Don't exit! Keep server running for health checks
+                    // Schedule background reconnection attempts
+                    setTimeout(reconnectDB, 30000);
+                    return;
+                }
+                log.info(`Retrying in 5 seconds...`);
+                await new Promise(resolve => setTimeout(resolve, 5000));
             }
-            log.info(`Retrying in 5 seconds...`);
-            await new Promise(resolve => setTimeout(resolve, 5000));
         }
-    }
     } else {
         log.info('ℹ️ MongoDB not configured - operating in OFFLINE-FIRST mode');
         log.info('✅ All kiosk functions will work locally with SQLite');
@@ -1251,885 +1251,885 @@ const generatePdfFromImage = (imageBase64, options = {}) => {
 };
 function generateReportPdf(data, ecoStats) {
     return new Promise((resolve, reject) => {
-      try {
-        const doc = new PDFDocument({ size: "A4", margin: 0, compress: true });
-        const bufs = [];
-        doc.on("data", bufs.push.bind(bufs));
-        doc.on("end", () => resolve(Buffer.concat(bufs)));
-        doc.on("error", reject);
+        try {
+            const doc = new PDFDocument({ size: "A4", margin: 0, compress: true });
+            const bufs = [];
+            doc.on("data", bufs.push.bind(bufs));
+            doc.on("end", () => resolve(Buffer.concat(bufs)));
+            doc.on("error", reject);
 
-        const patient = data.patient || {};
-        const vitals = data.vitals || {};
-        const bc = data.bodyComposition || null;
-        const history = data.history;
-        const W = 595.28, H = 841.89, M = 40, CW = W - M * 2;
-        let pageNum = 0;
-        const patientHeight = bc?.height || vitals.height || null;
+            const patient = data.patient || {};
+            const vitals = data.vitals || {};
+            const bc = data.bodyComposition || null;
+            const history = data.history;
+            const W = 595.28, H = 841.89, M = 40, CW = W - M * 2;
+            let pageNum = 0;
+            const patientHeight = bc?.height || vitals.height || null;
 
-        // ── Scan level & unlock flags ──
-        const hist = history && Array.isArray(history) ? history : [];
-        const scan = patient.scanCount || (hist.length + 1);
-        const show = {
-            bodyCompBars: scan >= 2,
-            trendGraph: scan >= 2 && hist.length >= 1,
-            sinceLastVisit: scan >= 2 && hist.length >= 1,
-            deepBodyComp: scan >= 3,
-            derivedStats: scan >= 3,
-            trendTable: scan >= 3 && hist.length >= 1,
-            lifestyleStats: scan >= 4,
-            riskAnalysis: scan >= 5,
-            journeyRecap: scan >= 6 && hist.length >= 2,
-            journeyComplete: scan >= 7,
-            unlocksNext: scan < 7,
-        };
+            // ── Scan level & unlock flags ──
+            const hist = history && Array.isArray(history) ? history : [];
+            const scan = patient.scanCount || (hist.length + 1);
+            const show = {
+                bodyCompBars: scan >= 2,
+                trendGraph: scan >= 2 && hist.length >= 1,
+                sinceLastVisit: scan >= 2 && hist.length >= 1,
+                deepBodyComp: scan >= 3,
+                derivedStats: scan >= 3,
+                trendTable: scan >= 3 && hist.length >= 1,
+                lifestyleStats: scan >= 4,
+                riskAnalysis: scan >= 5,
+                journeyRecap: scan >= 6 && hist.length >= 2,
+                journeyComplete: scan >= 7,
+                unlocksNext: scan < 7,
+            };
 
-        // ── Palette ──
-        const C = {
-            brand: "#F97316", brandDark: "#EA580C", brandLight: "#FFF7ED",
-            green: "#16A34A", greenBg: "#F0FDF4", greenLight: "#DCFCE7",
-            yellow: "#CA8A04", yellowBg: "#FEFCE8",
-            red: "#DC2626", redBg: "#FEF2F2",
-            blue: "#2563EB", blueBg: "#EFF6FF", blueLight: "#DBEAFE",
-            text: "#0F172A", textMid: "#334155", textLight: "#64748B", textMuted: "#94A3B8",
-            border: "#E2E8F0", borderLight: "#F1F5F9", white: "#FFFFFF", bg: "#F8FAFC",
-            dark: "#1E293B", purple: "#7C3AED", purpleBg: "#F5F3FF",
-        };
+            // ── Palette ──
+            const C = {
+                brand: "#F97316", brandDark: "#EA580C", brandLight: "#FFF7ED",
+                green: "#16A34A", greenBg: "#F0FDF4", greenLight: "#DCFCE7",
+                yellow: "#CA8A04", yellowBg: "#FEFCE8",
+                red: "#DC2626", redBg: "#FEF2F2",
+                blue: "#2563EB", blueBg: "#EFF6FF", blueLight: "#DBEAFE",
+                text: "#0F172A", textMid: "#334155", textLight: "#64748B", textMuted: "#94A3B8",
+                border: "#E2E8F0", borderLight: "#F1F5F9", white: "#FFFFFF", bg: "#F8FAFC",
+                dark: "#1E293B", purple: "#7C3AED", purpleBg: "#F5F3FF",
+            };
 
-        // ── Assessments ──
-        const comp = {
-            bp: assessBP(vitals.systolic, vitals.diastolic),
-            o2: assessSpO2(vitals.oxygen),
-            hr: assessPulse(vitals.bpm),
-            temp: assessTempF(vitals.temperature),
-            eyes: assessEyes(vitals.leftEye, vitals.rightEye),
-            bmi: assessBMI(bc?.bmi),
-        };
-        const scores = [comp.bp, comp.o2, comp.hr, comp.temp, comp.eyes, comp.bmi].filter(s => s.score > 0);
-        const healthScore = scores.length ? Math.round(scores.reduce((a, s) => a + s.score, 0) / scores.length) : 0;
+            // ── Assessments ──
+            const comp = {
+                bp: assessBP(vitals.systolic, vitals.diastolic),
+                o2: assessSpO2(vitals.oxygen),
+                hr: assessPulse(vitals.bpm),
+                temp: assessTempF(vitals.temperature),
+                eyes: assessEyes(vitals.leftEye, vitals.rightEye),
+                bmi: assessBMI(bc?.bmi),
+            };
+            const scores = [comp.bp, comp.o2, comp.hr, comp.temp, comp.eyes, comp.bmi].filter(s => s.score > 0);
+            const healthScore = scores.length ? Math.round(scores.reduce((a, s) => a + s.score, 0) / scores.length) : 0;
 
-        function scoreColor(s) { return s >= 85 ? C.green : s >= 65 ? C.yellow : C.red; }
-        function scoreLabel(s) { return s >= 90 ? "Excellent" : s >= 80 ? "Very Good" : s >= 70 ? "Good" : s >= 60 ? "Fair" : "Needs Attention"; }
-        function statusClr(label) {
-            if (!label || label === "—") return { fg: C.textMuted, bg: C.borderLight, dot: C.textMuted };
-            if (/Normal|Good|Excellent/i.test(label)) return { fg: C.green, bg: C.greenBg, dot: C.green };
-            if (/Low|High|Over|Under|Obese/i.test(label)) return { fg: C.red, bg: C.redBg, dot: C.red };
-            return { fg: C.yellow, bg: C.yellowBg, dot: C.yellow };
-        }
-
-        // ── Drawing helpers ──
-        function drawPageFooter() {
-            pageNum++;
-            doc.save();
-            doc.moveTo(M, H - 48).lineTo(W - M, H - 48).lineWidth(0.4).stroke(C.border);
-            doc.fontSize(4.5).fillColor(C.textMuted).font("Helvetica")
-               .text("DISCLAIMER: This auto-generated report is for informational purposes only. It does not constitute medical advice, diagnosis, or treatment. Always consult a qualified healthcare professional before making health decisions. Reliv Health assumes no liability for actions taken based on this report.", M, H - 42, { width: CW * 0.72, lineGap: 0.3 });
-            doc.fontSize(6.5).fillColor(C.textLight).text(`Page ${pageNum}`, W - M - 50, H - 38, { width: 50, align: "right" });
-            doc.fontSize(6.5).fillColor(C.brand).font("Helvetica-Bold").text("Reliv Health", W - M - 50, H - 28, { width: 50, align: "right" });
-            doc.restore();
-        }
-        function newPage() { drawPageFooter(); doc.addPage({ size: "A4", margin: 0 }); return M + 10; }
-        function ensure(y, n) { return y + n > H - 55 ? newPage() : y; }
-
-        function sectionTitle(title, y) {
-            y = ensure(y, 30);
-            doc.roundedRect(M, y, 3.5, 15, 1.75).fill(C.brand);
-            doc.fontSize(11.5).font("Helvetica-Bold").fillColor(C.text).text(title, M + 12, y + 1);
-            return y + 24;
-        }
-        function badge(text, x, y, clr) {
-            const tw = doc.fontSize(7).font("Helvetica-Bold").widthOfString(text);
-            const pw = tw + 12, ph = 15;
-            doc.roundedRect(x, y, pw, ph, 7.5).fill(clr.bg);
-            doc.fillColor(clr.fg).text(text, x + 6, y + 3);
-            return pw;
-        }
-        function drawArc(cx, cy, r, startAngle, endAngle, lineW, color) {
-            const segments = Math.max(Math.ceil(Math.abs(endAngle - startAngle) / (Math.PI / 16)), 1);
-            const step = (endAngle - startAngle) / segments;
-            doc.save();
-            doc.lineWidth(lineW).strokeColor(color).lineCap("round");
-            const sx = cx + r * Math.cos(startAngle), sy = cy + r * Math.sin(startAngle);
-            doc.moveTo(sx, sy);
-            for (let i = 1; i <= segments; i++) { const a = startAngle + i * step; doc.lineTo(cx + r * Math.cos(a), cy + r * Math.sin(a)); }
-            doc.stroke();
-            doc.restore();
-        }
-        function drawCheckmark(cx, cy, size, color) {
-            doc.save();
-            doc.lineWidth(1.5).strokeColor(color).lineCap("round").lineJoin("round");
-            doc.moveTo(cx - size * 0.35, cy + size * 0.05)
-               .lineTo(cx - size * 0.05, cy + size * 0.35)
-               .lineTo(cx + size * 0.4, cy - size * 0.3)
-               .stroke();
-            doc.restore();
-        }
-        function drawTriangle(x, y, up, color) {
-            doc.save().fillColor(color);
-            if (up) { doc.moveTo(x, y + 5).lineTo(x + 3, y).lineTo(x + 6, y + 5).closePath().fill(); }
-            else { doc.moveTo(x, y).lineTo(x + 3, y + 5).lineTo(x + 6, y).closePath().fill(); }
-            doc.restore();
-        }
-        function drawMiniScore(val, x, y, boxW) {
-            if (!val || val <= 0) return;
-            const clr = scoreColor(val);
-            const scoreStr = `${val}`;
-            const sw = doc.fontSize(7).font("Helvetica-Bold").widthOfString(scoreStr);
-            const slashW = doc.fontSize(5).font("Helvetica").widthOfString("/100");
-            const totalW = sw + slashW + 1;
-            const sx = x + boxW - 12 - totalW;
-            doc.fontSize(7).font("Helvetica-Bold").fillColor(clr).text(scoreStr, sx, y);
-            doc.fontSize(5).font("Helvetica").fillColor(C.textMuted).text("/100", sx + sw + 1, y + 1.5);
-        }
-
-        // Build graph data: history + current vitals as latest point
-        const graphData = [...hist, {
-            date: new Date().toISOString().split("T")[0],
-            systolic: vitals.systolic, diastolic: vitals.diastolic,
-            bpm: vitals.bpm, oxygen: vitals.oxygen, temperature: vitals.temperature,
-        }];
-
-        // ═════════════════════════════════════════
-        //  HEADER
-        // ═════════════════════════════════════════
-        const hdrH = 120, splitX = 210;
-        doc.rect(0, 0, W, hdrH).fill(C.brand);
-        doc.save();
-        doc.moveTo(0, 0).lineTo(splitX - 20, 0)
-           .bezierCurveTo(splitX + 15, 0, splitX + 15, hdrH, splitX - 20, hdrH)
-           .lineTo(0, hdrH).closePath().fill(C.white);
-        doc.restore();
-        doc.save().opacity(0.05);
-        doc.circle(W - 50, 25, 70).fill(C.white);
-        doc.circle(W - 120, 100, 40).fill(C.white);
-        doc.restore();
-
-        if (RELIV_LOGO_BUFFER) {
-            try {
-                const lH = 65;
-                const lImg = doc.openImage(RELIV_LOGO_BUFFER);
-                const lW = (lImg.width / lImg.height) * lH;
-                const lX = (splitX - 30) / 2 - lW / 2 + 5;
-                const lY = (hdrH - lH) / 2;
-                doc.image(RELIV_LOGO_BUFFER, lX, lY, { height: lH });
-            } catch {
-                doc.fontSize(28).font("Helvetica-Bold").fillColor(C.brand).text("Reliv", 30, hdrH / 2 - 14);
+            function scoreColor(s) { return s >= 85 ? C.green : s >= 65 ? C.yellow : C.red; }
+            function scoreLabel(s) { return s >= 90 ? "Excellent" : s >= 80 ? "Very Good" : s >= 70 ? "Good" : s >= 60 ? "Fair" : "Needs Attention"; }
+            function statusClr(label) {
+                if (!label || label === "—") return { fg: C.textMuted, bg: C.borderLight, dot: C.textMuted };
+                if (/Normal|Good|Excellent/i.test(label)) return { fg: C.green, bg: C.greenBg, dot: C.green };
+                if (/Low|High|Over|Under|Obese/i.test(label)) return { fg: C.red, bg: C.redBg, dot: C.red };
+                return { fg: C.yellow, bg: C.yellowBg, dot: C.yellow };
             }
-        } else {
-            doc.fontSize(28).font("Helvetica-Bold").fillColor(C.brand).text("Reliv", 30, hdrH / 2 - 14);
-        }
 
-        const txStart = splitX + 10, txW = W - txStart - M;
-        doc.fontSize(20).font("Helvetica-Bold").fillColor(C.white).text("Health Report", txStart, 22, { width: txW });
-        doc.save().opacity(0.9);
-        doc.fontSize(9).font("Helvetica").fillColor(C.white).text("Your Personalized Wellness Summary", txStart, 48, { width: txW });
-        doc.restore();
-        const reportDate = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
-        doc.save().opacity(0.8);
-        doc.fontSize(8).font("Helvetica").fillColor(C.white).text(reportDate, txStart, 63, { width: txW });
-        doc.restore();
-
-        // Scan tracker with drawn tick marks
-        const scansDone = scan, maxScans = patient.maxScans || 7;
-        const scansLeft = Math.max(0, maxScans - scansDone);
-        const dotY = 86, dotR = 5.5;
-        doc.fontSize(7).font("Helvetica-Bold").fillColor(C.white).text(`${scansDone}/${maxScans} Scans`, txStart, dotY - 1);
-        const dotStartX = txStart + 55;
-        for (let i = 0; i < maxScans; i++) {
-            const dx = dotStartX + i * 15;
-            if (i < scansDone) {
-                doc.circle(dx, dotY + 4, dotR).fill(C.white);
-                drawCheckmark(dx, dotY + 4, dotR * 1.1, C.green);
-            } else {
+            // ── Drawing helpers ──
+            function drawPageFooter() {
+                pageNum++;
                 doc.save();
-                doc.circle(dx, dotY + 4, dotR).lineWidth(1.2).strokeColor(C.white).stroke();
+                doc.moveTo(M, H - 48).lineTo(W - M, H - 48).lineWidth(0.4).stroke(C.border);
+                doc.fontSize(4.5).fillColor(C.textMuted).font("Helvetica")
+                    .text("DISCLAIMER: This auto-generated report is for informational purposes only. It does not constitute medical advice, diagnosis, or treatment. Always consult a qualified healthcare professional before making health decisions. Reliv Health assumes no liability for actions taken based on this report.", M, H - 42, { width: CW * 0.72, lineGap: 0.3 });
+                doc.fontSize(6.5).fillColor(C.textLight).text(`Page ${pageNum}`, W - M - 50, H - 38, { width: 50, align: "right" });
+                doc.fontSize(6.5).fillColor(C.brand).font("Helvetica-Bold").text("Reliv Health", W - M - 50, H - 28, { width: 50, align: "right" });
                 doc.restore();
             }
-        }
-        if (scansLeft > 0) {
-            doc.save().opacity(0.85);
-            doc.fontSize(6.5).font("Helvetica").fillColor(C.white)
-               .text(`${scansLeft} remaining`, dotStartX + maxScans * 15 + 4, dotY);
+            function newPage() { drawPageFooter(); doc.addPage({ size: "A4", margin: 0 }); return M + 10; }
+            function ensure(y, n) { return y + n > H - 55 ? newPage() : y; }
+
+            function sectionTitle(title, y) {
+                y = ensure(y, 30);
+                doc.roundedRect(M, y, 3.5, 15, 1.75).fill(C.brand);
+                doc.fontSize(11.5).font("Helvetica-Bold").fillColor(C.text).text(title, M + 12, y + 1);
+                return y + 24;
+            }
+            function badge(text, x, y, clr) {
+                const tw = doc.fontSize(7).font("Helvetica-Bold").widthOfString(text);
+                const pw = tw + 12, ph = 15;
+                doc.roundedRect(x, y, pw, ph, 7.5).fill(clr.bg);
+                doc.fillColor(clr.fg).text(text, x + 6, y + 3);
+                return pw;
+            }
+            function drawArc(cx, cy, r, startAngle, endAngle, lineW, color) {
+                const segments = Math.max(Math.ceil(Math.abs(endAngle - startAngle) / (Math.PI / 16)), 1);
+                const step = (endAngle - startAngle) / segments;
+                doc.save();
+                doc.lineWidth(lineW).strokeColor(color).lineCap("round");
+                const sx = cx + r * Math.cos(startAngle), sy = cy + r * Math.sin(startAngle);
+                doc.moveTo(sx, sy);
+                for (let i = 1; i <= segments; i++) { const a = startAngle + i * step; doc.lineTo(cx + r * Math.cos(a), cy + r * Math.sin(a)); }
+                doc.stroke();
+                doc.restore();
+            }
+            function drawCheckmark(cx, cy, size, color) {
+                doc.save();
+                doc.lineWidth(1.5).strokeColor(color).lineCap("round").lineJoin("round");
+                doc.moveTo(cx - size * 0.35, cy + size * 0.05)
+                    .lineTo(cx - size * 0.05, cy + size * 0.35)
+                    .lineTo(cx + size * 0.4, cy - size * 0.3)
+                    .stroke();
+                doc.restore();
+            }
+            function drawTriangle(x, y, up, color) {
+                doc.save().fillColor(color);
+                if (up) { doc.moveTo(x, y + 5).lineTo(x + 3, y).lineTo(x + 6, y + 5).closePath().fill(); }
+                else { doc.moveTo(x, y).lineTo(x + 3, y + 5).lineTo(x + 6, y).closePath().fill(); }
+                doc.restore();
+            }
+            function drawMiniScore(val, x, y, boxW) {
+                if (!val || val <= 0) return;
+                const clr = scoreColor(val);
+                const scoreStr = `${val}`;
+                const sw = doc.fontSize(7).font("Helvetica-Bold").widthOfString(scoreStr);
+                const slashW = doc.fontSize(5).font("Helvetica").widthOfString("/100");
+                const totalW = sw + slashW + 1;
+                const sx = x + boxW - 12 - totalW;
+                doc.fontSize(7).font("Helvetica-Bold").fillColor(clr).text(scoreStr, sx, y);
+                doc.fontSize(5).font("Helvetica").fillColor(C.textMuted).text("/100", sx + sw + 1, y + 1.5);
+            }
+
+            // Build graph data: history + current vitals as latest point
+            const graphData = [...hist, {
+                date: new Date().toISOString().split("T")[0],
+                systolic: vitals.systolic, diastolic: vitals.diastolic,
+                bpm: vitals.bpm, oxygen: vitals.oxygen, temperature: vitals.temperature,
+            }];
+
+            // ═════════════════════════════════════════
+            //  HEADER
+            // ═════════════════════════════════════════
+            const hdrH = 120, splitX = 210;
+            doc.rect(0, 0, W, hdrH).fill(C.brand);
+            doc.save();
+            doc.moveTo(0, 0).lineTo(splitX - 20, 0)
+                .bezierCurveTo(splitX + 15, 0, splitX + 15, hdrH, splitX - 20, hdrH)
+                .lineTo(0, hdrH).closePath().fill(C.white);
             doc.restore();
-        }
+            doc.save().opacity(0.05);
+            doc.circle(W - 50, 25, 70).fill(C.white);
+            doc.circle(W - 120, 100, 40).fill(C.white);
+            doc.restore();
 
-        // Wave transition
-        doc.save();
-        const wt = hdrH - 14;
-        doc.moveTo(0, wt).bezierCurveTo(W * 0.3, wt + 18, W * 0.7, wt - 6, W, wt + 10)
-           .lineTo(W, hdrH + 6).lineTo(0, hdrH + 6).closePath().fill(C.white);
-        doc.restore();
+            if (RELIV_LOGO_BUFFER) {
+                try {
+                    const lH = 65;
+                    const lImg = doc.openImage(RELIV_LOGO_BUFFER);
+                    const lW = (lImg.width / lImg.height) * lH;
+                    const lX = (splitX - 30) / 2 - lW / 2 + 5;
+                    const lY = (hdrH - lH) / 2;
+                    doc.image(RELIV_LOGO_BUFFER, lX, lY, { height: lH });
+                } catch {
+                    doc.fontSize(28).font("Helvetica-Bold").fillColor(C.brand).text("Reliv", 30, hdrH / 2 - 14);
+                }
+            } else {
+                doc.fontSize(28).font("Helvetica-Bold").fillColor(C.brand).text("Reliv", 30, hdrH / 2 - 14);
+            }
 
-        let y = hdrH + 14;
+            const txStart = splitX + 10, txW = W - txStart - M;
+            doc.fontSize(20).font("Helvetica-Bold").fillColor(C.white).text("Health Report", txStart, 22, { width: txW });
+            doc.save().opacity(0.9);
+            doc.fontSize(9).font("Helvetica").fillColor(C.white).text("Your Personalized Wellness Summary", txStart, 48, { width: txW });
+            doc.restore();
+            const reportDate = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+            doc.save().opacity(0.8);
+            doc.fontSize(8).font("Helvetica").fillColor(C.white).text(reportDate, txStart, 63, { width: txW });
+            doc.restore();
 
-        // ═════════════════════════════════════════
-        //  HEALTH SCORE + PATIENT INFO
-        // ═════════════════════════════════════════
-        y = ensure(y, 78);
-        const scoreW = 110, infoW = CW - scoreW - 12;
+            // Scan tracker with drawn tick marks
+            const scansDone = scan, maxScans = patient.maxScans || 7;
+            const scansLeft = Math.max(0, maxScans - scansDone);
+            const dotY = 86, dotR = 5.5;
+            doc.fontSize(7).font("Helvetica-Bold").fillColor(C.white).text(`${scansDone}/${maxScans} Scans`, txStart, dotY - 1);
+            const dotStartX = txStart + 55;
+            for (let i = 0; i < maxScans; i++) {
+                const dx = dotStartX + i * 15;
+                if (i < scansDone) {
+                    doc.circle(dx, dotY + 4, dotR).fill(C.white);
+                    drawCheckmark(dx, dotY + 4, dotR * 1.1, C.green);
+                } else {
+                    doc.save();
+                    doc.circle(dx, dotY + 4, dotR).lineWidth(1.2).strokeColor(C.white).stroke();
+                    doc.restore();
+                }
+            }
+            if (scansLeft > 0) {
+                doc.save().opacity(0.85);
+                doc.fontSize(6.5).font("Helvetica").fillColor(C.white)
+                    .text(`${scansLeft} remaining`, dotStartX + maxScans * 15 + 4, dotY);
+                doc.restore();
+            }
 
-        const scX = M, scY = y;
-        doc.roundedRect(scX, scY, scoreW, 74, 8).fillAndStroke(C.white, C.border);
-        const ctrX = scX + scoreW / 2, ctrY = scY + 32, radius = 22;
-        const sColor = scoreColor(healthScore);
-        doc.save();
-        doc.circle(ctrX, ctrY, radius).lineWidth(5).strokeOpacity(0.12).strokeColor(sColor).stroke();
-        doc.restore();
-        if (healthScore > 0) {
-            drawArc(ctrX, ctrY, radius, -Math.PI / 2, -Math.PI / 2 + (healthScore / 100) * 2 * Math.PI, 4.5, sColor);
-        }
-        doc.fontSize(20).font("Helvetica-Bold").fillColor(sColor)
-           .text(`${healthScore}`, ctrX - 18, ctrY - 10, { width: 36, align: "center" });
-        doc.fontSize(6).font("Helvetica").fillColor(C.textMuted)
-           .text("/ 100", ctrX - 12, ctrY + 10, { width: 24, align: "center" });
-        doc.fontSize(8).font("Helvetica-Bold").fillColor(sColor)
-           .text(scoreLabel(healthScore), scX, scY + 60, { width: scoreW, align: "center" });
-        doc.fontSize(6).font("Helvetica").fillColor(C.textMuted)
-           .text("HEALTH SCORE", scX, scY + 4, { width: scoreW, align: "center" });
+            // Wave transition
+            doc.save();
+            const wt = hdrH - 14;
+            doc.moveTo(0, wt).bezierCurveTo(W * 0.3, wt + 18, W * 0.7, wt - 6, W, wt + 10)
+                .lineTo(W, hdrH + 6).lineTo(0, hdrH + 6).closePath().fill(C.white);
+            doc.restore();
 
-        const piX = M + scoreW + 12, piY = y;
-        doc.roundedRect(piX, piY, infoW, 74, 8).fillAndStroke(C.white, C.border);
-        const p1 = piX + 14, p2 = piX + infoW * 0.52;
-        doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text("PATIENT NAME", p1, piY + 8);
-        doc.fontSize(11).fillColor(C.text).font("Helvetica-Bold").text(patient.name || "—", p1, piY + 18);
-        doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text("AGE / GENDER", p2, piY + 8);
-        doc.fontSize(11).fillColor(C.text).font("Helvetica-Bold").text([patient.age, patient.gender].filter(Boolean).join(" / ") || "—", p2, piY + 18);
-        doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text("EMAIL", p1, piY + 40);
-        doc.fontSize(8.5).fillColor(C.textMid).font("Helvetica").text(patient.email || "—", p1, piY + 50);
-        doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text("PHONE", p2, piY + 40);
-        doc.fontSize(8.5).fillColor(C.textMid).font("Helvetica").text(patient.phone || "—", p2, piY + 50);
-        y += 86;
+            let y = hdrH + 14;
 
-        // ═════════════════════════════════════════
-        //  VITAL SIGNS — 2x2 (always — Scan 1)
-        // ═════════════════════════════════════════
-        y = sectionTitle("Vital Signs", y);
-        const vArr = [
-            { label: "Blood Pressure", val: `${vitals.systolic || "—"}/${vitals.diastolic || "—"}`, unit: "mmHg", st: comp.bp.label, adv: comp.bp.advice, sc: comp.bp.score },
-            { label: "Oxygen Saturation", val: `${vitals.oxygen || "—"}`, unit: "%", st: comp.o2.label, adv: comp.o2.advice, sc: comp.o2.score },
-            { label: "Pulse Rate", val: `${vitals.bpm || "—"}`, unit: "BPM", st: comp.hr.label, adv: comp.hr.advice, sc: comp.hr.score },
-            { label: "Body Temperature", val: `${vitals.temperature || "—"}`, unit: "\u00B0F", st: comp.temp.label, adv: comp.temp.advice, sc: comp.temp.score },
-        ];
-        const cW2 = (CW - 10) / 2, cH2 = 82;
-        for (let i = 0; i < vArr.length; i++) {
-            const v = vArr[i], col = i % 2;
-            if (col === 0) y = ensure(y, cH2 + 8);
-            const x = M + col * (cW2 + 10);
-            const sc = statusClr(v.st);
-            doc.roundedRect(x, y, cW2, cH2, 6).fillAndStroke(C.white, C.border);
-            doc.roundedRect(x, y, 3.5, cH2, 2).fill(sc.dot);
-            const tx = x + 12, ty = y + 7;
-            doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text(v.label.toUpperCase(), tx, ty);
-            doc.fontSize(19).fillColor(C.text).font("Helvetica-Bold").text(v.val, tx, ty + 11, { continued: true, lineBreak: false });
-            doc.fontSize(8.5).fillColor(C.textLight).font("Helvetica").text(` ${v.unit}`, { lineBreak: false });
-            badge(v.st || "—", tx, ty + 34, sc);
-            drawMiniScore(v.sc, x, ty, cW2);
+            // ═════════════════════════════════════════
+            //  HEALTH SCORE + PATIENT INFO
+            // ═════════════════════════════════════════
+            y = ensure(y, 78);
+            const scoreW = 110, infoW = CW - scoreW - 12;
+
+            const scX = M, scY = y;
+            doc.roundedRect(scX, scY, scoreW, 74, 8).fillAndStroke(C.white, C.border);
+            const ctrX = scX + scoreW / 2, ctrY = scY + 32, radius = 22;
+            const sColor = scoreColor(healthScore);
+            doc.save();
+            doc.circle(ctrX, ctrY, radius).lineWidth(5).strokeOpacity(0.12).strokeColor(sColor).stroke();
+            doc.restore();
+            if (healthScore > 0) {
+                drawArc(ctrX, ctrY, radius, -Math.PI / 2, -Math.PI / 2 + (healthScore / 100) * 2 * Math.PI, 4.5, sColor);
+            }
+            doc.fontSize(20).font("Helvetica-Bold").fillColor(sColor)
+                .text(`${healthScore}`, ctrX - 18, ctrY - 10, { width: 36, align: "center" });
+            doc.fontSize(6).font("Helvetica").fillColor(C.textMuted)
+                .text("/ 100", ctrX - 12, ctrY + 10, { width: 24, align: "center" });
+            doc.fontSize(8).font("Helvetica-Bold").fillColor(sColor)
+                .text(scoreLabel(healthScore), scX, scY + 60, { width: scoreW, align: "center" });
+            doc.fontSize(6).font("Helvetica").fillColor(C.textMuted)
+                .text("HEALTH SCORE", scX, scY + 4, { width: scoreW, align: "center" });
+
+            const piX = M + scoreW + 12, piY = y;
+            doc.roundedRect(piX, piY, infoW, 74, 8).fillAndStroke(C.white, C.border);
+            const p1 = piX + 14, p2 = piX + infoW * 0.52;
+            doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text("PATIENT NAME", p1, piY + 8);
+            doc.fontSize(11).fillColor(C.text).font("Helvetica-Bold").text(patient.name || "—", p1, piY + 18);
+            doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text("AGE / GENDER", p2, piY + 8);
+            doc.fontSize(11).fillColor(C.text).font("Helvetica-Bold").text([patient.age, patient.gender].filter(Boolean).join(" / ") || "—", p2, piY + 18);
+            doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text("EMAIL", p1, piY + 40);
+            doc.fontSize(8.5).fillColor(C.textMid).font("Helvetica").text(patient.email || "—", p1, piY + 50);
+            doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text("PHONE", p2, piY + 40);
+            doc.fontSize(8.5).fillColor(C.textMid).font("Helvetica").text(patient.phone || "—", p2, piY + 50);
+            y += 86;
+
+            // ═════════════════════════════════════════
+            //  VITAL SIGNS — 2x2 (always — Scan 1)
+            // ═════════════════════════════════════════
+            y = sectionTitle("Vital Signs", y);
+            const vArr = [
+                { label: "Blood Pressure", val: `${vitals.systolic || "—"}/${vitals.diastolic || "—"}`, unit: "mmHg", st: comp.bp.label, adv: comp.bp.advice, sc: comp.bp.score },
+                { label: "Oxygen Saturation", val: `${vitals.oxygen || "—"}`, unit: "%", st: comp.o2.label, adv: comp.o2.advice, sc: comp.o2.score },
+                { label: "Pulse Rate", val: `${vitals.bpm || "—"}`, unit: "BPM", st: comp.hr.label, adv: comp.hr.advice, sc: comp.hr.score },
+                { label: "Body Temperature", val: `${vitals.temperature || "—"}`, unit: "\u00B0F", st: comp.temp.label, adv: comp.temp.advice, sc: comp.temp.score },
+            ];
+            const cW2 = (CW - 10) / 2, cH2 = 82;
+            for (let i = 0; i < vArr.length; i++) {
+                const v = vArr[i], col = i % 2;
+                if (col === 0) y = ensure(y, cH2 + 8);
+                const x = M + col * (cW2 + 10);
+                const sc = statusClr(v.st);
+                doc.roundedRect(x, y, cW2, cH2, 6).fillAndStroke(C.white, C.border);
+                doc.roundedRect(x, y, 3.5, cH2, 2).fill(sc.dot);
+                const tx = x + 12, ty = y + 7;
+                doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text(v.label.toUpperCase(), tx, ty);
+                doc.fontSize(19).fillColor(C.text).font("Helvetica-Bold").text(v.val, tx, ty + 11, { continued: true, lineBreak: false });
+                doc.fontSize(8.5).fillColor(C.textLight).font("Helvetica").text(` ${v.unit}`, { lineBreak: false });
+                badge(v.st || "—", tx, ty + 34, sc);
+                drawMiniScore(v.sc, x, ty, cW2);
+                doc.fontSize(6.5).fillColor(C.textMid).font("Helvetica")
+                    .text(v.adv || "", tx, ty + 53, { width: cW2 - 24, lineGap: 0.5 });
+                if (col === 1) y += cH2 + 8;
+            }
+            y += 2;
+
+            // ═══ EYESIGHT (Scan 1) ═══
+            y = ensure(y, 52);
+            const eSc = statusClr(comp.eyes.note);
+            doc.roundedRect(M, y, CW, 48, 6).fillAndStroke(C.white, C.border);
+            doc.roundedRect(M, y, 3.5, 48, 2).fill(eSc.dot);
+            doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text("VISUAL ACUITY", M + 12, y + 6);
+            doc.fontSize(14).fillColor(C.text).font("Helvetica-Bold").text(comp.eyes.summary || "—", M + 12, y + 16);
+            badge(comp.eyes.note || "—", M + 12, y + 33, eSc);
+            drawMiniScore(comp.eyes.score, M, y + 6, CW);
             doc.fontSize(6.5).fillColor(C.textMid).font("Helvetica")
-               .text(v.adv || "", tx, ty + 53, { width: cW2 - 24, lineGap: 0.5 });
-            if (col === 1) y += cH2 + 8;
-        }
-        y += 2;
+                .text(comp.eyes.comment || "", M + CW * 0.5, y + 8, { width: CW * 0.35, lineGap: 0.5 });
+            y += 58;
 
-        // ═══ EYESIGHT (Scan 1) ═══
-        y = ensure(y, 52);
-        const eSc = statusClr(comp.eyes.note);
-        doc.roundedRect(M, y, CW, 48, 6).fillAndStroke(C.white, C.border);
-        doc.roundedRect(M, y, 3.5, 48, 2).fill(eSc.dot);
-        doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text("VISUAL ACUITY", M + 12, y + 6);
-        doc.fontSize(14).fillColor(C.text).font("Helvetica-Bold").text(comp.eyes.summary || "—", M + 12, y + 16);
-        badge(comp.eyes.note || "—", M + 12, y + 33, eSc);
-        drawMiniScore(comp.eyes.score, M, y + 6, CW);
-        doc.fontSize(6.5).fillColor(C.textMid).font("Helvetica")
-           .text(comp.eyes.comment || "", M + CW * 0.5, y + 8, { width: CW * 0.35, lineGap: 0.5 });
-        y += 58;
-
-        // ═══ BODY BASICS (always — Scan 1: Weight, Height, BMI) ═══
-        if (bc && (bc.weight || patientHeight || bc.bmi)) {
-            y = sectionTitle("Body Composition", y);
-            const tGap = 8, tCnt = 3;
-            const tW = (CW - tGap * (tCnt - 1)) / tCnt, tH = 44;
-            y = ensure(y, tH + 6);
-            const bmiSc = statusClr(comp.bmi.label);
-            const tiles = [
-                { lbl: "Weight", v: bc.weight ? `${bc.weight}` : "—", u: "kg", c: null },
-                { lbl: "Height", v: patientHeight ? `${patientHeight}` : "—", u: "cm", c: null },
-                { lbl: "BMI", v: bc.bmi ? `${Number(bc.bmi).toFixed(1)}` : "—", u: comp.bmi.label !== "—" ? comp.bmi.label : "", c: bmiSc },
-            ];
-            tiles.forEach((t, i) => {
-                const x = M + i * (tW + tGap);
-                doc.roundedRect(x, y, tW, tH, 6).fill(i === 2 ? (bmiSc.bg || C.brandLight) : C.brandLight);
-                doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text(t.lbl.toUpperCase(), x + 9, y + 6);
-                doc.fontSize(15).fillColor(C.text).font("Helvetica-Bold").text(t.v, x + 9, y + 17, { continued: true, lineBreak: false });
-                doc.fontSize(8).fillColor(i === 2 && t.c ? t.c.fg : C.textLight).font("Helvetica").text(` ${t.u}`, { lineBreak: false });
-            });
-            y += tH + 10;
-        }
-
-        // ═══════════════════════════════════════════
-        //  SCAN 2+ : SINCE LAST VISIT (5 new params)
-        // ═══════════════════════════════════════════
-        if (show.sinceLastVisit) {
-            const prev = hist[hist.length - 1];
-            y = ensure(y, 68);
-            doc.roundedRect(M, y, CW, 62, 6).fillAndStroke(C.blueBg, C.border);
-            doc.fontSize(7.5).font("Helvetica-Bold").fillColor(C.blue).text("SINCE LAST VISIT", M + 12, y + 6);
-            const changes = [
-                { label: "BP", curr: vitals.systolic, prev: prev.systolic, unit: "mmHg", lowerBetter: true },
-                { label: "Pulse", curr: vitals.bpm, prev: prev.bpm, unit: "BPM", lowerBetter: true },
-                { label: "SpO2", curr: vitals.oxygen, prev: prev.oxygen, unit: "%", lowerBetter: false },
-                { label: "Temp", curr: vitals.temperature, prev: prev.temperature, unit: "\u00B0F", lowerBetter: null },
-            ];
-            const chipW = (CW - 24 - 8 * 3) / 4;
-            changes.forEach((ch, ci) => {
-                const cx = M + 12 + ci * (chipW + 8);
-                const diff = +(ch.curr || 0) - +(ch.prev || 0);
-                const improved = ch.lowerBetter != null ? (ch.lowerBetter ? diff < 0 : diff > 0) : Math.abs(+(ch.curr) - 98.6) < Math.abs(+(ch.prev) - 98.6);
-                const clr = diff === 0 ? C.textMuted : improved ? C.green : C.red;
-                doc.roundedRect(cx, y + 20, chipW, 36, 4).fill(C.white);
-                doc.fontSize(6).fillColor(C.textMuted).font("Helvetica").text(ch.label, cx + 5, y + 22);
-                // Current value (prominent)
-                const currStr = ch.label === "Temp" ? (ch.curr != null ? (+ch.curr).toFixed(1) : "--") : `${ch.curr || "--"}`;
-                doc.fontSize(11).fillColor(C.text).font("Helvetica-Bold").text(currStr, cx + 5, y + 30);
-                // Diff below
-                const sign = diff > 0 ? "+" : "";
-                const diffStr = `${sign}${ch.label === "Temp" ? diff.toFixed(1) : Math.round(diff)}`;
-                doc.fontSize(7).fillColor(clr).font("Helvetica-Bold").text(diffStr, cx + chipW - 35, y + 44, { width: 30, align: "right" });
-                if (diff !== 0) drawTriangle(cx + chipW - 8, y + 46, diff > 0, clr);
-            });
-            y += 70;
-        }
-
-        // ═══════════════════════════════════════════
-        //  SCAN 2+ : BODY COMP BARS (Body Fat, Muscle, Water)
-        //  SCAN 3+ adds: Bone, BMR, Visceral, Lean, Fat
-        // ═══════════════════════════════════════════
-        if (show.bodyCompBars && bc) {
-            const mets = [];
-            if (bc.bodyFat != null) mets.push({ label: "Body Fat", value: `${Number(bc.bodyFat).toFixed(1)}%`, pct: Math.min(bc.bodyFat / 40 * 100, 100), color: bc.bodyFat > 25 ? C.yellow : C.brand });
-            if (bc.muscleMass != null) mets.push({ label: "Muscle Mass", value: `${Number(bc.muscleMass).toFixed(1)} kg`, pct: Math.min(bc.muscleMass / 80 * 100, 100), color: C.green });
-            if (bc.waterPercentage != null) mets.push({ label: "Body Water", value: `${Number(bc.waterPercentage).toFixed(1)}%`, pct: Math.min(bc.waterPercentage / 80 * 100, 100), color: C.blue });
-
-            // Scan 3+ deep body comp (NEW unique to scan 3)
-            if (show.deepBodyComp) {
-                if (bc.boneMass != null) mets.push({ label: "Bone Mass", value: `${Number(bc.boneMass).toFixed(1)} kg`, pct: Math.min(bc.boneMass / 5 * 100, 100), color: C.purple });
-                if (bc.bmr != null) mets.push({ label: "BMR", value: `${Math.round(bc.bmr)} kcal`, pct: Math.min(bc.bmr / 2500 * 100, 100), color: C.brand });
-                if (bc.visceralFat != null) mets.push({ label: "Visceral Fat", value: `${bc.visceralFat}`, pct: Math.min(bc.visceralFat / 20 * 100, 100), color: bc.visceralFat > 12 ? C.red : C.brand });
-                const lm = calcLeanMass(bc.weight, bc.bodyFat);
-                const fm = calcFatMass(bc.weight, bc.bodyFat);
-                if (lm) mets.push({ label: "Lean Mass", value: `${lm} kg`, pct: Math.min(lm / 80 * 100, 100), color: "#0EA5E9" });
-                if (fm) mets.push({ label: "Fat Mass", value: `${fm} kg`, pct: Math.min(fm / 30 * 100, 100), color: "#F59E0B" });
-            }
-
-            if (mets.length > 0) {
-                const mH = mets.length * 20 + 12;
-                y = ensure(y, mH + 4);
-                doc.roundedRect(M, y, CW, mH, 6).fillAndStroke(C.white, C.border);
-                let my = y + 7;
-                mets.forEach((m) => {
-                    doc.fontSize(7.5).fillColor(C.textMid).font("Helvetica").text(m.label, M + 10, my + 1, { width: 75 });
-                    doc.fontSize(8).fillColor(C.text).font("Helvetica-Bold").text(m.value, M + 88, my);
-                    const bX = M + 160, bW = CW - 175, bH = 6;
-                    doc.roundedRect(bX, my + 3, bW, bH, 3).fill(C.borderLight);
-                    doc.roundedRect(bX, my + 3, Math.max(bW * m.pct / 100, 4), bH, 3).fill(m.color);
-                    my += 20;
+            // ═══ BODY BASICS (always — Scan 1: Weight, Height, BMI) ═══
+            if (bc && (bc.weight || patientHeight || bc.bmi)) {
+                y = sectionTitle("Body Composition", y);
+                const tGap = 8, tCnt = 3;
+                const tW = (CW - tGap * (tCnt - 1)) / tCnt, tH = 44;
+                y = ensure(y, tH + 6);
+                const bmiSc = statusClr(comp.bmi.label);
+                const tiles = [
+                    { lbl: "Weight", v: bc.weight ? `${bc.weight}` : "—", u: "kg", c: null },
+                    { lbl: "Height", v: patientHeight ? `${patientHeight}` : "—", u: "cm", c: null },
+                    { lbl: "BMI", v: bc.bmi ? `${Number(bc.bmi).toFixed(1)}` : "—", u: comp.bmi.label !== "—" ? comp.bmi.label : "", c: bmiSc },
+                ];
+                tiles.forEach((t, i) => {
+                    const x = M + i * (tW + tGap);
+                    doc.roundedRect(x, y, tW, tH, 6).fill(i === 2 ? (bmiSc.bg || C.brandLight) : C.brandLight);
+                    doc.fontSize(6.5).fillColor(C.textMuted).font("Helvetica").text(t.lbl.toUpperCase(), x + 9, y + 6);
+                    doc.fontSize(15).fillColor(C.text).font("Helvetica-Bold").text(t.v, x + 9, y + 17, { continued: true, lineBreak: false });
+                    doc.fontSize(8).fillColor(i === 2 && t.c ? t.c.fg : C.textLight).font("Helvetica").text(` ${t.u}`, { lineBreak: false });
                 });
-                y += mH + 8;
+                y += tH + 10;
             }
-        }
 
-        // ═══════════════════════════════════════════
-        //  SCAN 3+ : DERIVED STATS — MAP, Pulse Pressure, RPP
-        // ═══════════════════════════════════════════
-        if (show.derivedStats) {
-            const map = calcMAP(vitals.systolic, vitals.diastolic);
-            const pp = calcPulsePressure(vitals.systolic, vitals.diastolic);
-            const rpp = calcRPP(vitals.systolic, vitals.bpm);
-
-            const dTiles = [];
-            if (map) dTiles.push({ lbl: "Mean Arterial Pressure", v: `${map}`, u: "mmHg" });
-            if (pp) dTiles.push({ lbl: "Pulse Pressure", v: `${pp}`, u: "mmHg" });
-            if (rpp) dTiles.push({ lbl: "Rate Pressure Product", v: `${rpp}`, u: "\u00D7100" });
-
-            if (dTiles.length > 0) {
-                const dtH = 40;
-                y = ensure(y, dtH + 6);
-                const dtW = (CW - 8 * (dTiles.length - 1)) / dTiles.length;
-                dTiles.forEach((t, i) => {
-                    const x = M + i * (dtW + 8);
-                    doc.roundedRect(x, y, dtW, dtH, 6).fill(C.purpleBg);
-                    doc.fontSize(5.5).fillColor(C.textMuted).font("Helvetica").text(t.lbl.toUpperCase(), x + 8, y + 5, { width: dtW - 16 });
-                    doc.fontSize(14).fillColor(C.text).font("Helvetica-Bold").text(t.v, x + 8, y + 17, { continued: true, lineBreak: false });
-                    doc.fontSize(7).fillColor(C.textLight).font("Helvetica").text(` ${t.u}`, { lineBreak: false });
+            // ═══════════════════════════════════════════
+            //  SCAN 2+ : SINCE LAST VISIT (5 new params)
+            // ═══════════════════════════════════════════
+            if (show.sinceLastVisit) {
+                const prev = hist[hist.length - 1];
+                y = ensure(y, 68);
+                doc.roundedRect(M, y, CW, 62, 6).fillAndStroke(C.blueBg, C.border);
+                doc.fontSize(7.5).font("Helvetica-Bold").fillColor(C.blue).text("SINCE LAST VISIT", M + 12, y + 6);
+                const changes = [
+                    { label: "BP", curr: vitals.systolic, prev: prev.systolic, unit: "mmHg", lowerBetter: true },
+                    { label: "Pulse", curr: vitals.bpm, prev: prev.bpm, unit: "BPM", lowerBetter: true },
+                    { label: "SpO2", curr: vitals.oxygen, prev: prev.oxygen, unit: "%", lowerBetter: false },
+                    { label: "Temp", curr: vitals.temperature, prev: prev.temperature, unit: "\u00B0F", lowerBetter: null },
+                ];
+                const chipW = (CW - 24 - 8 * 3) / 4;
+                changes.forEach((ch, ci) => {
+                    const cx = M + 12 + ci * (chipW + 8);
+                    const diff = +(ch.curr || 0) - +(ch.prev || 0);
+                    const improved = ch.lowerBetter != null ? (ch.lowerBetter ? diff < 0 : diff > 0) : Math.abs(+(ch.curr) - 98.6) < Math.abs(+(ch.prev) - 98.6);
+                    const clr = diff === 0 ? C.textMuted : improved ? C.green : C.red;
+                    doc.roundedRect(cx, y + 20, chipW, 36, 4).fill(C.white);
+                    doc.fontSize(6).fillColor(C.textMuted).font("Helvetica").text(ch.label, cx + 5, y + 22);
+                    // Current value (prominent)
+                    const currStr = ch.label === "Temp" ? (ch.curr != null ? (+ch.curr).toFixed(1) : "--") : `${ch.curr || "--"}`;
+                    doc.fontSize(11).fillColor(C.text).font("Helvetica-Bold").text(currStr, cx + 5, y + 30);
+                    // Diff below
+                    const sign = diff > 0 ? "+" : "";
+                    const diffStr = `${sign}${ch.label === "Temp" ? diff.toFixed(1) : Math.round(diff)}`;
+                    doc.fontSize(7).fillColor(clr).font("Helvetica-Bold").text(diffStr, cx + chipW - 35, y + 44, { width: 30, align: "right" });
+                    if (diff !== 0) drawTriangle(cx + chipW - 8, y + 46, diff > 0, clr);
                 });
-                y += dtH + 6;
+                y += 70;
             }
-        }
 
-        // ═══════════════════════════════════════════
-        //  SCAN 4+ : LIFESTYLE STATS — 6 unique tiles
-        // ═══════════════════════════════════════════
-        if (show.lifestyleStats) {
-            const dc = calcDailyCalories(bc?.bmr);
-            const wi = calcWaterIntake(bc?.weight);
-            const ma = calcMetabolicAge(bc?.bmr, patient.age);
-            const iw = calcIdealWeight(patientHeight);
-            const dp = calcDailyProtein(bc?.weight);
-            const sh = calcSleepHours(patient.age);
-            const ltiles = [];
-            if (iw) ltiles.push({ lbl: "Ideal Weight", v: `${iw.min}-${iw.max}`, u: "kg" });
-            if (dc) ltiles.push({ lbl: "Daily Calories", v: `${dc}`, u: "kcal" });
-            if (wi) ltiles.push({ lbl: "Water Intake", v: `${wi}`, u: "L/day" });
-            if (ma) ltiles.push({ lbl: "Metabolic Age", v: `~${ma}`, u: "years" });
-            if (dp) ltiles.push({ lbl: "Daily Protein", v: dp, u: "g" });
-            if (sh) ltiles.push({ lbl: "Sleep Goal", v: sh, u: "hrs" });
+            // ═══════════════════════════════════════════
+            //  SCAN 2+ : BODY COMP BARS (Body Fat, Muscle, Water)
+            //  SCAN 3+ adds: Bone, BMR, Visceral, Lean, Fat
+            // ═══════════════════════════════════════════
+            if (show.bodyCompBars && bc) {
+                const mets = [];
+                if (bc.bodyFat != null) mets.push({ label: "Body Fat", value: `${Number(bc.bodyFat).toFixed(1)}%`, pct: Math.min(bc.bodyFat / 40 * 100, 100), color: bc.bodyFat > 25 ? C.yellow : C.brand });
+                if (bc.muscleMass != null) mets.push({ label: "Muscle Mass", value: `${Number(bc.muscleMass).toFixed(1)} kg`, pct: Math.min(bc.muscleMass / 80 * 100, 100), color: C.green });
+                if (bc.waterPercentage != null) mets.push({ label: "Body Water", value: `${Number(bc.waterPercentage).toFixed(1)}%`, pct: Math.min(bc.waterPercentage / 80 * 100, 100), color: C.blue });
 
-            if (ltiles.length > 0) {
-                const maxPerRow = 3;
-                for (let ri = 0; ri < ltiles.length; ri += maxPerRow) {
-                    const rowTiles = ltiles.slice(ri, ri + maxPerRow);
-                    const ltH = 40;
-                    y = ensure(y, ltH + 6);
-                    const ltW = (CW - 8 * (rowTiles.length - 1)) / rowTiles.length;
-                    rowTiles.forEach((t, i) => {
-                        const x = M + i * (ltW + 8);
-                        doc.roundedRect(x, y, ltW, ltH, 6).fill(C.greenLight);
-                        doc.fontSize(5.5).fillColor(C.textMuted).font("Helvetica").text(t.lbl.toUpperCase(), x + 8, y + 5, { width: ltW - 16 });
+                // Scan 3+ deep body comp (NEW unique to scan 3)
+                if (show.deepBodyComp) {
+                    if (bc.boneMass != null) mets.push({ label: "Bone Mass", value: `${Number(bc.boneMass).toFixed(1)} kg`, pct: Math.min(bc.boneMass / 5 * 100, 100), color: C.purple });
+                    if (bc.bmr != null) mets.push({ label: "BMR", value: `${Math.round(bc.bmr)} kcal`, pct: Math.min(bc.bmr / 2500 * 100, 100), color: C.brand });
+                    if (bc.visceralFat != null) mets.push({ label: "Visceral Fat", value: `${bc.visceralFat}`, pct: Math.min(bc.visceralFat / 20 * 100, 100), color: bc.visceralFat > 12 ? C.red : C.brand });
+                    const lm = calcLeanMass(bc.weight, bc.bodyFat);
+                    const fm = calcFatMass(bc.weight, bc.bodyFat);
+                    if (lm) mets.push({ label: "Lean Mass", value: `${lm} kg`, pct: Math.min(lm / 80 * 100, 100), color: "#0EA5E9" });
+                    if (fm) mets.push({ label: "Fat Mass", value: `${fm} kg`, pct: Math.min(fm / 30 * 100, 100), color: "#F59E0B" });
+                }
+
+                if (mets.length > 0) {
+                    const mH = mets.length * 20 + 12;
+                    y = ensure(y, mH + 4);
+                    doc.roundedRect(M, y, CW, mH, 6).fillAndStroke(C.white, C.border);
+                    let my = y + 7;
+                    mets.forEach((m) => {
+                        doc.fontSize(7.5).fillColor(C.textMid).font("Helvetica").text(m.label, M + 10, my + 1, { width: 75 });
+                        doc.fontSize(8).fillColor(C.text).font("Helvetica-Bold").text(m.value, M + 88, my);
+                        const bX = M + 160, bW = CW - 175, bH = 6;
+                        doc.roundedRect(bX, my + 3, bW, bH, 3).fill(C.borderLight);
+                        doc.roundedRect(bX, my + 3, Math.max(bW * m.pct / 100, 4), bH, 3).fill(m.color);
+                        my += 20;
+                    });
+                    y += mH + 8;
+                }
+            }
+
+            // ═══════════════════════════════════════════
+            //  SCAN 3+ : DERIVED STATS — MAP, Pulse Pressure, RPP
+            // ═══════════════════════════════════════════
+            if (show.derivedStats) {
+                const map = calcMAP(vitals.systolic, vitals.diastolic);
+                const pp = calcPulsePressure(vitals.systolic, vitals.diastolic);
+                const rpp = calcRPP(vitals.systolic, vitals.bpm);
+
+                const dTiles = [];
+                if (map) dTiles.push({ lbl: "Mean Arterial Pressure", v: `${map}`, u: "mmHg" });
+                if (pp) dTiles.push({ lbl: "Pulse Pressure", v: `${pp}`, u: "mmHg" });
+                if (rpp) dTiles.push({ lbl: "Rate Pressure Product", v: `${rpp}`, u: "\u00D7100" });
+
+                if (dTiles.length > 0) {
+                    const dtH = 40;
+                    y = ensure(y, dtH + 6);
+                    const dtW = (CW - 8 * (dTiles.length - 1)) / dTiles.length;
+                    dTiles.forEach((t, i) => {
+                        const x = M + i * (dtW + 8);
+                        doc.roundedRect(x, y, dtW, dtH, 6).fill(C.purpleBg);
+                        doc.fontSize(5.5).fillColor(C.textMuted).font("Helvetica").text(t.lbl.toUpperCase(), x + 8, y + 5, { width: dtW - 16 });
                         doc.fontSize(14).fillColor(C.text).font("Helvetica-Bold").text(t.v, x + 8, y + 17, { continued: true, lineBreak: false });
                         doc.fontSize(7).fillColor(C.textLight).font("Helvetica").text(` ${t.u}`, { lineBreak: false });
                     });
-                    y += ltH + 6;
+                    y += dtH + 6;
                 }
-                y += 2;
             }
-        }
 
-        // ═══════════════════════════════════════════
-        //  SCAN 5+ : RISK & FITNESS ANALYSIS — 5 unique tiles
-        // ═══════════════════════════════════════════
-        if (show.riskAnalysis) {
-            y = sectionTitle("Risk & Fitness Analysis", y);
-            const cardioRisk = calcCardioRisk(vitals.systolic, vitals.bpm, bc?.bmi);
-            const fitness = calcFitnessLevel(vitals.bpm, vitals.oxygen, bc?.bmi);
-            const stress = calcStressIndex(vitals.bpm, vitals.systolic);
-            const riskH = 50;
-            y = ensure(y, riskH + 6);
-            const rW = (CW - 16) / 3;
+            // ═══════════════════════════════════════════
+            //  SCAN 4+ : LIFESTYLE STATS — 6 unique tiles
+            // ═══════════════════════════════════════════
+            if (show.lifestyleStats) {
+                const dc = calcDailyCalories(bc?.bmr);
+                const wi = calcWaterIntake(bc?.weight);
+                const ma = calcMetabolicAge(bc?.bmr, patient.age);
+                const iw = calcIdealWeight(patientHeight);
+                const dp = calcDailyProtein(bc?.weight);
+                const sh = calcSleepHours(patient.age);
+                const ltiles = [];
+                if (iw) ltiles.push({ lbl: "Ideal Weight", v: `${iw.min}-${iw.max}`, u: "kg" });
+                if (dc) ltiles.push({ lbl: "Daily Calories", v: `${dc}`, u: "kcal" });
+                if (wi) ltiles.push({ lbl: "Water Intake", v: `${wi}`, u: "L/day" });
+                if (ma) ltiles.push({ lbl: "Metabolic Age", v: `~${ma}`, u: "years" });
+                if (dp) ltiles.push({ lbl: "Daily Protein", v: dp, u: "g" });
+                if (sh) ltiles.push({ lbl: "Sleep Goal", v: sh, u: "hrs" });
 
-            // Cardio Risk
-            const crClr = cardioRisk <= 15 ? C.green : cardioRisk <= 35 ? C.yellow : C.red;
-            const crLabel = cardioRisk <= 15 ? "Low Risk" : cardioRisk <= 35 ? "Moderate" : "Elevated";
-            doc.roundedRect(M, y, rW, riskH, 6).fillAndStroke(C.white, C.border);
-            doc.roundedRect(M, y, 3, riskH, 1.5).fill(crClr);
-            doc.fontSize(5.5).fillColor(C.textMuted).font("Helvetica").text("CARDIOVASCULAR RISK", M + 10, y + 6, { width: rW - 16 });
-            doc.fontSize(16).fillColor(crClr).font("Helvetica-Bold").text(`${cardioRisk}%`, M + 10, y + 18);
-            doc.fontSize(7).fillColor(crClr).font("Helvetica-Bold").text(crLabel, M + 10, y + 36);
+                if (ltiles.length > 0) {
+                    const maxPerRow = 3;
+                    for (let ri = 0; ri < ltiles.length; ri += maxPerRow) {
+                        const rowTiles = ltiles.slice(ri, ri + maxPerRow);
+                        const ltH = 40;
+                        y = ensure(y, ltH + 6);
+                        const ltW = (CW - 8 * (rowTiles.length - 1)) / rowTiles.length;
+                        rowTiles.forEach((t, i) => {
+                            const x = M + i * (ltW + 8);
+                            doc.roundedRect(x, y, ltW, ltH, 6).fill(C.greenLight);
+                            doc.fontSize(5.5).fillColor(C.textMuted).font("Helvetica").text(t.lbl.toUpperCase(), x + 8, y + 5, { width: ltW - 16 });
+                            doc.fontSize(14).fillColor(C.text).font("Helvetica-Bold").text(t.v, x + 8, y + 17, { continued: true, lineBreak: false });
+                            doc.fontSize(7).fillColor(C.textLight).font("Helvetica").text(` ${t.u}`, { lineBreak: false });
+                        });
+                        y += ltH + 6;
+                    }
+                    y += 2;
+                }
+            }
 
-            // Fitness Level
-            const fitClr = fitness === "Excellent" ? C.green : fitness === "Good" ? C.green : fitness === "Average" ? C.yellow : C.red;
-            const fx = M + rW + 8;
-            doc.roundedRect(fx, y, rW, riskH, 6).fillAndStroke(C.white, C.border);
-            doc.roundedRect(fx, y, 3, riskH, 1.5).fill(fitClr);
-            doc.fontSize(5.5).fillColor(C.textMuted).font("Helvetica").text("FITNESS LEVEL", fx + 10, y + 6, { width: rW - 16 });
-            doc.fontSize(16).fillColor(fitClr).font("Helvetica-Bold").text(fitness || "—", fx + 10, y + 20);
+            // ═══════════════════════════════════════════
+            //  SCAN 5+ : RISK & FITNESS ANALYSIS — 5 unique tiles
+            // ═══════════════════════════════════════════
+            if (show.riskAnalysis) {
+                y = sectionTitle("Risk & Fitness Analysis", y);
+                const cardioRisk = calcCardioRisk(vitals.systolic, vitals.bpm, bc?.bmi);
+                const fitness = calcFitnessLevel(vitals.bpm, vitals.oxygen, bc?.bmi);
+                const stress = calcStressIndex(vitals.bpm, vitals.systolic);
+                const riskH = 50;
+                y = ensure(y, riskH + 6);
+                const rW = (CW - 16) / 3;
 
-            // Stress Index
-            const stClr = stress ? (stress.level === "Low" ? C.green : stress.level === "Moderate" ? C.yellow : C.red) : C.textMuted;
-            const sx = M + 2 * (rW + 8);
-            doc.roundedRect(sx, y, rW, riskH, 6).fillAndStroke(C.white, C.border);
-            doc.roundedRect(sx, y, 3, riskH, 1.5).fill(stClr);
-            doc.fontSize(5.5).fillColor(C.textMuted).font("Helvetica").text("CARDIAC STRESS INDEX", sx + 10, y + 6, { width: rW - 16 });
-            doc.fontSize(16).fillColor(stClr).font("Helvetica-Bold").text(stress ? stress.level : "—", sx + 10, y + 20);
-            if (stress) doc.fontSize(6).fillColor(C.textLight).font("Helvetica").text(`RPP: ${stress.value}`, sx + 10, y + 38);
-            y += riskH + 8;
+                // Cardio Risk
+                const crClr = cardioRisk <= 15 ? C.green : cardioRisk <= 35 ? C.yellow : C.red;
+                const crLabel = cardioRisk <= 15 ? "Low Risk" : cardioRisk <= 35 ? "Moderate" : "Elevated";
+                doc.roundedRect(M, y, rW, riskH, 6).fillAndStroke(C.white, C.border);
+                doc.roundedRect(M, y, 3, riskH, 1.5).fill(crClr);
+                doc.fontSize(5.5).fillColor(C.textMuted).font("Helvetica").text("CARDIOVASCULAR RISK", M + 10, y + 6, { width: rW - 16 });
+                doc.fontSize(16).fillColor(crClr).font("Helvetica-Bold").text(`${cardioRisk}%`, M + 10, y + 18);
+                doc.fontSize(7).fillColor(crClr).font("Helvetica-Bold").text(crLabel, M + 10, y + 36);
 
-            // Row 2: VO2 Max + HR Recovery
-            const vo2 = calcVO2Max(vitals.bpm);
-            const hrRec = calcHRRecovery(vitals.bpm);
-            if (vo2 || hrRec) {
-                const r2H = 44;
-                y = ensure(y, r2H + 6);
-                const r2tiles = [];
-                if (vo2) r2tiles.push({ lbl: "EST. VO2 MAX", v: `${vo2}`, u: "ml/kg/min", clr: vo2 >= 40 ? C.green : vo2 >= 30 ? C.yellow : C.red });
-                if (hrRec) r2tiles.push({ lbl: "HR RECOVERY POTENTIAL", v: hrRec, u: "", clr: /Excellent|Good/.test(hrRec) ? C.green : hrRec === "Average" ? C.yellow : C.red });
-                const r2W = (CW - 8 * (r2tiles.length - 1)) / r2tiles.length;
-                r2tiles.forEach((t, i) => {
-                    const rx = M + i * (r2W + 8);
-                    doc.roundedRect(rx, y, r2W, r2H, 6).fillAndStroke(C.white, C.border);
-                    doc.roundedRect(rx, y, 3, r2H, 1.5).fill(t.clr);
-                    doc.fontSize(5.5).fillColor(C.textMuted).font("Helvetica").text(t.lbl, rx + 10, y + 6, { width: r2W - 16 });
-                    doc.fontSize(16).fillColor(t.clr).font("Helvetica-Bold").text(t.v, rx + 10, y + 20);
-                    if (t.u) doc.fontSize(6).fillColor(C.textLight).font("Helvetica").text(t.u, rx + 10, y + 36);
+                // Fitness Level
+                const fitClr = fitness === "Excellent" ? C.green : fitness === "Good" ? C.green : fitness === "Average" ? C.yellow : C.red;
+                const fx = M + rW + 8;
+                doc.roundedRect(fx, y, rW, riskH, 6).fillAndStroke(C.white, C.border);
+                doc.roundedRect(fx, y, 3, riskH, 1.5).fill(fitClr);
+                doc.fontSize(5.5).fillColor(C.textMuted).font("Helvetica").text("FITNESS LEVEL", fx + 10, y + 6, { width: rW - 16 });
+                doc.fontSize(16).fillColor(fitClr).font("Helvetica-Bold").text(fitness || "—", fx + 10, y + 20);
+
+                // Stress Index
+                const stClr = stress ? (stress.level === "Low" ? C.green : stress.level === "Moderate" ? C.yellow : C.red) : C.textMuted;
+                const sx = M + 2 * (rW + 8);
+                doc.roundedRect(sx, y, rW, riskH, 6).fillAndStroke(C.white, C.border);
+                doc.roundedRect(sx, y, 3, riskH, 1.5).fill(stClr);
+                doc.fontSize(5.5).fillColor(C.textMuted).font("Helvetica").text("CARDIAC STRESS INDEX", sx + 10, y + 6, { width: rW - 16 });
+                doc.fontSize(16).fillColor(stClr).font("Helvetica-Bold").text(stress ? stress.level : "—", sx + 10, y + 20);
+                if (stress) doc.fontSize(6).fillColor(C.textLight).font("Helvetica").text(`RPP: ${stress.value}`, sx + 10, y + 38);
+                y += riskH + 8;
+
+                // Row 2: VO2 Max + HR Recovery
+                const vo2 = calcVO2Max(vitals.bpm);
+                const hrRec = calcHRRecovery(vitals.bpm);
+                if (vo2 || hrRec) {
+                    const r2H = 44;
+                    y = ensure(y, r2H + 6);
+                    const r2tiles = [];
+                    if (vo2) r2tiles.push({ lbl: "EST. VO2 MAX", v: `${vo2}`, u: "ml/kg/min", clr: vo2 >= 40 ? C.green : vo2 >= 30 ? C.yellow : C.red });
+                    if (hrRec) r2tiles.push({ lbl: "HR RECOVERY POTENTIAL", v: hrRec, u: "", clr: /Excellent|Good/.test(hrRec) ? C.green : hrRec === "Average" ? C.yellow : C.red });
+                    const r2W = (CW - 8 * (r2tiles.length - 1)) / r2tiles.length;
+                    r2tiles.forEach((t, i) => {
+                        const rx = M + i * (r2W + 8);
+                        doc.roundedRect(rx, y, r2W, r2H, 6).fillAndStroke(C.white, C.border);
+                        doc.roundedRect(rx, y, 3, r2H, 1.5).fill(t.clr);
+                        doc.fontSize(5.5).fillColor(C.textMuted).font("Helvetica").text(t.lbl, rx + 10, y + 6, { width: r2W - 16 });
+                        doc.fontSize(16).fillColor(t.clr).font("Helvetica-Bold").text(t.v, rx + 10, y + 20);
+                        if (t.u) doc.fontSize(6).fillColor(C.textLight).font("Helvetica").text(t.u, rx + 10, y + 36);
+                    });
+                    y += r2H + 6;
+                }
+            }
+
+            // ═══════════════════════════════════════════
+            //  INSIGHTS (always — grows with scan level)
+            // ═══════════════════════════════════════════
+            y = sectionTitle("What It Means \u2014 In Simple Words", y);
+            const ins = [];
+            if (vitals.systolic && vitals.diastolic) {
+                const s = comp.bp.label;
+                if (s === "Normal") ins.push({ t: "Your blood pressure is healthy. Keep it up!", c: C.green });
+                else if (s === "Low") ins.push({ t: "Blood pressure is low. Stay hydrated, eat well.", c: C.yellow });
+                else ins.push({ t: "Blood pressure is elevated. Reduce salt, manage stress.", c: C.red });
+            }
+            if (vitals.oxygen) {
+                const o = +vitals.oxygen;
+                ins.push(o >= 95 ? { t: `Oxygen ${o}% -- healthy.`, c: C.green } : { t: `Oxygen ${o}% -- try deep breathing exercises.`, c: C.red });
+            }
+            if (vitals.bpm) {
+                const h = +vitals.bpm;
+                ins.push(h >= 60 && h <= 100 ? { t: `Heart rate ${h} BPM -- normal range.`, c: C.green } : { t: `Heart rate ${h} BPM -- outside normal. Rest & hydrate.`, c: h < 60 ? C.yellow : C.red });
+            }
+            if (vitals.temperature) {
+                const t = +vitals.temperature;
+                ins.push(t >= 97 && t <= 99 ? { t: `Temperature ${t}\u00B0F -- normal.`, c: C.green } : { t: `Temperature ${t}\u00B0F -- outside normal. Monitor closely.`, c: t > 99 ? C.red : C.yellow });
+            }
+            if (bc?.bmi) {
+                const b = +bc.bmi;
+                if (b < 18.5) ins.push({ t: `BMI ${b.toFixed(1)} -- underweight. Focus on nutrition.`, c: C.yellow });
+                else if (b < 25) ins.push({ t: `BMI ${b.toFixed(1)} -- healthy range!`, c: C.green });
+                else if (b < 30) ins.push({ t: `BMI ${b.toFixed(1)} -- above ideal. 30 min daily walk helps.`, c: C.yellow });
+                else ins.push({ t: `BMI ${b.toFixed(1)} -- elevated. Diet + exercise recommended.`, c: C.red });
+            }
+            // Scan 2+
+            if (scan >= 2 && bc?.bodyFat != null) {
+                const bf = +bc.bodyFat;
+                ins.push(bf < 20 ? { t: `Body fat ${bf.toFixed(1)}% -- healthy range.`, c: C.green }
+                    : bf < 25 ? { t: `Body fat ${bf.toFixed(1)}% -- average. Regular exercise helps.`, c: C.yellow }
+                        : { t: `Body fat ${bf.toFixed(1)}% -- above ideal. Focus on cardio + diet.`, c: C.red });
+            }
+            if (scan >= 2 && bc?.waterPercentage != null) {
+                const wp = +bc.waterPercentage;
+                ins.push(wp >= 55 ? { t: `Hydration ${wp.toFixed(0)}% -- well hydrated.`, c: C.green }
+                    : { t: `Hydration ${wp.toFixed(0)}% -- drink more water throughout the day.`, c: C.yellow });
+            }
+            // Scan 3+
+            if (scan >= 3 && bc?.visceralFat != null) {
+                const vf = +bc.visceralFat;
+                ins.push(vf <= 9 ? { t: `Visceral fat ${vf} -- healthy level.`, c: C.green }
+                    : { t: `Visceral fat ${vf} -- elevated. Reduce sugary foods & exercise.`, c: C.red });
+            }
+            if (scan >= 3) {
+                const map = calcMAP(vitals.systolic, vitals.diastolic);
+                if (map) ins.push(map >= 70 && map <= 100 ? { t: `MAP ${map} mmHg -- good arterial pressure.`, c: C.green }
+                    : { t: `MAP ${map} mmHg -- outside ideal range. Monitor.`, c: C.yellow });
+                const rpp = calcRPP(vitals.systolic, vitals.bpm);
+                if (rpp) ins.push(rpp < 120 ? { t: `Cardiac workload (RPP ${rpp}) -- within healthy limits.`, c: C.green }
+                    : { t: `Cardiac workload (RPP ${rpp}) -- slightly elevated. Rest well.`, c: C.yellow });
+            }
+            // Scan 4+
+            if (scan >= 4 && bc?.bmr) {
+                const dc = calcDailyCalories(bc.bmr);
+                if (dc) ins.push({ t: `Aim for ~${dc} kcal/day based on your metabolism.`, c: C.blue });
+            }
+            if (scan >= 4) {
+                const dp = calcDailyProtein(bc?.weight);
+                if (dp) ins.push({ t: `Daily protein target: ${dp}g for muscle maintenance.`, c: C.blue });
+            }
+            // Scan 5+
+            if (scan >= 5) {
+                const fitness = calcFitnessLevel(vitals.bpm, vitals.oxygen, bc?.bmi);
+                if (fitness) ins.push({ t: `Your fitness level: ${fitness}. ${fitness === "Excellent" || fitness === "Good" ? "Great work!" : "Room to improve with daily exercise."}`, c: fitness === "Excellent" || fitness === "Good" ? C.green : C.yellow });
+                const stress = calcStressIndex(vitals.bpm, vitals.systolic);
+                if (stress) ins.push({ t: `Cardiac stress: ${stress.level}. ${stress.level === "Low" ? "Heart is working efficiently." : "Focus on relaxation and sleep."}`, c: stress.level === "Low" ? C.green : C.yellow });
+                const vo2 = calcVO2Max(vitals.bpm);
+                if (vo2) ins.push({ t: `Estimated VO2 Max: ${vo2} ml/kg/min. ${vo2 >= 40 ? "Good aerobic capacity." : "More cardio exercise recommended."}`, c: vo2 >= 40 ? C.green : C.yellow });
+            }
+            if (!ins.length) ins.push({ t: "More tests needed for insights.", c: C.textLight });
+
+            const iH = ins.length * 15 + 12;
+            y = ensure(y, iH + 4);
+            doc.roundedRect(M, y, CW, iH, 6).fill(C.bg);
+            let iy = y + 7;
+            ins.forEach((i) => {
+                iy = ensure(iy, 15);
+                doc.circle(M + 14, iy + 4, 2.5).fill(i.c);
+                doc.fontSize(7.5).fillColor(C.textMid).font("Helvetica").text(i.t, M + 24, iy, { width: CW - 40 });
+                iy += 15;
+            });
+            y = iy + 8;
+
+            // ═══════════════════════════════════════════
+            //  SCAN 2+ : HEALTH TREND GRAPH
+            // ═══════════════════════════════════════════
+            if (show.trendGraph && graphData.length > 1) {
+                y = ensure(y, 200);
+                y = sectionTitle("Health Trend", y);
+                y = ensure(y, 175);
+                const boxW = CW, boxH = 120;
+                const padL = 30, padR = 10, padT = 10, padB = 24;
+                doc.roundedRect(M, y, boxW, boxH, 6).fillAndStroke(C.white, C.border);
+                const cL = M + padL, cR = M + boxW - padR, cT = y + padT, cBt = y + boxH - padB;
+                const cWd = cR - cL, cHt = cBt - cT;
+                const n = graphData.length;
+                const allVals = graphData.flatMap(h => [h.systolic || 0, h.bpm || 0]).filter(v => v > 0);
+                if (allVals.length === 0) allVals.push(80, 120);
+                const dMin = Math.min(...allVals), dMax = Math.max(...allVals);
+                const yMin = Math.floor((dMin - 10) / 10) * 10, yMax = Math.ceil((dMax + 10) / 10) * 10 || 200;
+                const mapYv = (v) => cBt - ((v - yMin) / (yMax - yMin)) * cHt;
+                for (let gi = 0; gi <= 4; gi++) {
+                    const tick = yMin + ((yMax - yMin) * gi) / 4;
+                    const gy = mapYv(tick);
+                    doc.moveTo(cL, gy).lineTo(cR, gy).lineWidth(0.3).strokeColor(C.borderLight).stroke();
+                    doc.fontSize(5).fillColor(C.textMuted).font("Helvetica").text(`${Math.round(tick)}`, M + 2, gy - 3, { width: 25, align: "right" });
+                }
+                const z1 = Math.max(mapYv(Math.min(130, yMax)), cT), z2 = Math.min(mapYv(Math.max(110, yMin)), cBt);
+                if (z2 > z1) {
+                    doc.save().opacity(0.06); doc.rect(cL, z1, cWd, z2 - z1).fill(C.green); doc.restore();
+                    doc.save().opacity(0.4); doc.fontSize(4.5).fillColor(C.green).font("Helvetica").text("Normal", cR - 28, z1 + 2); doc.restore();
+                }
+                const sXstep = n > 1 ? cWd / (n - 1) : 0;
+                doc.save().opacity(0.08);
+                doc.moveTo(cL, mapYv(graphData[0].systolic || 120));
+                for (let gi = 1; gi < n; gi++) doc.lineTo(cL + gi * sXstep, mapYv(graphData[gi].systolic || 120));
+                doc.lineTo(cL + (n - 1) * sXstep, cBt).lineTo(cL, cBt).closePath().fill(C.brand);
+                doc.restore();
+                doc.lineWidth(2).strokeColor(C.brand).lineJoin("round").lineCap("round");
+                for (let gi = 0; gi < n; gi++) { const px = cL + gi * sXstep, py = mapYv(graphData[gi].systolic || 120); gi === 0 ? doc.moveTo(px, py) : doc.lineTo(px, py); }
+                doc.stroke();
+                for (let gi = 0; gi < n; gi++) { const px = cL + gi * sXstep, py = mapYv(graphData[gi].systolic || 120); doc.circle(px, py, 3).fill(C.white); doc.circle(px, py, 2).fill(C.brand); }
+                doc.lineWidth(1.5).strokeColor(C.green).lineJoin("round").lineCap("round");
+                for (let gi = 0; gi < n; gi++) { const px = cL + gi * sXstep, py = mapYv(graphData[gi].bpm || 72); gi === 0 ? doc.moveTo(px, py) : doc.lineTo(px, py); }
+                doc.stroke();
+                for (let gi = 0; gi < n; gi++) { const px = cL + gi * sXstep, py = mapYv(graphData[gi].bpm || 72); doc.circle(px, py, 2.5).fill(C.white); doc.circle(px, py, 1.5).fill(C.green); }
+                for (let gi = 0; gi < n; gi++) {
+                    const px = cL + gi * sXstep;
+                    const lbl = graphData[gi].date ? new Date(graphData[gi].date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }) : `#${gi + 1}`;
+                    doc.fontSize(5).fillColor(C.textMuted).font("Helvetica").text(lbl, px - 16, cBt + 4, { width: 32, align: "center" });
+                }
+                const lgX = cR - 110, lgY = cBt + 4;
+                doc.circle(lgX, lgY + 3, 2.5).fill(C.brand);
+                doc.fontSize(5.5).fillColor(C.textMid).font("Helvetica").text("Systolic BP", lgX + 5, lgY);
+                doc.circle(lgX + 55, lgY + 3, 2.5).fill(C.green);
+                doc.text("Heart Rate", lgX + 60, lgY);
+                y += boxH + 6;
+            }
+
+            // ═══════════════════════════════════════════
+            //  SCAN 3+ : TREND DATA TABLE
+            // ═══════════════════════════════════════════
+            if (show.trendTable && graphData.length > 1) {
+                y = ensure(y, graphData.length * 13 + 22);
+                const colW = [55, 55, 55, 55, 55];
+                const tblW = colW.reduce((a, b) => a + b, 0);
+                const tblX = M + (CW - tblW) / 2;
+                doc.roundedRect(tblX, y, tblW, 13, 3).fill(C.dark);
+                const headers = ["Date", "Systolic", "Diastolic", "Pulse", "SpO2"];
+                let hx = tblX;
+                headers.forEach((h, i) => { doc.fontSize(6).fillColor(C.white).font("Helvetica-Bold").text(h, hx + 3, y + 3, { width: colW[i] - 6, align: "center" }); hx += colW[i]; });
+                y += 13;
+                graphData.forEach((h, ri) => {
+                    const bg = ri % 2 === 0 ? C.white : C.bg;
+                    doc.rect(tblX, y, tblW, 12).fill(bg);
+                    const row = [
+                        h.date ? new Date(h.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "2-digit" }) : `#${ri + 1}`,
+                        `${h.systolic || "\u2014"}`, `${h.diastolic || "\u2014"}`, `${h.bpm || "\u2014"}`, `${h.oxygen || "\u2014"}%`,
+                    ];
+                    let rx = tblX;
+                    row.forEach((val, ci) => { doc.fontSize(6).fillColor(C.textMid).font("Helvetica").text(val, rx + 3, y + 2.5, { width: colW[ci] - 6, align: "center" }); rx += colW[ci]; });
+                    y += 12;
                 });
-                y += r2H + 6;
+                y += 8;
             }
-        }
 
-        // ═══════════════════════════════════════════
-        //  INSIGHTS (always — grows with scan level)
-        // ═══════════════════════════════════════════
-        y = sectionTitle("What It Means \u2014 In Simple Words", y);
-        const ins = [];
-        if (vitals.systolic && vitals.diastolic) {
-            const s = comp.bp.label;
-            if (s === "Normal") ins.push({ t: "Your blood pressure is healthy. Keep it up!", c: C.green });
-            else if (s === "Low") ins.push({ t: "Blood pressure is low. Stay hydrated, eat well.", c: C.yellow });
-            else ins.push({ t: "Blood pressure is elevated. Reduce salt, manage stress.", c: C.red });
-        }
-        if (vitals.oxygen) {
-            const o = +vitals.oxygen;
-            ins.push(o >= 95 ? { t: `Oxygen ${o}% -- healthy.`, c: C.green } : { t: `Oxygen ${o}% -- try deep breathing exercises.`, c: C.red });
-        }
-        if (vitals.bpm) {
-            const h = +vitals.bpm;
-            ins.push(h >= 60 && h <= 100 ? { t: `Heart rate ${h} BPM -- normal range.`, c: C.green } : { t: `Heart rate ${h} BPM -- outside normal. Rest & hydrate.`, c: h < 60 ? C.yellow : C.red });
-        }
-        if (vitals.temperature) {
-            const t = +vitals.temperature;
-            ins.push(t >= 97 && t <= 99 ? { t: `Temperature ${t}\u00B0F -- normal.`, c: C.green } : { t: `Temperature ${t}\u00B0F -- outside normal. Monitor closely.`, c: t > 99 ? C.red : C.yellow });
-        }
-        if (bc?.bmi) {
-            const b = +bc.bmi;
-            if (b < 18.5) ins.push({ t: `BMI ${b.toFixed(1)} -- underweight. Focus on nutrition.`, c: C.yellow });
-            else if (b < 25) ins.push({ t: `BMI ${b.toFixed(1)} -- healthy range!`, c: C.green });
-            else if (b < 30) ins.push({ t: `BMI ${b.toFixed(1)} -- above ideal. 30 min daily walk helps.`, c: C.yellow });
-            else ins.push({ t: `BMI ${b.toFixed(1)} -- elevated. Diet + exercise recommended.`, c: C.red });
-        }
-        // Scan 2+
-        if (scan >= 2 && bc?.bodyFat != null) {
-            const bf = +bc.bodyFat;
-            ins.push(bf < 20 ? { t: `Body fat ${bf.toFixed(1)}% -- healthy range.`, c: C.green }
-                : bf < 25 ? { t: `Body fat ${bf.toFixed(1)}% -- average. Regular exercise helps.`, c: C.yellow }
-                : { t: `Body fat ${bf.toFixed(1)}% -- above ideal. Focus on cardio + diet.`, c: C.red });
-        }
-        if (scan >= 2 && bc?.waterPercentage != null) {
-            const wp = +bc.waterPercentage;
-            ins.push(wp >= 55 ? { t: `Hydration ${wp.toFixed(0)}% -- well hydrated.`, c: C.green }
-                : { t: `Hydration ${wp.toFixed(0)}% -- drink more water throughout the day.`, c: C.yellow });
-        }
-        // Scan 3+
-        if (scan >= 3 && bc?.visceralFat != null) {
-            const vf = +bc.visceralFat;
-            ins.push(vf <= 9 ? { t: `Visceral fat ${vf} -- healthy level.`, c: C.green }
-                : { t: `Visceral fat ${vf} -- elevated. Reduce sugary foods & exercise.`, c: C.red });
-        }
-        if (scan >= 3) {
-            const map = calcMAP(vitals.systolic, vitals.diastolic);
-            if (map) ins.push(map >= 70 && map <= 100 ? { t: `MAP ${map} mmHg -- good arterial pressure.`, c: C.green }
-                : { t: `MAP ${map} mmHg -- outside ideal range. Monitor.`, c: C.yellow });
-            const rpp = calcRPP(vitals.systolic, vitals.bpm);
-            if (rpp) ins.push(rpp < 120 ? { t: `Cardiac workload (RPP ${rpp}) -- within healthy limits.`, c: C.green }
-                : { t: `Cardiac workload (RPP ${rpp}) -- slightly elevated. Rest well.`, c: C.yellow });
-        }
-        // Scan 4+
-        if (scan >= 4 && bc?.bmr) {
-            const dc = calcDailyCalories(bc.bmr);
-            if (dc) ins.push({ t: `Aim for ~${dc} kcal/day based on your metabolism.`, c: C.blue });
-        }
-        if (scan >= 4) {
-            const dp = calcDailyProtein(bc?.weight);
-            if (dp) ins.push({ t: `Daily protein target: ${dp}g for muscle maintenance.`, c: C.blue });
-        }
-        // Scan 5+
-        if (scan >= 5) {
-            const fitness = calcFitnessLevel(vitals.bpm, vitals.oxygen, bc?.bmi);
-            if (fitness) ins.push({ t: `Your fitness level: ${fitness}. ${fitness === "Excellent" || fitness === "Good" ? "Great work!" : "Room to improve with daily exercise."}`, c: fitness === "Excellent" || fitness === "Good" ? C.green : C.yellow });
-            const stress = calcStressIndex(vitals.bpm, vitals.systolic);
-            if (stress) ins.push({ t: `Cardiac stress: ${stress.level}. ${stress.level === "Low" ? "Heart is working efficiently." : "Focus on relaxation and sleep."}`, c: stress.level === "Low" ? C.green : C.yellow });
-            const vo2 = calcVO2Max(vitals.bpm);
-            if (vo2) ins.push({ t: `Estimated VO2 Max: ${vo2} ml/kg/min. ${vo2 >= 40 ? "Good aerobic capacity." : "More cardio exercise recommended."}`, c: vo2 >= 40 ? C.green : C.yellow });
-        }
-        if (!ins.length) ins.push({ t: "More tests needed for insights.", c: C.textLight });
-
-        const iH = ins.length * 15 + 12;
-        y = ensure(y, iH + 4);
-        doc.roundedRect(M, y, CW, iH, 6).fill(C.bg);
-        let iy = y + 7;
-        ins.forEach((i) => {
-            iy = ensure(iy, 15);
-            doc.circle(M + 14, iy + 4, 2.5).fill(i.c);
-            doc.fontSize(7.5).fillColor(C.textMid).font("Helvetica").text(i.t, M + 24, iy, { width: CW - 40 });
-            iy += 15;
-        });
-        y = iy + 8;
-
-        // ═══════════════════════════════════════════
-        //  SCAN 2+ : HEALTH TREND GRAPH
-        // ═══════════════════════════════════════════
-        if (show.trendGraph && graphData.length > 1) {
-            y = ensure(y, 200);
-            y = sectionTitle("Health Trend", y);
-            y = ensure(y, 175);
-            const boxW = CW, boxH = 120;
-            const padL = 30, padR = 10, padT = 10, padB = 24;
-            doc.roundedRect(M, y, boxW, boxH, 6).fillAndStroke(C.white, C.border);
-            const cL = M + padL, cR = M + boxW - padR, cT = y + padT, cBt = y + boxH - padB;
-            const cWd = cR - cL, cHt = cBt - cT;
-            const n = graphData.length;
-            const allVals = graphData.flatMap(h => [h.systolic || 0, h.bpm || 0]).filter(v => v > 0);
-            if (allVals.length === 0) allVals.push(80, 120);
-            const dMin = Math.min(...allVals), dMax = Math.max(...allVals);
-            const yMin = Math.floor((dMin - 10) / 10) * 10, yMax = Math.ceil((dMax + 10) / 10) * 10 || 200;
-            const mapYv = (v) => cBt - ((v - yMin) / (yMax - yMin)) * cHt;
-            for (let gi = 0; gi <= 4; gi++) {
-                const tick = yMin + ((yMax - yMin) * gi) / 4;
-                const gy = mapYv(tick);
-                doc.moveTo(cL, gy).lineTo(cR, gy).lineWidth(0.3).strokeColor(C.borderLight).stroke();
-                doc.fontSize(5).fillColor(C.textMuted).font("Helvetica").text(`${Math.round(tick)}`, M + 2, gy - 3, { width: 25, align: "right" });
-            }
-            const z1 = Math.max(mapYv(Math.min(130, yMax)), cT), z2 = Math.min(mapYv(Math.max(110, yMin)), cBt);
-            if (z2 > z1) {
-                doc.save().opacity(0.06); doc.rect(cL, z1, cWd, z2 - z1).fill(C.green); doc.restore();
-                doc.save().opacity(0.4); doc.fontSize(4.5).fillColor(C.green).font("Helvetica").text("Normal", cR - 28, z1 + 2); doc.restore();
-            }
-            const sXstep = n > 1 ? cWd / (n - 1) : 0;
-            doc.save().opacity(0.08);
-            doc.moveTo(cL, mapYv(graphData[0].systolic || 120));
-            for (let gi = 1; gi < n; gi++) doc.lineTo(cL + gi * sXstep, mapYv(graphData[gi].systolic || 120));
-            doc.lineTo(cL + (n - 1) * sXstep, cBt).lineTo(cL, cBt).closePath().fill(C.brand);
-            doc.restore();
-            doc.lineWidth(2).strokeColor(C.brand).lineJoin("round").lineCap("round");
-            for (let gi = 0; gi < n; gi++) { const px = cL + gi * sXstep, py = mapYv(graphData[gi].systolic || 120); gi === 0 ? doc.moveTo(px, py) : doc.lineTo(px, py); }
-            doc.stroke();
-            for (let gi = 0; gi < n; gi++) { const px = cL + gi * sXstep, py = mapYv(graphData[gi].systolic || 120); doc.circle(px, py, 3).fill(C.white); doc.circle(px, py, 2).fill(C.brand); }
-            doc.lineWidth(1.5).strokeColor(C.green).lineJoin("round").lineCap("round");
-            for (let gi = 0; gi < n; gi++) { const px = cL + gi * sXstep, py = mapYv(graphData[gi].bpm || 72); gi === 0 ? doc.moveTo(px, py) : doc.lineTo(px, py); }
-            doc.stroke();
-            for (let gi = 0; gi < n; gi++) { const px = cL + gi * sXstep, py = mapYv(graphData[gi].bpm || 72); doc.circle(px, py, 2.5).fill(C.white); doc.circle(px, py, 1.5).fill(C.green); }
-            for (let gi = 0; gi < n; gi++) {
-                const px = cL + gi * sXstep;
-                const lbl = graphData[gi].date ? new Date(graphData[gi].date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }) : `#${gi + 1}`;
-                doc.fontSize(5).fillColor(C.textMuted).font("Helvetica").text(lbl, px - 16, cBt + 4, { width: 32, align: "center" });
-            }
-            const lgX = cR - 110, lgY = cBt + 4;
-            doc.circle(lgX, lgY + 3, 2.5).fill(C.brand);
-            doc.fontSize(5.5).fillColor(C.textMid).font("Helvetica").text("Systolic BP", lgX + 5, lgY);
-            doc.circle(lgX + 55, lgY + 3, 2.5).fill(C.green);
-            doc.text("Heart Rate", lgX + 60, lgY);
-            y += boxH + 6;
-        }
-
-        // ═══════════════════════════════════════════
-        //  SCAN 3+ : TREND DATA TABLE
-        // ═══════════════════════════════════════════
-        if (show.trendTable && graphData.length > 1) {
-            y = ensure(y, graphData.length * 13 + 22);
-            const colW = [55, 55, 55, 55, 55];
-            const tblW = colW.reduce((a, b) => a + b, 0);
-            const tblX = M + (CW - tblW) / 2;
-            doc.roundedRect(tblX, y, tblW, 13, 3).fill(C.dark);
-            const headers = ["Date", "Systolic", "Diastolic", "Pulse", "SpO2"];
-            let hx = tblX;
-            headers.forEach((h, i) => { doc.fontSize(6).fillColor(C.white).font("Helvetica-Bold").text(h, hx + 3, y + 3, { width: colW[i] - 6, align: "center" }); hx += colW[i]; });
-            y += 13;
-            graphData.forEach((h, ri) => {
-                const bg = ri % 2 === 0 ? C.white : C.bg;
-                doc.rect(tblX, y, tblW, 12).fill(bg);
-                const row = [
-                    h.date ? new Date(h.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "2-digit" }) : `#${ri + 1}`,
-                    `${h.systolic || "\u2014"}`, `${h.diastolic || "\u2014"}`, `${h.bpm || "\u2014"}`, `${h.oxygen || "\u2014"}%`,
+            // ═══════════════════════════════════════════
+            //  SCAN 6+ : JOURNEY RECAP
+            // ═══════════════════════════════════════════
+            if (show.journeyRecap && graphData.length >= 3) {
+                y = ensure(y, 110);
+                y = sectionTitle("Your Health Journey", y);
+                const first = graphData[0], last = graphData[graphData.length - 1];
+                const jH = 96;
+                y = ensure(y, jH + 4);
+                doc.roundedRect(M, y, CW, jH, 6).fill(C.blueBg);
+                doc.fontSize(7.5).font("Helvetica-Bold").fillColor(C.blue)
+                    .text(`Over ${graphData.length} visits, here's how you've progressed:`, M + 12, y + 7);
+                const jMetrics = [
+                    { lbl: "Blood Pressure", from: `${first.systolic ?? "--"}/${first.diastolic ?? "--"}`, to: `${last.systolic ?? "--"}/${last.diastolic ?? "--"}`, diff: (first.systolic && last.systolic) ? (first.systolic - last.systolic) : 0, unit: "mmHg" },
+                    { lbl: "Heart Rate", from: `${first.bpm ?? "--"}`, to: `${last.bpm ?? "--"}`, diff: (first.bpm && last.bpm) ? (first.bpm - last.bpm) : 0, unit: "BPM" },
+                    { lbl: "Oxygen", from: `${first.oxygen ?? "--"}%`, to: `${last.oxygen ?? "--"}%`, diff: (first.oxygen && last.oxygen) ? (last.oxygen - first.oxygen) : 0, unit: "%" },
+                    { lbl: "Temperature", from: `${first.temperature ?? "--"}\u00B0F`, to: `${last.temperature ?? "--"}\u00B0F`, diff: (first.temperature && last.temperature) ? +((last.temperature - first.temperature).toFixed(1)) : 0, unit: "\u00B0F", neutral: true },
                 ];
-                let rx = tblX;
-                row.forEach((val, ci) => { doc.fontSize(6).fillColor(C.textMid).font("Helvetica").text(val, rx + 3, y + 2.5, { width: colW[ci] - 6, align: "center" }); rx += colW[ci]; });
-                y += 12;
-            });
-            y += 8;
-        }
-
-        // ═══════════════════════════════════════════
-        //  SCAN 6+ : JOURNEY RECAP
-        // ═══════════════════════════════════════════
-        if (show.journeyRecap && graphData.length >= 3) {
-            y = ensure(y, 110);
-            y = sectionTitle("Your Health Journey", y);
-            const first = graphData[0], last = graphData[graphData.length - 1];
-            const jH = 96;
-            y = ensure(y, jH + 4);
-            doc.roundedRect(M, y, CW, jH, 6).fill(C.blueBg);
-            doc.fontSize(7.5).font("Helvetica-Bold").fillColor(C.blue)
-               .text(`Over ${graphData.length} visits, here's how you've progressed:`, M + 12, y + 7);
-            const jMetrics = [
-                { lbl: "Blood Pressure", from: `${first.systolic ?? "--"}/${first.diastolic ?? "--"}`, to: `${last.systolic ?? "--"}/${last.diastolic ?? "--"}`, diff: (first.systolic && last.systolic) ? (first.systolic - last.systolic) : 0, unit: "mmHg" },
-                { lbl: "Heart Rate", from: `${first.bpm ?? "--"}`, to: `${last.bpm ?? "--"}`, diff: (first.bpm && last.bpm) ? (first.bpm - last.bpm) : 0, unit: "BPM" },
-                { lbl: "Oxygen", from: `${first.oxygen ?? "--"}%`, to: `${last.oxygen ?? "--"}%`, diff: (first.oxygen && last.oxygen) ? (last.oxygen - first.oxygen) : 0, unit: "%" },
-                { lbl: "Temperature", from: `${first.temperature ?? "--"}\u00B0F`, to: `${last.temperature ?? "--"}\u00B0F`, diff: (first.temperature && last.temperature) ? +((last.temperature - first.temperature).toFixed(1)) : 0, unit: "\u00B0F", neutral: true },
-            ];
-            let jy = y + 22;
-            jMetrics.forEach((jm) => {
-                const clr = jm.neutral ? C.textMid : (jm.diff > 0 ? C.green : jm.diff < 0 ? C.red : C.textMuted);
-                const sign = jm.diff > 0 ? "+" : "";
-                doc.fontSize(7).fillColor(C.textMid).font("Helvetica").text(`${jm.lbl}:`, M + 16, jy);
-                doc.fontSize(7.5).fillColor(C.text).font("Helvetica-Bold").text(`${jm.from}  -->  ${jm.to}`, M + 100, jy);
-                doc.fontSize(7).fillColor(clr).font("Helvetica-Bold").text(`(${sign}${jm.diff} ${jm.unit})`, M + 220, jy);
-                jy += 12;
-            });
-            // Consistency score
-            const consistency = Math.round((graphData.length / (patient.maxScans || 7)) * 100);
-            doc.fontSize(7).fillColor(C.textMid).font("Helvetica").text("Consistency:", M + 16, jy + 2);
-            const cBarX = M + 80, cBarW = 120, cBarH = 7;
-            doc.roundedRect(cBarX, jy + 3, cBarW, cBarH, 3.5).fill(C.blueLight);
-            doc.roundedRect(cBarX, jy + 3, Math.max(cBarW * consistency / 100, 4), cBarH, 3.5).fill(C.blue);
-            doc.fontSize(7.5).fillColor(C.blue).font("Helvetica-Bold").text(`${consistency}%`, cBarX + cBarW + 6, jy + 1);
-            y += jH + 8;
-        }
-
-        // ═══════════════════════════════════════════
-        //  ACTION PLAN (progressive)
-        // ═══════════════════════════════════════════
-        y = ensure(y, 60);
-        y = sectionTitle("Your Action Plan", y);
-        const acts = [];
-        if (comp.bp.label === "High") acts.push("Reduce salt to under 5g/day. Avoid pickles, papad, processed snacks.");
-        if (comp.bp.label === "Low") acts.push("Stay hydrated -- 8+ glasses of water daily.");
-        if (+vitals.bpm > 100) acts.push("Limit caffeine. Try 10 min of meditation before sleep.");
-        if (+vitals.oxygen < 95) acts.push("Deep breathing: inhale 4s, hold 4s, exhale 6s -- 5 times daily.");
-        if (bc?.bmi && +bc.bmi >= 25) acts.push("Walk briskly 30 min daily. Replace sugary drinks with water.");
-        if (bc?.bmi && +bc.bmi < 18.5) acts.push("Eat nutrient-dense foods: nuts, eggs, paneer, bananas.");
-        if (scan <= 2) {
-            acts.push("Drink 8 glasses of water daily and eat 2-3 servings of fruits.");
-            acts.push("Sleep 7-8 hours. Avoid screens 1 hour before bed.");
-            acts.push("Take a 15-minute walk after meals to aid digestion.");
-        }
-        if (scan >= 2 && hist.length > 0) {
-            const prev = hist[hist.length - 1];
-            if (vitals.systolic < prev.systolic) acts.push("Your BP is improving! Continue your current routine.");
-            else if (vitals.systolic > prev.systolic) acts.push("BP increased since last visit. Cut salt, reduce stress, walk more.");
-        }
-        if (scan >= 3 && bc?.bodyFat && +bc.bodyFat > 22) acts.push("Body fat above ideal. Add 20 min cardio 4x/week.");
-        if (scan >= 3 && bc?.visceralFat && +bc.visceralFat > 9) acts.push("Visceral fat elevated. Cut refined sugar and processed food.");
-        if (scan >= 4) {
-            const wi = calcWaterIntake(bc?.weight);
-            if (wi) acts.push(`Drink at least ${wi}L of water daily based on your body weight.`);
-            const dc = calcDailyCalories(bc?.bmr);
-            if (dc) acts.push(`Target ~${dc} kcal/day. Focus on protein-rich meals.`);
-            const dp = calcDailyProtein(bc?.weight);
-            if (dp) acts.push(`Aim for ${dp}g protein daily from dal, eggs, paneer, chicken.`);
-        }
-        if (scan >= 5) {
-            acts.push("Track your meals for 3 days to find hidden calorie sources.");
-            acts.push("Add strength training 2x/week to boost muscle mass and BMR.");
-            const stress = calcStressIndex(vitals.bpm, vitals.systolic);
-            if (stress && stress.level !== "Low") acts.push("Practice 10 min deep breathing or meditation daily to lower cardiac stress.");
-        }
-        if (scan >= 6) {
-            acts.push("Review your journey data above -- celebrate the improvements you've made!");
-            acts.push("Share this report with your doctor for a comprehensive health discussion.");
-        }
-        if (scan >= 7) {
-            acts.push("You've completed all 7 scans! Keep monitoring monthly for long-term health.");
-        }
-        acts.push("Come back for your next checkup -- your report grows with each visit!");
-        acts.push("Save this report. Follow these steps for 7 days and compare your numbers.");
-
-        const aH = acts.length * 18 + 12;
-        y = ensure(y, aH + 4);
-        doc.roundedRect(M, y, CW, aH, 6).fill(C.bg);
-        let ay = y + 7;
-        acts.forEach((a, i) => {
-            ay = ensure(ay, 18);
-            doc.circle(M + 14, ay + 4, 6.5).fill(C.brand);
-            doc.fontSize(7).fillColor(C.white).font("Helvetica-Bold").text(`${i + 1}`, M + 10, ay + 1, { width: 9, align: "center" });
-            doc.fontSize(7.5).fillColor(C.textMid).font("Helvetica").text(a, M + 26, ay + 0.5, { width: CW - 38 });
-            ay += 18;
-        });
-        y = ay + 6;
-
-        // ═══════════════════════════════════════════
-        //  WHAT UNLOCKS NEXT (scan < 7)
-        // ═══════════════════════════════════════════
-        if (show.unlocksNext) {
-            const nextScan = scan + 1;
-            const info = unlockInfo[nextScan];
-            if (info) {
-                const allItems = [...info.items];
-                const extraH = scan === 1 ? 18 : 0;
-                const boxH = allItems.length * 14 + 38 + extraH;
-                y = ensure(y, boxH + 8);
-                doc.roundedRect(M, y, CW, boxH, 6).fillAndStroke(C.brandLight, C.brand);
-                doc.roundedRect(M, y, CW, 3, 1.5).fill(C.brand);
-                doc.fontSize(8.5).font("Helvetica-Bold").fillColor(C.brandDark)
-                   .text(`COMING IN SCAN ${nextScan}: ${info.title}`, M + 14, y + 10);
-                let uy = y + 26;
-                allItems.forEach((item) => {
-                    doc.circle(M + 20, uy + 3.5, 2.5).lineWidth(1).strokeColor(C.brand).stroke();
-                    doc.fontSize(7.5).fillColor(C.textMid).font("Helvetica").text(item, M + 30, uy, { width: CW - 50 });
-                    uy += 14;
+                let jy = y + 22;
+                jMetrics.forEach((jm) => {
+                    const clr = jm.neutral ? C.textMid : (jm.diff > 0 ? C.green : jm.diff < 0 ? C.red : C.textMuted);
+                    const sign = jm.diff > 0 ? "+" : "";
+                    doc.fontSize(7).fillColor(C.textMid).font("Helvetica").text(`${jm.lbl}:`, M + 16, jy);
+                    doc.fontSize(7.5).fillColor(C.text).font("Helvetica-Bold").text(`${jm.from}  -->  ${jm.to}`, M + 100, jy);
+                    doc.fontSize(7).fillColor(clr).font("Helvetica-Bold").text(`(${sign}${jm.diff} ${jm.unit})`, M + 220, jy);
+                    jy += 12;
                 });
-                if (scan === 1) {
-                    doc.fontSize(6.5).fillColor(C.textLight).font("Helvetica")
-                       .text("Plus: Deep Metrics (Scan 3) \u2022 Lifestyle Plan (Scan 4) \u2022 Risk Analysis (Scan 5) \u2022 Journey (Scan 6) \u2022 Complete Report (Scan 7)", M + 14, uy + 2, { width: CW - 28 });
+                // Consistency score
+                const consistency = Math.round((graphData.length / (patient.maxScans || 7)) * 100);
+                doc.fontSize(7).fillColor(C.textMid).font("Helvetica").text("Consistency:", M + 16, jy + 2);
+                const cBarX = M + 80, cBarW = 120, cBarH = 7;
+                doc.roundedRect(cBarX, jy + 3, cBarW, cBarH, 3.5).fill(C.blueLight);
+                doc.roundedRect(cBarX, jy + 3, Math.max(cBarW * consistency / 100, 4), cBarH, 3.5).fill(C.blue);
+                doc.fontSize(7.5).fillColor(C.blue).font("Helvetica-Bold").text(`${consistency}%`, cBarX + cBarW + 6, jy + 1);
+                y += jH + 8;
+            }
+
+            // ═══════════════════════════════════════════
+            //  ACTION PLAN (progressive)
+            // ═══════════════════════════════════════════
+            y = ensure(y, 60);
+            y = sectionTitle("Your Action Plan", y);
+            const acts = [];
+            if (comp.bp.label === "High") acts.push("Reduce salt to under 5g/day. Avoid pickles, papad, processed snacks.");
+            if (comp.bp.label === "Low") acts.push("Stay hydrated -- 8+ glasses of water daily.");
+            if (+vitals.bpm > 100) acts.push("Limit caffeine. Try 10 min of meditation before sleep.");
+            if (+vitals.oxygen < 95) acts.push("Deep breathing: inhale 4s, hold 4s, exhale 6s -- 5 times daily.");
+            if (bc?.bmi && +bc.bmi >= 25) acts.push("Walk briskly 30 min daily. Replace sugary drinks with water.");
+            if (bc?.bmi && +bc.bmi < 18.5) acts.push("Eat nutrient-dense foods: nuts, eggs, paneer, bananas.");
+            if (scan <= 2) {
+                acts.push("Drink 8 glasses of water daily and eat 2-3 servings of fruits.");
+                acts.push("Sleep 7-8 hours. Avoid screens 1 hour before bed.");
+                acts.push("Take a 15-minute walk after meals to aid digestion.");
+            }
+            if (scan >= 2 && hist.length > 0) {
+                const prev = hist[hist.length - 1];
+                if (vitals.systolic < prev.systolic) acts.push("Your BP is improving! Continue your current routine.");
+                else if (vitals.systolic > prev.systolic) acts.push("BP increased since last visit. Cut salt, reduce stress, walk more.");
+            }
+            if (scan >= 3 && bc?.bodyFat && +bc.bodyFat > 22) acts.push("Body fat above ideal. Add 20 min cardio 4x/week.");
+            if (scan >= 3 && bc?.visceralFat && +bc.visceralFat > 9) acts.push("Visceral fat elevated. Cut refined sugar and processed food.");
+            if (scan >= 4) {
+                const wi = calcWaterIntake(bc?.weight);
+                if (wi) acts.push(`Drink at least ${wi}L of water daily based on your body weight.`);
+                const dc = calcDailyCalories(bc?.bmr);
+                if (dc) acts.push(`Target ~${dc} kcal/day. Focus on protein-rich meals.`);
+                const dp = calcDailyProtein(bc?.weight);
+                if (dp) acts.push(`Aim for ${dp}g protein daily from dal, eggs, paneer, chicken.`);
+            }
+            if (scan >= 5) {
+                acts.push("Track your meals for 3 days to find hidden calorie sources.");
+                acts.push("Add strength training 2x/week to boost muscle mass and BMR.");
+                const stress = calcStressIndex(vitals.bpm, vitals.systolic);
+                if (stress && stress.level !== "Low") acts.push("Practice 10 min deep breathing or meditation daily to lower cardiac stress.");
+            }
+            if (scan >= 6) {
+                acts.push("Review your journey data above -- celebrate the improvements you've made!");
+                acts.push("Share this report with your doctor for a comprehensive health discussion.");
+            }
+            if (scan >= 7) {
+                acts.push("You've completed all 7 scans! Keep monitoring monthly for long-term health.");
+            }
+            acts.push("Come back for your next checkup -- your report grows with each visit!");
+            acts.push("Save this report. Follow these steps for 7 days and compare your numbers.");
+
+            const aH = acts.length * 18 + 12;
+            y = ensure(y, aH + 4);
+            doc.roundedRect(M, y, CW, aH, 6).fill(C.bg);
+            let ay = y + 7;
+            acts.forEach((a, i) => {
+                ay = ensure(ay, 18);
+                doc.circle(M + 14, ay + 4, 6.5).fill(C.brand);
+                doc.fontSize(7).fillColor(C.white).font("Helvetica-Bold").text(`${i + 1}`, M + 10, ay + 1, { width: 9, align: "center" });
+                doc.fontSize(7.5).fillColor(C.textMid).font("Helvetica").text(a, M + 26, ay + 0.5, { width: CW - 38 });
+                ay += 18;
+            });
+            y = ay + 6;
+
+            // ═══════════════════════════════════════════
+            //  WHAT UNLOCKS NEXT (scan < 7)
+            // ═══════════════════════════════════════════
+            if (show.unlocksNext) {
+                const nextScan = scan + 1;
+                const info = unlockInfo[nextScan];
+                if (info) {
+                    const allItems = [...info.items];
+                    const extraH = scan === 1 ? 18 : 0;
+                    const boxH = allItems.length * 14 + 38 + extraH;
+                    y = ensure(y, boxH + 8);
+                    doc.roundedRect(M, y, CW, boxH, 6).fillAndStroke(C.brandLight, C.brand);
+                    doc.roundedRect(M, y, CW, 3, 1.5).fill(C.brand);
+                    doc.fontSize(8.5).font("Helvetica-Bold").fillColor(C.brandDark)
+                        .text(`COMING IN SCAN ${nextScan}: ${info.title}`, M + 14, y + 10);
+                    let uy = y + 26;
+                    allItems.forEach((item) => {
+                        doc.circle(M + 20, uy + 3.5, 2.5).lineWidth(1).strokeColor(C.brand).stroke();
+                        doc.fontSize(7.5).fillColor(C.textMid).font("Helvetica").text(item, M + 30, uy, { width: CW - 50 });
+                        uy += 14;
+                    });
+                    if (scan === 1) {
+                        doc.fontSize(6.5).fillColor(C.textLight).font("Helvetica")
+                            .text("Plus: Deep Metrics (Scan 3) \u2022 Lifestyle Plan (Scan 4) \u2022 Risk Analysis (Scan 5) \u2022 Journey (Scan 6) \u2022 Complete Report (Scan 7)", M + 14, uy + 2, { width: CW - 28 });
+                    }
+                    doc.fontSize(7).fillColor(C.brandDark).font("Helvetica-Bold")
+                        .text("Complete your next visit to unlock!", M + 14, y + boxH - 14, { width: CW - 28, align: "center" });
+                    y += boxH + 8;
                 }
-                doc.fontSize(7).fillColor(C.brandDark).font("Helvetica-Bold")
-                   .text("Complete your next visit to unlock!", M + 14, y + boxH - 14, { width: CW - 28, align: "center" });
-                y += boxH + 8;
             }
-        }
 
-        // ═══════════════════════════════════════════
-        //  SCAN 7: JOURNEY COMPLETE + Final Grade
-        // ═══════════════════════════════════════════
-        if (show.journeyComplete) {
-            const grade = healthScore >= 90 ? "A+" : healthScore >= 80 ? "A" : healthScore >= 70 ? "B" : healthScore >= 60 ? "C" : "D";
-            const consistency = Math.round((graphData.length / (patient.maxScans || 7)) * 100);
-            y = ensure(y, 78);
-            doc.roundedRect(M, y, CW, 72, 6).fill(C.greenBg);
-            doc.roundedRect(M, y, CW, 3, 1.5).fill(C.green);
-            doc.fontSize(14).font("Helvetica-Bold").fillColor(C.green)
-               .text("Journey Complete!", M, y + 8, { width: CW, align: "center" });
-            doc.fontSize(8).font("Helvetica").fillColor(C.textMid)
-               .text("Congratulations on completing all 7 scans! You've unlocked your full health profile.", M + 20, y + 26, { width: CW - 40, align: "center" });
-            doc.fontSize(7.5).font("Helvetica-Bold").fillColor(C.green)
-               .text(`Final Grade: ${grade} \u2022 Consistency: ${consistency}% \u2022 Total Visits: ${graphData.length} \u2022 All Metrics Unlocked`, M + 20, y + 42, { width: CW - 40, align: "center" });
-            doc.fontSize(6.5).font("Helvetica").fillColor(C.textMid)
-               .text("Keep monitoring your health monthly. Share this report with your doctor for a comprehensive discussion.", M + 20, y + 56, { width: CW - 40, align: "center" });
-            y += 80;
-        }
-
-        // ═══ SUMMARY — layman language ═══
-        {
-            y = ensure(y, 50);
-            y = sectionTitle("Summary", y);
-            let summaryText = "";
-            if (scan === 1) {
-                summaryText = `This is your first health check. Your overall score is ${healthScore}/100 (${scoreLabel(healthScore)}). ` +
-                    (healthScore >= 80 ? "Your vitals look good - keep up the healthy habits! Come back for your next scan to unlock body composition tracking."
-                    : healthScore >= 60 ? "Most readings are fine, with a few areas to watch. Follow the action plan above and visit again soon."
-                    : "Some readings need attention. Follow the tips above and come back for your next scan.");
-            } else if (scan <= 3) {
-                const improving = show.sinceLastVisit && hist.length > 0 && vitals.systolic <= hist[hist.length - 1].systolic;
-                summaryText = `Visit ${scan} of 7. Your score is ${healthScore}/100 (${scoreLabel(healthScore)}). ` +
-                    (improving ? "Your numbers are improving since last visit! " : "") +
-                    "Keep following the action plan. Each visit adds more insights to your report.";
-            } else if (scan <= 5) {
-                summaryText = `Visit ${scan} of 7 - your health profile is getting detailed! Score: ${healthScore}/100 (${scoreLabel(healthScore)}). ` +
-                    "Your lifestyle plan and risk analysis are now active. Review the tips above to keep improving.";
-            } else if (scan === 6) {
-                summaryText = `Visit ${scan} of 7. Score: ${healthScore}/100 (${scoreLabel(healthScore)}). ` +
-                    "Your full health journey is now visible. One more scan to complete your profile!";
-            } else {
-                summaryText = `All 7 scans complete! Final score: ${healthScore}/100 (${scoreLabel(healthScore)}). ` +
-                    "Your complete health profile with all metrics is above. Share this report with your doctor.";
+            // ═══════════════════════════════════════════
+            //  SCAN 7: JOURNEY COMPLETE + Final Grade
+            // ═══════════════════════════════════════════
+            if (show.journeyComplete) {
+                const grade = healthScore >= 90 ? "A+" : healthScore >= 80 ? "A" : healthScore >= 70 ? "B" : healthScore >= 60 ? "C" : "D";
+                const consistency = Math.round((graphData.length / (patient.maxScans || 7)) * 100);
+                y = ensure(y, 78);
+                doc.roundedRect(M, y, CW, 72, 6).fill(C.greenBg);
+                doc.roundedRect(M, y, CW, 3, 1.5).fill(C.green);
+                doc.fontSize(14).font("Helvetica-Bold").fillColor(C.green)
+                    .text("Journey Complete!", M, y + 8, { width: CW, align: "center" });
+                doc.fontSize(8).font("Helvetica").fillColor(C.textMid)
+                    .text("Congratulations on completing all 7 scans! You've unlocked your full health profile.", M + 20, y + 26, { width: CW - 40, align: "center" });
+                doc.fontSize(7.5).font("Helvetica-Bold").fillColor(C.green)
+                    .text(`Final Grade: ${grade} \u2022 Consistency: ${consistency}% \u2022 Total Visits: ${graphData.length} \u2022 All Metrics Unlocked`, M + 20, y + 42, { width: CW - 40, align: "center" });
+                doc.fontSize(6.5).font("Helvetica").fillColor(C.textMid)
+                    .text("Keep monitoring your health monthly. Share this report with your doctor for a comprehensive discussion.", M + 20, y + 56, { width: CW - 40, align: "center" });
+                y += 80;
             }
-            y = ensure(y, 38);
-            doc.roundedRect(M, y, CW, 32, 6).fill(C.bg);
-            doc.fontSize(7.5).fillColor(C.textMid).font("Helvetica").text(summaryText, M + 12, y + 8, { width: CW - 24, lineGap: 1 });
-            y += 38;
-        }
 
-        // ═══ ECO STATS ═══
-        if (ecoStats?.individual && ecoStats?.total) {
-            y = ensure(y, 30);
-            y += 3;
-            doc.roundedRect(M, y, CW, 24, 6).fill(C.greenBg);
-            doc.fontSize(6.5).fillColor(C.green).font("Helvetica-Bold")
-               .text(`Your digital report saved ~${ecoStats.individual.water}L water & ~${ecoStats.individual.co2}g CO2`, M + 8, y + 3, { width: CW - 16, align: "center" });
-            doc.fontSize(5.5).fillColor(C.textLight).font("Helvetica")
-               .text(`Together, Reliv users saved ~${ecoStats.total.water}L water, ~${ecoStats.total.co2}g CO2, ~${ecoStats.total.paper} sheets of paper.`, M + 8, y + 13, { width: CW - 16, align: "center" });
-        }
+            // ═══ SUMMARY — layman language ═══
+            {
+                y = ensure(y, 50);
+                y = sectionTitle("Summary", y);
+                let summaryText = "";
+                if (scan === 1) {
+                    summaryText = `This is your first health check. Your overall score is ${healthScore}/100 (${scoreLabel(healthScore)}). ` +
+                        (healthScore >= 80 ? "Your vitals look good - keep up the healthy habits! Come back for your next scan to unlock body composition tracking."
+                            : healthScore >= 60 ? "Most readings are fine, with a few areas to watch. Follow the action plan above and visit again soon."
+                                : "Some readings need attention. Follow the tips above and come back for your next scan.");
+                } else if (scan <= 3) {
+                    const improving = show.sinceLastVisit && hist.length > 0 && vitals.systolic <= hist[hist.length - 1].systolic;
+                    summaryText = `Visit ${scan} of 7. Your score is ${healthScore}/100 (${scoreLabel(healthScore)}). ` +
+                        (improving ? "Your numbers are improving since last visit! " : "") +
+                        "Keep following the action plan. Each visit adds more insights to your report.";
+                } else if (scan <= 5) {
+                    summaryText = `Visit ${scan} of 7 - your health profile is getting detailed! Score: ${healthScore}/100 (${scoreLabel(healthScore)}). ` +
+                        "Your lifestyle plan and risk analysis are now active. Review the tips above to keep improving.";
+                } else if (scan === 6) {
+                    summaryText = `Visit ${scan} of 7. Score: ${healthScore}/100 (${scoreLabel(healthScore)}). ` +
+                        "Your full health journey is now visible. One more scan to complete your profile!";
+                } else {
+                    summaryText = `All 7 scans complete! Final score: ${healthScore}/100 (${scoreLabel(healthScore)}). ` +
+                        "Your complete health profile with all metrics is above. Share this report with your doctor.";
+                }
+                y = ensure(y, 38);
+                doc.roundedRect(M, y, CW, 32, 6).fill(C.bg);
+                doc.fontSize(7.5).fillColor(C.textMid).font("Helvetica").text(summaryText, M + 12, y + 8, { width: CW - 24, lineGap: 1 });
+                y += 38;
+            }
 
-        drawPageFooter();
-        doc.end();
-      } catch (err) {
-        reject(err);
-      }
+            // ═══ ECO STATS ═══
+            if (ecoStats?.individual && ecoStats?.total) {
+                y = ensure(y, 30);
+                y += 3;
+                doc.roundedRect(M, y, CW, 24, 6).fill(C.greenBg);
+                doc.fontSize(6.5).fillColor(C.green).font("Helvetica-Bold")
+                    .text(`Your digital report saved ~${ecoStats.individual.water}L water & ~${ecoStats.individual.co2}g CO2`, M + 8, y + 3, { width: CW - 16, align: "center" });
+                doc.fontSize(5.5).fillColor(C.textLight).font("Helvetica")
+                    .text(`Together, Reliv users saved ~${ecoStats.total.water}L water, ~${ecoStats.total.co2}g CO2, ~${ecoStats.total.paper} sheets of paper.`, M + 8, y + 13, { width: CW - 16, align: "center" });
+            }
+
+            drawPageFooter();
+            doc.end();
+        } catch (err) {
+            reject(err);
+        }
     });
 }
 function generateReceiptPdf(data, ecoStats) {
@@ -2503,30 +2503,30 @@ mqttClient.on("offline", () => {
 // MQTT message handler for sensor data AND dispense ACK
 mqttClient.on("message", async (topic, message) => {
     log.debug(`📡 MQTT [${topic}]: ${message.toString()}`);
-    
+
     // ✅ PHASE 1: Handle ESP32 dispense ACK
     // Topic format: reliv/dispense/confirm/<jobId>
     if (topic.startsWith('reliv/dispense/confirm/')) {
         const jobId = topic.split('/').pop();
-        
+
         if (!jobId || jobId.length === 0) {
             log.error('❌ ESP32 ACK received with empty jobId');
             return;
         }
-        
+
         let ackData = {};
         try {
             ackData = JSON.parse(message.toString());
         } catch (err) {
             log.warn(`⚠️ ESP32 ACK payload not valid JSON for job ${jobId}, using empty object`);
         }
-        
+
         log.info(`📦 ESP32 dispense ACK received for job: ${jobId}`);
-        
+
         // Validate ACK and mark THIS job completed
         try {
             const completed = await fulfillmentManager.markCompleted(jobId, ackData);
-            
+
             if (completed) {
                 const job = fulfillmentManager.getJobStatus(jobId);
                 if (job && job.transaction_id) {
@@ -2542,7 +2542,7 @@ mqttClient.on("message", async (topic, message) => {
                     // Multi-kit verification: fetch EVERY fulfillment job for this transaction
                     const txnJobs = fulfillmentManager.getJobsByTransaction(job.transaction_id);
                     const allTxnCompleted = txnJobs.length > 0 && txnJobs.every(j => j.state === 'COMPLETED');
-                    
+
                     if (allTxnCompleted) {
                         try {
                             transactionManager.markFulfilled(job.transaction_id);
@@ -2572,7 +2572,7 @@ mqttClient.on("message", async (topic, message) => {
         } catch (err) {
             log.error(`❌ Failed to process ESP32 ACK for job ${jobId}:`, err.message);
         }
-        
+
         return; // Don't process further as sensor data
     }
 });
@@ -2741,33 +2741,33 @@ app.use(
  * so we just enforce consistent field presence.
  */
 function formatKitResponse(item) {
-    const stockQty    = Number(item.quantity       ?? item.stock_quantity    ?? 0);
+    const stockQty = Number(item.quantity ?? item.stock_quantity ?? 0);
     const reservedQty = Number(item.reserved_quantity ?? 0);
     const availableQty = Math.max(0, stockQty - reservedQty);
-    const price        = Number(item.price          ?? item.unit_price       ?? 0);
-    const taxRate      = settingsManager?.getTaxRate?.() ?? 18;
-    const tax          = Math.round(price * taxRate) / 100;
-    const totalPrice   = Math.round((price + tax) * 100) / 100;
-    const imagePath    = item.image_path || item.imageUrl || "";
+    const price = Number(item.price ?? item.unit_price ?? 0);
+    const taxRate = settingsManager?.getTaxRate?.() ?? 18;
+    const tax = Math.round(price * taxRate) / 100;
+    const totalPrice = Math.round((price + tax) * 100) / 100;
+    const imagePath = item.image_path || item.imageUrl || "";
 
     return {
-        id:                 item.kit_id,
-        kit_id:             item.kit_id,
-        name:               item.name          ?? '',
-        description:        item.description   ?? '',
+        id: item.kit_id,
+        kit_id: item.kit_id,
+        name: item.name ?? '',
+        description: item.description ?? '',
         price,
-        base_price:         price,
-        tax_rate:           taxRate,
+        base_price: price,
+        tax_rate: taxRate,
         tax,
-        total_price:        totalPrice,
-        quantity:           stockQty,
-        stock_quantity:     stockQty,
-        reserved_quantity:  reservedQty,
+        total_price: totalPrice,
+        quantity: stockQty,
+        stock_quantity: stockQty,
+        reserved_quantity: reservedQty,
         available_quantity: availableQty,
-        motor_id:           item.motor_id      ?? null,
-        image_path:         imagePath,
-        imageUrl:           imagePath, // Compatibility alias while frontend is transitioned
-        updated_at:         item.updated_at    ?? null,
+        motor_id: item.motor_id ?? null,
+        image_path: imagePath,
+        imageUrl: imagePath, // Compatibility alias while frontend is transitioned
+        updated_at: item.updated_at ?? null,
     };
 }
 
@@ -2808,9 +2808,9 @@ app.post("/api/kits", (req, res) => {
             });
         }
 
-        const kitIdStr  = String(kit_id).trim();
-        const priceNum  = Number(price);
-        const qtyNum    = Math.floor(Number(quantity));
+        const kitIdStr = String(kit_id).trim();
+        const priceNum = Number(price);
+        const qtyNum = Math.floor(Number(quantity));
 
         if (!kitIdStr) {
             return res.status(400).json({ ok: false, message: "kit_id must not be empty" });
@@ -2892,7 +2892,7 @@ app.patch("/api/kits/:id", (req, res) => {
         }
 
         // Build SET clause from whitelisted fields only
-        const sets   = [];
+        const sets = [];
         const values = [];
 
         if (req.body.name !== undefined) {
@@ -3038,7 +3038,7 @@ app.patch(
                 // Database update unexpectedly failed.
                 try {
                     await fs.unlink(newPhysicalPath);
-                } catch {}
+                } catch { }
 
                 return res.status(500).json({
                     ok: false,
@@ -3066,7 +3066,7 @@ app.patch(
             if (newPhysicalPath) {
                 try {
                     await fs.unlink(newPhysicalPath);
-                } catch {}
+                } catch { }
             }
 
             log.error("PATCH /api/kits/:id/image error:", err.message);
@@ -3476,21 +3476,21 @@ const customerDataStore = new Map();
 // Clean up expired sessions every 5 minutes
 setInterval(() => {
     const now = Date.now();
-    
+
     // Clean up legacy in-memory QR sessions
     for (const [token, session] of qrSessions.entries()) {
         if (now - session.createdAt > QR_SESSION_TTL) {
             qrSessions.delete(token);
         }
     }
-    
+
     // Clean up orphaned paths
     for (const [path, token] of qrPathMap.entries()) {
         if (!qrSessions.has(token)) {
             qrPathMap.delete(path);
         }
     }
-    
+
     // Clean up legacy customer data store
     const expiryTime = 30 * 60 * 1000; // 30 minutes
     for (const [sessionId, data] of customerDataStore.entries()) {
@@ -3498,7 +3498,7 @@ setInterval(() => {
             customerDataStore.delete(sessionId);
         }
     }
-    
+
     // Expire old sessions in SQLite
     try {
         sessionManager.expireOldSessions();
@@ -3516,21 +3516,21 @@ function createQrSessionHandler(req, res) {
     try {
         // ✅ NEW: Use SessionManager to create persistent session in SQLite
         const session = sessionManager.createSession('RELIV-001', null);
-        
+
         // Generate secure QR token and path
         const token = crypto.randomUUID();
         const path = createQrPath();
-        
+
         // Store QR mapping in SQLite
         sessionManager.setQrPath(session.session_id, token, path);
-        
+
         // ✅ PHASE 1: Generate cryptographically random pairing token
         // This token links the customer phone to this specific kiosk session.
         // It will be included in the QR/customer URL and verified during payment completion.
         const pairingToken = crypto.randomBytes(32).toString('hex');
         sessionManager.setPairingToken(session.session_id, pairingToken);
         log.info(`🔗 Pairing token generated for session: ${session.session_id}`);
-        
+
         // Backward compatibility: Also store in legacy Maps (temporary)
         qrSessions.set(token, {
             sessionId: session.session_id,
@@ -3538,9 +3538,9 @@ function createQrSessionHandler(req, res) {
             used: false,
         });
         qrPathMap.set(path, token);
-        
+
         log.info(`🔑 QR session created: ${session.session_id} (path: ${path.slice(0, 8)}...)`);
-        res.json({ 
+        res.json({
             path,
             sessionId: session.session_id,  // Include for debugging
             pairingToken, // Customer URL/HTTPS site needs this for payment completion
@@ -3590,13 +3590,13 @@ app.post("/api/resolve-path", (req, res) => {
 
         // ✅ NEW: First try to get session from SQLite
         const session = sessionManager.getSessionByQrPath(path);
-        
+
         if (session) {
             // Session found in SQLite
             log.info(`✅ QR path resolved to session: ${session.session_id}`);
             return res.json({ token: session.qr_token });
         }
-        
+
         // Fallback to legacy in-memory Map for backward compatibility
         const token = qrPathMap.get(path);
         if (!token) {
@@ -3630,24 +3630,24 @@ app.post("/api/validate-session", (req, res) => {
         if (!session) {
             // Fallback to legacy in-memory Map
             const legacySession = qrSessions.get(token);
-            
+
             if (!legacySession) {
                 return res.status(404).json({ valid: false, reason: 'not_found' });
             }
-            
+
             // Check legacy session
             if (legacySession.used) {
                 return res.status(410).json({ valid: false, reason: 'already_used' });
             }
-            
+
             if (Date.now() - legacySession.createdAt > QR_SESSION_TTL) {
                 qrSessions.delete(token);
                 return res.status(410).json({ valid: false, reason: 'expired' });
             }
-            
+
             // Mark as used (one-time only)
             legacySession.used = true;
-            
+
             log.info(`✅ QR session validated (legacy): ${legacySession.sessionId}`);
             return res.json({ valid: true, sessionId: legacySession.sessionId });
         }
@@ -3667,9 +3667,9 @@ app.post("/api/validate-session", (req, res) => {
         sessionManager.markQrUsed(session.session_id);
 
         log.info(`✅ QR session validated: ${session.session_id}`);
-        res.json({ 
-            valid: true, 
-            sessionId: session.session_id 
+        res.json({
+            valid: true,
+            sessionId: session.session_id
         });
     } catch (err) {
         console.error("Error validating session:", err);
@@ -3699,7 +3699,7 @@ async function saveCustomerDataHandler(req, res) {
         const sessionId = req.params?.sessionId || req.body.sessionId;
         const pairingToken = req.body.pairingToken;
         const returnUrl = req.body.returnUrl;
-        
+
         const rawCustomer = req.body.customerData || req.body;
         const customerData = {
             name: rawCustomer.name || '',
@@ -3731,7 +3731,7 @@ async function saveCustomerDataHandler(req, res) {
         }
 
         sessionManager.attachCustomer(sessionId, customerData);
-        
+
         customerDataStore.set(sessionId, {
             ...customerData,
             timestamp: Date.now()
@@ -3767,6 +3767,213 @@ app.post("/api/sessions/:sessionId/customer", async (req, res) => {
     return saveCustomerDataHandler(req, res);
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/sessions/:sessionId/service
+// Persist the customer's selected kiosk service BEFORE measurements/payment.
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/sessions/:sessionId/service", (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const { pairingToken, serviceType } = req.body || {};
+
+        if (!sessionId) {
+            return res.status(400).json({
+                ok: false,
+                message: "Session ID is required"
+            });
+        }
+
+        if (!pairingToken) {
+            return res.status(400).json({
+                ok: false,
+                message: "Pairing token is required"
+            });
+        }
+
+        if (!["HEALTH_CHECKUP", "MEDICINE"].includes(serviceType)) {
+            return res.status(400).json({
+                ok: false,
+                message: "Invalid service type"
+            });
+        }
+
+        // Verify that this request belongs to the active kiosk session.
+        sessionManager.verifyPairingToken(sessionId, pairingToken);
+
+        const session = sessionManager.getSession(sessionId);
+
+        if (!session) {
+            return res.status(404).json({
+                ok: false,
+                message: "Session not found"
+            });
+        }
+
+        // Idempotent retry: same service was already selected.
+        if (
+            session.status === "SERVICE_SELECTED" &&
+            session.service_type === serviceType
+        ) {
+            return res.json({
+                ok: true,
+                sessionId,
+                serviceType,
+                status: session.status,
+                alreadySelected: true
+            });
+        }
+
+        // Once selected, do not silently allow changing service.
+        if (session.status !== "CUSTOMER_ATTACHED") {
+            return res.status(409).json({
+                ok: false,
+                message: `Service cannot be selected while session is ${session.status}`
+            });
+        }
+
+        sessionManager.selectService(sessionId, serviceType);
+
+        const updatedSession = sessionManager.getSession(sessionId);
+
+        return res.json({
+            ok: true,
+            sessionId,
+            serviceType: updatedSession.service_type,
+            status: updatedSession.status,
+            alreadySelected: false
+        });
+
+    } catch (err) {
+        log.error(
+            "❌ Service selection error:",
+            err.message
+        );
+
+        return res.status(400).json({
+            ok: false,
+            message: err.message || "Failed to select service"
+        });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /api/sessions/:sessionId/measurements-complete
+//
+// Persist one immutable/frozen health measurement snapshot BEFORE payment.
+// This endpoint DOES NOT generate or unlock the report.
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/sessions/:sessionId/measurements-complete", (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const { pairingToken, healthData } = req.body || {};
+
+        if (!sessionId) {
+            return res.status(400).json({
+                ok: false,
+                message: "Session ID is required"
+            });
+        }
+
+        if (!pairingToken) {
+            return res.status(400).json({
+                ok: false,
+                message: "Pairing token is required"
+            });
+        }
+
+        if (
+            !healthData ||
+            typeof healthData !== "object" ||
+            Array.isArray(healthData) ||
+            Object.keys(healthData).length === 0
+        ) {
+            return res.status(400).json({
+                ok: false,
+                message: "Complete health measurement data is required"
+            });
+        }
+
+        // Authenticate this request against the active kiosk session.
+        // Do NOT consume the token here; payment still needs the session.
+        sessionManager.verifyPairingToken(sessionId, pairingToken);
+
+        const session = sessionManager.getSession(sessionId);
+
+        if (!session) {
+            return res.status(404).json({
+                ok: false,
+                message: "Session not found"
+            });
+        }
+
+        if (session.service_type !== "HEALTH_CHECKUP") {
+            return res.status(409).json({
+                ok: false,
+                message: "Measurements are only valid for a health checkup session"
+            });
+        }
+
+        // Normal expected state immediately after the final measurement.
+        //
+        // Idempotent retry is also allowed if the first request succeeded
+        // but the frontend lost the HTTP response.
+        if (
+            session.status !== "SERVICE_SELECTED" &&
+            session.status !== "MEASUREMENTS_COMPLETE"
+        ) {
+            return res.status(409).json({
+                ok: false,
+                message: `Measurements cannot be completed while session is ${session.status}`
+            });
+        }
+
+        const updatedSession =
+            sessionManager.saveCompletedHealthData(sessionId, healthData);
+
+        return res.json({
+            ok: true,
+            sessionId,
+            status: updatedSession.status,
+            measurementsSaved: true,
+            paymentReady:
+                updatedSession.status === "MEASUREMENTS_COMPLETE"
+        });
+
+    } catch (err) {
+        log.error(
+            "❌ Measurements-complete error:",
+            err.message
+        );
+
+        const message =
+            err.message || "Failed to save completed measurements";
+
+        const conflictCodes = new Set([
+            "HEALTH_SNAPSHOT_MISMATCH",
+            "INVALID_HEALTH_SNAPSHOT"
+        ]);
+
+        if (
+            conflictCodes.has(err.code) ||
+            message.includes("locked") ||
+            message.includes("HEALTH_CHECKUP") ||
+            message.includes("transition")
+        ) {
+            return res.status(409).json({
+                ok: false,
+                code: err.code || "MEASUREMENTS_CONFLICT",
+                message
+            });
+        }
+
+        return res.status(400).json({
+            ok: false,
+            code: err.code || "INVALID_MEASUREMENTS",
+            message
+        });
+    }
+});
+
 
 // ───────────────────────────────────────────────────────────────────────────
 // ENDPOINT: Get Customer Data
@@ -3781,7 +3988,7 @@ app.post("/api/get-customer-data", async (req, res) => {
 
         // ✅ NEW: Get session from SQLite (includes customer_data as parsed JSON)
         const session = sessionManager.getSession(sessionId);
-        
+
         if (session && session.customer_data) {
             // Data persists in SQLite - no need to delete
             log.info(`📖 Customer data retrieved for session: ${sessionId}`);
@@ -3895,9 +4102,7 @@ app.get("/api/cloud-dependencies", (req, res) => {
         { route: "/api/kits/:id/image", method: "PATCH", kioskCritical: false, purpose: "Legacy/admin image update" },
         { route: "/api/kits/:id", method: "DELETE", kioskCritical: false, purpose: "Legacy/admin kit deletion" },
         { route: "/api/report/:id/download", method: "GET", kioskCritical: false, purpose: "Legacy Mongo report download" },
-        { route: "/api/reports/history/:email", method: "GET", kioskCritical: false, purpose: "Legacy report history" },
-        { route: "/api/speech-config", method: "GET", kioskCritical: false, purpose: "Optional admin speech config" },
-        { route: "/api/speech-config", method: "PUT", kioskCritical: false, purpose: "Optional admin speech config update" }
+        { route: "/api/reports/history/:email", method: "GET", kioskCritical: false, purpose: "Legacy report history" }
     ];
 
     res.json({
@@ -3964,14 +4169,14 @@ app.put("/api/report-price", async (req, res) => {
 app.post("/api/create-order", async (req, res) => {
     try {
         const { sessionId, pairingToken, serviceType, cart, returnUrl } = req.body;
-        
+
         if (!sessionId) {
             return res.status(400).json({ error: "Session ID is required" });
         }
 
         if (!serviceType || !['HEALTH_CHECKUP', 'MEDICINE'].includes(serviceType)) {
-            return res.status(400).json({ 
-                error: "Valid service type is required (HEALTH_CHECKUP or MEDICINE)" 
+            return res.status(400).json({
+                error: "Valid service type is required (HEALTH_CHECKUP or MEDICINE)"
             });
         }
 
@@ -3994,7 +4199,7 @@ app.post("/api/create-order", async (req, res) => {
         }
 
         if (session.status !== 'CUSTOMER_ATTACHED' && session.status !== 'SERVICE_SELECTED') {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: "Customer data must be saved before payment",
                 currentStatus: session.status
             });
@@ -4041,7 +4246,7 @@ app.post("/api/create-order", async (req, res) => {
                     }
 
                     return {
-                        kit_id:   kitId,
+                        kit_id: kitId,
                         quantity: Math.floor(quantity),
                         ...(item.name ? { name: String(item.name) } : {})
                     };
@@ -4051,21 +4256,20 @@ app.post("/api/create-order", async (req, res) => {
         } catch (cartParseError) {
             log.error(`[CREATE ORDER] Invalid cart JSON: ${cartParseError.message}`);
             return res.status(400).json({
-                error:   "Invalid cart",
+                error: "Invalid cart",
                 message: "The cart data sent by the customer is invalid."
             });
         }
 
-        log.info(`[CREATE ORDER] raw cart: ${
-            typeof cart === 'string' ? cart : JSON.stringify(cart)
-        }`);
+        log.info(`[CREATE ORDER] raw cart: ${typeof cart === 'string' ? cart : JSON.stringify(cart)
+            }`);
         log.info(`[CREATE ORDER] normalized cart: ${JSON.stringify(normalizedCart)}`);
 
         // MEDICINE orders MUST contain at least one valid item.
         if (serviceType === 'MEDICINE' && normalizedCart.length === 0) {
             log.error('[CREATE ORDER] MEDICINE order rejected: normalized cart is empty');
             return res.status(400).json({
-                error:   "Order creation failed",
+                error: "Order creation failed",
                 message: "MEDICINE orders require at least one cart item"
             });
         }
@@ -4076,7 +4280,7 @@ app.post("/api/create-order", async (req, res) => {
             for (const item of normalizedCart) {
                 if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
                     return res.status(400).json({
-                        error:   "Order creation failed",
+                        error: "Order creation failed",
                         message: `Invalid quantity for ${item.kit_id}`
                     });
                 }
@@ -4195,7 +4399,7 @@ app.get("/api/sessions/:sessionId/status", async (req, res) => {
     try {
         const { sessionId } = req.params;
         const session = sessionManager.getSession(sessionId);
-        
+
         if (!session) {
             return res.status(404).json({ error: "Session not found" });
         }
@@ -4203,7 +4407,7 @@ app.get("/api/sessions/:sessionId/status", async (req, res) => {
         const transaction = transactionManager.getTransactionBySession(sessionId);
         const sessionJobs = fulfillmentManager.getSessionJobs(sessionId);
         const allJobsCompleted = sessionJobs.length > 0 && sessionJobs.every(j => j.state === 'COMPLETED');
-        
+
         let clientStatus = session.status;
         if (session.service_type === 'MEDICINE') {
             if (session.status === 'COMPLETED' || allJobsCompleted || (transaction && transaction.fulfilled === 1)) {
@@ -4281,10 +4485,10 @@ app.get("/api/sessions/:sessionId/payment", async (req, res) => {
 
         // Get transaction for this session
         const transaction = transactionManager.getTransactionBySession(sessionId);
-        
+
         if (!transaction) {
-            return res.json({ 
-                ok: true, 
+            return res.json({
+                ok: true,
                 hasTransaction: false,
                 sessionStatus: session.status
             });
@@ -4338,12 +4542,12 @@ app.post("/api/sessions/:sessionId/payment/verify", async (req, res) => {
     try {
         const { sessionId } = req.params;
         const { authorization, signature } = req.body;
-        
+
         // Validate request
         if (!authorization || !signature) {
-            return res.status(400).json({ 
-                ok: false, 
-                message: "Missing payment authorization or signature" 
+            return res.status(400).json({
+                ok: false,
+                message: "Missing payment authorization or signature"
             });
         }
 
@@ -4364,8 +4568,8 @@ app.post("/api/sessions/:sessionId/payment/verify", async (req, res) => {
         // ✅ Step 3: Check idempotency (if already verified, return success)
         if (transaction.status === 'VERIFIED' || transaction.verified === 1) {
             log.info(`✅ Payment already verified for transaction: ${transaction.transaction_id}`);
-            return res.json({ 
-                ok: true, 
+            return res.json({
+                ok: true,
                 already_verified: true,
                 transactionId: transaction.transaction_id,
                 sessionId: sessionId,
@@ -4391,8 +4595,8 @@ app.post("/api/sessions/:sessionId/payment/verify", async (req, res) => {
 
         if (!verificationResult.success) {
             log.warn(`❌ Payment authorization verification failed: ${verificationResult.error}`);
-            return res.status(400).json({ 
-                ok: false, 
+            return res.status(400).json({
+                ok: false,
                 message: verificationResult.error || "Payment verification failed"
             });
         }
@@ -4408,7 +4612,7 @@ app.post("/api/sessions/:sessionId/payment/verify", async (req, res) => {
         };
 
         transactionManager.verifyPayment(
-            transaction.transaction_id, 
+            transaction.transaction_id,
             verificationResult.paymentId,
             payment
         );
@@ -4419,8 +4623,8 @@ app.post("/api/sessions/:sessionId/payment/verify", async (req, res) => {
         log.info(`✅ Payment VERIFIED securely: ${verificationResult.paymentId} for session ${sessionId}`);
         log.info(`   Amount: ₹${transaction.amount / 100} (cryptographically verified)`);
 
-        res.json({ 
-            ok: true, 
+        res.json({
+            ok: true,
             transactionId: transaction.transaction_id,
             sessionId: sessionId,
             amount: transaction.amount / 100,  // Return in rupees
@@ -4463,90 +4667,296 @@ app.post("/api/sessions/:sessionId/payment/recover", async (req, res) => {
 // STAGE E: REPORT & RECEIPT GENERATION (Offline-first)
 // ═══════════════════════════════════════════════════════════════════════════
 
+function getAuthorizedHealthReportContext(sessionId) {
+    const session = sessionManager.getSession(sessionId);
+
+    if (!session) {
+        return {
+            ok: false,
+            status: 404,
+            message: "Session not found"
+        };
+    }
+
+    const serviceType = String(session.service_type || "")
+        .trim()
+        .toUpperCase();
+
+    if (
+        serviceType !== "HEALTH_CHECKUP" &&
+        serviceType !== "CHECKUP"
+    ) {
+        return {
+            ok: false,
+            status: 403,
+            message: "Health report is not available for this service"
+        };
+    }
+
+    const transaction =
+        transactionManager.getTransactionBySession(sessionId);
+
+    if (!transaction) {
+        return {
+            ok: false,
+            status: 403,
+            message: "Verified payment is required before accessing the report"
+        };
+    }
+
+    const sessionPaid =
+        session.payment_status === "VERIFIED";
+
+    const transactionPaid =
+        transaction.verified === 1 ||
+        transaction.verified === true ||
+        transaction.status === "VERIFIED" ||
+        transaction.status === "FULFILLED";
+
+    // Require BOTH persistent session and transaction payment state.
+    if (!sessionPaid || !transactionPaid) {
+        return {
+            ok: false,
+            status: 403,
+            message: "Verified payment is required before accessing the report"
+        };
+    }
+
+    let healthData = session.health_data || null;
+
+    if (typeof healthData === "string") {
+        try {
+            healthData = JSON.parse(healthData);
+        } catch {
+            return {
+                ok: false,
+                status: 409,
+                message: "Stored health measurement snapshot is invalid"
+            };
+        }
+    }
+
+    if (
+        !healthData ||
+        typeof healthData !== "object" ||
+        Array.isArray(healthData) ||
+        Object.keys(healthData).length === 0
+    ) {
+        return {
+            ok: false,
+            status: 409,
+            message: "Completed health measurement snapshot not found"
+        };
+    }
+
+    return {
+        ok: true,
+        session,
+        transaction,
+        healthData
+    };
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // POST /api/sessions/:sessionId/report - Generate health report
 // ───────────────────────────────────────────────────────────────────────────
 app.post("/api/sessions/:sessionId/report", async (req, res) => {
     try {
         const { sessionId } = req.params;
-        const { healthData } = req.body;
 
         if (!pdfGenerator) {
             pdfGenerator = new PDFGenerator(getDb());
         }
 
-        // Get session
-        const session = sessionManager.getSession(sessionId);
-        if (!session) {
-            return res.status(404).json({ ok: false, message: "Session not found" });
+        const auth = getAuthorizedHealthReportContext(sessionId);
+
+        if (!auth.ok) {
+            return res.status(auth.status).json({
+                ok: false,
+                message: auth.message
+            });
         }
 
-        // Get customer data
-        const customerData = session.customer_data ? 
-            (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) 
-            : {};
+        const {
+            session,
+            healthData
+        } = auth;
 
-        log.info(`📄 Generating health report for session: ${sessionId}`);
+        // SECURITY:
+        // Never accept healthData from req.body.
+        // Only the immutable pre-payment SQLite snapshot is authoritative.
 
-        // 1. Generate PDF locally (stored in SQLite reports table and local filesystem)
-        const { reportId, pdfPath } = await pdfGenerator.generateHealthReport(
-            sessionId,
-            customerData,
-            healthData || (session.health_data ? (typeof session.health_data === 'string' ? JSON.parse(session.health_data) : session.health_data) : null)
+        const existingReport =
+            pdfGenerator.getReportBySession(sessionId);
+
+        if (
+            session.report_status === "READY" &&
+            existingReport
+        ) {
+            return res.json({
+                ok: true,
+                reportId: existingReport.report_id,
+                sessionId,
+                alreadyGenerated: true,
+                downloadUrl:
+                    `/api/sessions/${sessionId}/report/download`,
+                pdfPath:
+                    `/api/sessions/${sessionId}/report/download`
+            });
+        }
+
+        const customerData =
+            session.customer_data || {};
+
+        log.info(
+            `📄 Generating PAID health report from frozen snapshot: ${sessionId}`
         );
 
-        // 2. Update session status
-        sessionManager.updateSessionField(sessionId, 'report_status', 'READY');
+        sessionManager.updateReportStatus(
+            sessionId,
+            "GENERATING"
+        );
 
-        // 3. Return report info with local download URL (no customer email queued)
-        res.json({
+        const { reportId } =
+            await pdfGenerator.generateHealthReport(
+                sessionId,
+                customerData,
+                healthData
+            );
+
+        sessionManager.updateReportStatus(
+            sessionId,
+            "READY"
+        );
+
+        return res.json({
             ok: true,
             reportId,
             sessionId,
-            downloadUrl: `/api/sessions/${sessionId}/report/download`,
-            pdfPath: `/api/sessions/${sessionId}/report/download`
+            alreadyGenerated: false,
+            downloadUrl:
+                `/api/sessions/${sessionId}/report/download`,
+            pdfPath:
+                `/api/sessions/${sessionId}/report/download`
         });
 
     } catch (err) {
-        log.error("❌ Report generation error:", err.message);
-        res.status(500).json({ ok: false, message: err.message || "Failed to generate report" });
+        log.error(
+            "❌ Report generation error:",
+            err.message
+        );
+
+        try {
+            sessionManager.updateReportStatus(
+                req.params.sessionId,
+                "FAILED"
+            );
+        } catch {}
+
+        return res.status(500).json({
+            ok: false,
+            message:
+                err.message ||
+                "Failed to generate report"
+        });
     }
 });
 
 // Legacy / alias route for report generation
 app.post("/api/reports/generate", async (req, res) => {
-    const sessionId = req.body?.sessionId || req.query?.sessionId;
-    if (!sessionId) {
-        return res.status(400).json({ ok: false, message: "Missing sessionId" });
-    }
-    req.params = { ...req.params, sessionId };
     try {
-        const session = sessionManager.getSession(sessionId);
-        if (!session) {
-            return res.status(404).json({ ok: false, message: "Session not found" });
+        const sessionId =
+            req.body?.sessionId ||
+            req.query?.sessionId;
+
+        if (!sessionId) {
+            return res.status(400).json({
+                ok: false,
+                message: "Missing sessionId"
+            });
         }
+
         if (!pdfGenerator) {
             pdfGenerator = new PDFGenerator(getDb());
         }
-        const customerData = session.customer_data ? 
-            (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) 
-            : {};
-        const { reportId } = await pdfGenerator.generateHealthReport(
+
+        const auth =
+            getAuthorizedHealthReportContext(sessionId);
+
+        if (!auth.ok) {
+            return res.status(auth.status).json({
+                ok: false,
+                message: auth.message
+            });
+        }
+
+        const {
+            session,
+            healthData
+        } = auth;
+
+        const existingReport =
+            pdfGenerator.getReportBySession(sessionId);
+
+        if (
+            session.report_status === "READY" &&
+            existingReport
+        ) {
+            return res.json({
+                ok: true,
+                reportId: existingReport.report_id,
+                sessionId,
+                alreadyGenerated: true,
+                downloadUrl:
+                    `/api/sessions/${sessionId}/report/download`,
+                pdfPath:
+                    `/api/sessions/${sessionId}/report/download`
+            });
+        }
+
+        const customerData =
+            session.customer_data || {};
+
+        sessionManager.updateReportStatus(
             sessionId,
-            customerData,
-            req.body?.healthData || (session.health_data ? (typeof session.health_data === 'string' ? JSON.parse(session.health_data) : session.health_data) : null)
+            "GENERATING"
         );
-        sessionManager.updateSessionField(sessionId, 'report_status', 'READY');
-        res.json({
+
+        const { reportId } =
+            await pdfGenerator.generateHealthReport(
+                sessionId,
+                customerData,
+                healthData
+            );
+
+        sessionManager.updateReportStatus(
+            sessionId,
+            "READY"
+        );
+
+        return res.json({
             ok: true,
             reportId,
             sessionId,
-            downloadUrl: `/api/sessions/${sessionId}/report/download`,
-            pdfPath: `/api/sessions/${sessionId}/report/download`
+            alreadyGenerated: false,
+            downloadUrl:
+                `/api/sessions/${sessionId}/report/download`,
+            pdfPath:
+                `/api/sessions/${sessionId}/report/download`
         });
+
     } catch (err) {
-        log.error("❌ /api/reports/generate error:", err.message);
-        res.status(500).json({ ok: false, message: err.message || "Failed to generate report" });
+        log.error(
+            "❌ /api/reports/generate error:",
+            err.message
+        );
+
+        return res.status(500).json({
+            ok: false,
+            message:
+                err.message ||
+                "Failed to generate report"
+        });
     }
 });
 
@@ -4558,20 +4968,142 @@ app.get("/api/sessions/:sessionId/report/download", async (req, res) => {
         const { sessionId } = req.params;
 
         if (!pdfGenerator) {
-            return res.status(503).json({ ok: false, message: "PDF service not available" });
+            pdfGenerator = new PDFGenerator(getDb());
         }
 
-        const report = pdfGenerator.getReportBySession(sessionId);
-        
+        const auth =
+            getAuthorizedHealthReportContext(sessionId);
+
+        if (!auth.ok) {
+            return res.status(auth.status).json({
+                ok: false,
+                message: auth.message
+            });
+        }
+
+        const freshSession =
+            sessionManager.getSession(sessionId);
+
+        if (
+            !freshSession ||
+            freshSession.report_status !== "READY"
+        ) {
+            return res.status(409).json({
+                ok: false,
+                message: "Health report is not ready"
+            });
+        }
+
+        const report =
+            pdfGenerator.getReportBySession(sessionId);
+
         if (!report) {
-            return res.status(404).json({ ok: false, message: "Report not found" });
+            return res.status(404).json({
+                ok: false,
+                message: "Report not found"
+            });
         }
 
-        res.sendFile(report.pdf_path);
+        return res.sendFile(report.pdf_path);
 
     } catch (err) {
-        log.error("❌ Report download error:", err.message);
-        res.status(500).json({ ok: false, message: err.message || "Failed to download report" });
+        log.error(
+            "❌ Report download error:",
+            err.message
+        );
+
+        return res.status(500).json({
+            ok: false,
+            message:
+                err.message ||
+                "Failed to download report"
+        });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /api/sessions/:sessionId/report/data
+//
+// Return the authoritative frozen health snapshot ONLY after:
+// - payment is verified
+// - report generation completed
+// - report actually exists
+// ───────────────────────────────────────────────────────────────────────────
+
+app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+
+        if (!pdfGenerator) {
+            pdfGenerator = new PDFGenerator(getDb());
+        }
+
+        const auth =
+            getAuthorizedHealthReportContext(sessionId);
+
+        if (!auth.ok) {
+            return res.status(auth.status).json({
+                ok: false,
+                message: auth.message
+            });
+        }
+
+        const {
+            session,
+            healthData
+        } = auth;
+
+        // Payment alone is not enough.
+        // The report must have actually completed.
+        if (session.report_status !== "READY") {
+            return res.status(409).json({
+                ok: false,
+                code: "REPORT_NOT_READY",
+                message: "Health report is not ready"
+            });
+        }
+
+        const report =
+            pdfGenerator.getReportBySession(sessionId);
+
+        if (!report) {
+            return res.status(404).json({
+                ok: false,
+                code: "REPORT_NOT_FOUND",
+                message: "Health report not found"
+            });
+        }
+
+        const customerData =
+            session.customer_data &&
+            typeof session.customer_data === "object"
+                ? session.customer_data
+                : {};
+
+        return res.json({
+            ok: true,
+            sessionId,
+            paymentVerified: true,
+            reportStatus: "READY",
+
+            customerData,
+
+            // ONLY the immutable pre-payment snapshot.
+            healthData
+        });
+
+    } catch (err) {
+        log.error(
+            "❌ Report data fetch error:",
+            err.message
+        );
+
+        return res.status(500).json({
+            ok: false,
+            message:
+                err.message ||
+                "Failed to load health report"
+        });
     }
 });
 
@@ -4599,8 +5131,8 @@ app.post("/api/sessions/:sessionId/receipt", async (req, res) => {
         }
 
         // Get customer data
-        const customerData = session.customer_data ? 
-            (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) 
+        const customerData = session.customer_data ?
+            (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data)
             : {};
 
         log.info(`🧾 Generating receipt for session: ${sessionId}`);
@@ -4657,7 +5189,7 @@ app.get("/api/sessions/:sessionId/receipt/download", async (req, res) => {
         }
 
         const receipt = pdfGenerator.getReceiptBySession(sessionId);
-        
+
         if (!receipt) {
             return res.status(404).json({ ok: false, message: "Receipt not found" });
         }
@@ -4780,9 +5312,9 @@ app.get("/api/inventory/service/:serviceType", (req, res) => {
 
         const items = inventoryManager.getInventoryByService(req.params.serviceType);
         const availability = inventoryManager.checkStockAvailability(req.params.serviceType);
-        
-        res.json({ 
-            ok: true, 
+
+        res.json({
+            ok: true,
             items,
             available: availability.available,
             unavailableItems: availability.unavailableItems
@@ -4804,7 +5336,7 @@ app.post("/api/inventory/:id/add", (req, res) => {
         }
 
         const { quantity, notes } = req.body;
-        
+
         if (!quantity || quantity <= 0) {
             return res.status(400).json({ ok: false, message: "Invalid quantity" });
         }
@@ -4828,11 +5360,11 @@ app.post("/api/inventory/:id/adjust", (req, res) => {
         }
 
         const { quantity, notes } = req.body;
-        
+
         if (quantity === undefined || quantity === 0) {
             return res.status(400).json({ ok: false, message: "Invalid quantity" });
         }
-        
+
         if (!notes) {
             return res.status(400).json({ ok: false, message: "Notes required for adjustment" });
         }
@@ -5645,7 +6177,7 @@ app.post("/api/save-report", async (req, res) => {
         if (!session.customer_data) {
             try {
                 sessionManager.attachCustomer(session.session_id, healthData.patient);
-            } catch {}
+            } catch { }
         }
         const report = await pdfGenerator.generateHealthReport(
             session.session_id,
@@ -5850,105 +6382,6 @@ app.get("/api/gdrive-folder-image/:folderId", async (req, res) => {
         log.error("Google Drive Folder Error:", error.message);
         googleDriveAvailable = false;
         res.status(500).json({ message: "Error fetching folder image", imageUrl: null });
-    }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SPEECH CONFIG - Dynamic TTS text management (stored in MongoDB)
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Default speech config - used when MongoDB has no saved config
-const DEFAULT_SPEECH_CONFIG = {
-    _voiceSettings: { rate: 0.95, pitch: 1.0, lang: "en-IN", voicePreference: "female" },
-    splash: "Welcome to Reliv. Your personal health companion. Tap to start.",
-    "choose-language": "Pick your language. English, Hindi, or Bengali.",
-    "customer-details": "Scan QR code with your phone. Or open Google and scan. Save your details for faster login next time.",
-    "two-options": "Great. Health checkup or medicine dispenser? Tap your choice.",
-    "body-composition": "Step on the scale. Feet on the black area, not the orange. Bring your feet closer. Hold still. We will measure height too. If weight looks wrong, tap Refresh and stand again. If device disconnected, tap Refresh.",
-    "health-checkup": "Now blood pressure. Pick the cuff from the hook. Put it on your wrist at heart level. Press the ON button. Then tap Measure on screen. Don't talk. Stay relaxed. If anything looks off, tap Refresh and measure again. If device disconnected, tap Refresh.",
-    "oxygen-pulse": "Place your finger in the sensor clip. Tap Measure. Hold still for 15 seconds. If device disconnected, tap Refresh.",
-    "body-temperature": "Hold the temperature gun on your forehead. Tap Measure. If device disconnected, tap Refresh.",
-    "eyesight": "Now the eyesight test. Cover one eye. Read the letters and numbers you see on screen. Select what you see from the options. Then cover your other eye and repeat.",
-    "report-1": "This is your health score compared to an average person your age.",
-    "report-2": "Your overall status. Green, yellow, or red.",
-    "report-3": "This graph grows as you visit. Come back tomorrow. New insights unlock.",
-    "report-4": "Your eyesight assessment is complete.",
-    "report-5": "Here are all your numbers in one place. But more importantly, here is what they mean in simple human language. Read the advice on screen. Screenshot it. Follow it for 7 days. Then come back. A free checkup is waiting for you.",
-    "wellness-recommendations": "Your personalized advice is on screen. Eat this. Do that. Avoid this. No doctor terms. Just simple steps.",
-    checkout: "Review your health kits and proceed to checkout when ready.",
-    payment: "That's all the free tests. Now for just 17 rupees, less than a Coke or a cigarette, I will translate everything into simple human language. No doctor terms. Just eat this, do that, avoid this. Plus a 7-day graph. Plus free checkups for 6 more days. Scan QR code. GPay, PhonePe, Paytm. Or insert 17 rupees cash, exact change.",
-    "order-success": "Thank you. Your full report is sent to your email. Simple language. Easy to understand. Come back tomorrow to see the changes and compare. Your graph grows. New insights unlock. I am proud of you. See you tomorrow?",
-    feedback: "Rate your experience. 1 to 5 stars. Your feedback helps other students trust Reliv.",
-    "idle-loop": "Free weight. Free BP. Free oxygen. A full report with simple human advice, just 17 rupees. Less than a Coke. Step up. Let me help you.",
-};
-
-// GET /api/speech-config — returns the current speech config
-app.get("/api/speech-config", async (req, res) => {
-    try {
-        if (!db || !dbConnected) {
-            return res.json(DEFAULT_SPEECH_CONFIG);
-        }
-        const saved = await db.collection("speech_config").findOne({ _id: "active" });
-        if (saved && saved.config) {
-            // Merge with defaults so new pages always have a fallback
-            res.json({ ...DEFAULT_SPEECH_CONFIG, ...saved.config });
-        } else {
-            res.json(DEFAULT_SPEECH_CONFIG);
-        }
-    } catch (err) {
-        log.error("Speech config GET error:", err.message);
-        res.json(DEFAULT_SPEECH_CONFIG);
-    }
-});
-
-// PUT /api/speech-config — update speech config (admin only)
-app.put("/api/speech-config", async (req, res) => {
-    try {
-        const { config, password } = req.body;
-        if (!config || typeof config !== "object") {
-            return res.status(400).json({ error: "Invalid config object" });
-        }
-
-        // Verify admin password via the same mechanism as check-login
-        if (!password) {
-            return res.status(401).json({ error: "Password required" });
-        }
-
-        if (db && dbConnected) {
-            // Check admin password against MongoDB
-            const adminDoc = await db.collection("admin").findOne({ email: "khanfaizan3234@gmail.com" });
-            const storedPassword = adminDoc?.password || "admin123";
-            if (password !== storedPassword) {
-                return res.status(403).json({ error: "Incorrect admin password" });
-            }
-
-            // Sanitize: only allow string values for page keys, object for _voiceSettings
-            const sanitized = {};
-            for (const [key, value] of Object.entries(config)) {
-                if (key === "_voiceSettings" && typeof value === "object" && value !== null) {
-                    sanitized._voiceSettings = {
-                        rate: Math.max(0.5, Math.min(2, Number(value.rate) || 0.95)),
-                        pitch: Math.max(0.5, Math.min(2, Number(value.pitch) || 1.0)),
-                        lang: typeof value.lang === "string" ? value.lang.slice(0, 10) : "en-IN",
-                        voicePreference: ["female", "male", "default"].includes(value.voicePreference) ? value.voicePreference : "female",
-                    };
-                } else if (typeof key === "string" && typeof value === "string") {
-                    sanitized[key] = value.slice(0, 500); // Max 500 chars per entry
-                }
-            }
-
-            await db.collection("speech_config").updateOne(
-                { _id: "active" },
-                { $set: { config: sanitized, updatedAt: new Date() } },
-                { upsert: true }
-            );
-            res.json({ success: true, config: { ...DEFAULT_SPEECH_CONFIG, ...sanitized } });
-        } else {
-            return res.status(503).json({ error: "Database unavailable" });
-        }
-    } catch (err) {
-        log.error("Speech config PUT error:", err.message);
-        res.status(500).json({ error: "Failed to save speech config" });
     }
 });
 

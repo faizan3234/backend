@@ -266,7 +266,14 @@ db.prepare(`
     section('3. Authoritative Pricing & Request Creation');
 
     // Session 1: Health checkup
+    const fakeHealthData = {
+        patient: { name: 'Test Patient', age: 25, gender: 'Male' },
+        vitals: { systolic: 120, diastolic: 80, bpm: 72, oxygen: 98, temperature: 98.6 }
+    };
     const sessionHealth = sessionManager.createSession('RELIV-001', 'HEALTH_CHECKUP');
+    sessionManager.attachCustomer(sessionHealth.session_id, { name: 'Test Patient', email: 'test@example.com' });
+    sessionManager.selectService(sessionHealth.session_id, 'HEALTH_CHECKUP');
+    sessionManager.saveCompletedHealthData(sessionHealth.session_id, fakeHealthData);
     const reqHealth = await v2Service.createPaymentRequest(sessionHealth.session_id);
 
     assert(reqHealth.ok === true, 'Health checkup payment request created successfully');
@@ -422,12 +429,496 @@ db.prepare(`
     assert(repeatJobs.length === 2, 'Repeated confirmation does NOT create duplicate fulfillment jobs');
 
     // ───────────────────────────────────────────────────────────────────────
+    // HEALTH CHECKUP — VERIFIED CODE MUST GENERATE REAL LOCAL REPORT
+    // ───────────────────────────────────────────────────────────────────────
+
+    section('6B. Health Checkup Payment → Report Finalization');
+
+    const healthReportData = {
+        patient: {
+            name: 'Health Report Patient',
+            age: 28,
+            gender: 'Female'
+        },
+
+        vitals: {
+            systolic: 118,
+            diastolic: 76,
+            bpm: 70,
+            oxygen: 99,
+            temperature: 98.4
+        },
+
+        bodyComposition: {
+            height: 165,
+            weight: 60,
+            bmi: 22.0,
+            bodyFat: 24.1,
+            muscleMass: 42.5,
+            waterPercentage: 55.4,
+            boneMass: 2.4,
+            bmr: 1390,
+            visceralFat: 5
+        },
+
+        eyesight: {
+            left: '6/6',
+            right: '6/6'
+        }
+    };
+
+    // 1. Create completely separate health-check session.
+    // Do NOT reuse sessionHealth because later security tests depend on it.
+    const healthReportSession =
+        sessionManager.createSession(
+            'RELIV-001',
+            'HEALTH_CHECKUP'
+        );
+
+    sessionManager.attachCustomer(
+        healthReportSession.session_id,
+        {
+            name: 'Health Report Patient',
+            age: 28,
+            gender: 'Female'
+        }
+    );
+
+    sessionManager.selectService(
+        healthReportSession.session_id,
+        'HEALTH_CHECKUP'
+    );
+
+    // 2. Freeze health measurements before payment.
+    const frozenHealthSession =
+        sessionManager.saveCompletedHealthData(
+            healthReportSession.session_id,
+            healthReportData
+        );
+
+    assert(
+        frozenHealthSession.status === 'MEASUREMENTS_COMPLETE',
+        'Health report test session reaches MEASUREMENTS_COMPLETE'
+    );
+
+    assert(
+        frozenHealthSession.health_data?.vitals?.temperature === 98.4,
+        'Frozen health snapshot contains final body temperature'
+    );
+
+    // 3. Confirm report DOES NOT exist before payment/code verification.
+    const reportBeforePayment = db.prepare(`
+        SELECT *
+        FROM reports
+        WHERE session_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+    `).get(healthReportSession.session_id);
+
+    assert(
+        !reportBeforePayment,
+        'No health report exists before payment verification'
+    );
+
+    // 4. Create authoritative Payment V2 request.
+    const healthReportRequest =
+        await v2Service.createPaymentRequest(
+            healthReportSession.session_id
+        );
+
+    assert(
+        healthReportRequest.ok === true,
+        'Health report Payment V2 request created'
+    );
+
+    // 5. Extract the generated code ONLY inside this isolated test harness.
+    // Production never decrypts this package on the kiosk.
+    const decryptedHealthRequest = decryptPackage(
+        healthReportRequest.paymentUrl.split('#p=')[1],
+        cloudKeys.privateKey
+    );
+
+    const healthConfirmationCode =
+        decryptedHealthRequest.payload.confirmationCode;
+
+    assert(
+        /^\d{4}$/.test(String(healthConfirmationCode)),
+        'Health report test extracted valid 4-digit confirmation code'
+    );
+
+    // Still no report merely because the payment QR/code exists.
+    const reportBeforeCode = db.prepare(`
+        SELECT *
+        FROM reports
+        WHERE session_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+    `).get(healthReportSession.session_id);
+
+    assert(
+        !reportBeforeCode,
+        'Creating payment request does NOT generate health report'
+    );
+
+    // 6. Submit the valid confirmation code.
+    // This must invoke PaymentFinalizationService.
+    const healthVerificationResult =
+        await v2Service.verifyConfirmationCode(
+            healthReportSession.session_id,
+            {
+                requestId: healthReportRequest.requestId,
+                code: healthConfirmationCode
+            }
+        );
+
+    assert(
+        healthVerificationResult.ok === true &&
+        healthVerificationResult.status === 'VERIFIED',
+        'Health payment confirmation code verifies successfully'
+    );
+
+    assert(
+        healthVerificationResult.completionStatus === 'report_ready',
+        'Health payment finalization reports report_ready'
+    );
+
+    // 7. Verify transaction state.
+    const healthVerifiedTransaction =
+        transactionManager.getTransaction(
+            healthReportRequest.transactionId
+        );
+
+    assert(
+        healthVerifiedTransaction.status === 'VERIFIED' &&
+        healthVerifiedTransaction.verified === 1,
+        'Health transaction marked VERIFIED'
+    );
+
+    assert(
+        healthVerifiedTransaction.provider === 'CLOUD_CODE_V2',
+        'Health transaction verification source recorded as CLOUD_CODE_V2'
+    );
+
+    // 8. Verify final session state.
+    const finalizedHealthSession =
+        sessionManager.getSession(
+            healthReportSession.session_id
+        );
+
+    assert(
+        finalizedHealthSession.payment_status === 'VERIFIED',
+        'Health session payment_status is VERIFIED'
+    );
+
+    assert(
+        finalizedHealthSession.report_status === 'READY',
+        'Health session report_status is READY'
+    );
+
+    assert(
+        finalizedHealthSession.status === 'COMPLETED',
+        'Health session reaches COMPLETED after report generation'
+    );
+
+    // Frozen measurements must still be preserved.
+    assert(
+        finalizedHealthSession.health_data?.vitals?.temperature === 98.4,
+        'Finalized session retains frozen temperature measurement'
+    );
+
+    // 9. Verify reports SQLite row.
+    const generatedHealthReport = db.prepare(`
+        SELECT *
+        FROM reports
+        WHERE session_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+    `).get(healthReportSession.session_id);
+
+    assert(
+        !!generatedHealthReport,
+        'Health report row created in SQLite'
+    );
+
+    assert(
+        !!generatedHealthReport?.report_id,
+        'Generated health report has report_id'
+    );
+
+    assert(
+        !!generatedHealthReport?.pdf_path,
+        'Generated health report has pdf_path'
+    );
+
+    // 10. Verify the measurements written into the report record
+    // came from the frozen SQLite health snapshot.
+    let persistedReportMeasurements = null;
+
+    try {
+        persistedReportMeasurements =
+            typeof generatedHealthReport?.measurements === 'string'
+                ? JSON.parse(generatedHealthReport.measurements)
+                : generatedHealthReport?.measurements;
+    } catch {
+        persistedReportMeasurements = null;
+    }
+
+    assert(
+        persistedReportMeasurements?.vitals?.temperature === 98.4,
+        'Report SQLite row contains frozen temperature 98.4'
+    );
+
+    assert(
+        persistedReportMeasurements?.vitals?.oxygen === 99,
+        'Report SQLite row contains frozen SpO2 value'
+    );
+
+    // 11. Verify an actual non-empty PDF exists on disk.
+    const healthPdfExists =
+        generatedHealthReport?.pdf_path &&
+        fs.existsSync(generatedHealthReport.pdf_path);
+
+    assert(
+        healthPdfExists,
+        'Health report PDF exists on disk'
+    );
+
+    const healthPdfSize = healthPdfExists
+        ? fs.statSync(generatedHealthReport.pdf_path).size
+        : 0;
+
+    assert(
+        healthPdfSize > 0,
+        'Health report PDF is non-empty'
+    );
+
+    // 12. Confirmation retry must remain idempotent.
+    const repeatHealthVerification =
+        await v2Service.verifyConfirmationCode(
+            healthReportSession.session_id,
+            {
+                requestId: healthReportRequest.requestId,
+                code: healthConfirmationCode
+            }
+        );
+
+    assert(
+        repeatHealthVerification.ok === true &&
+        repeatHealthVerification.alreadyVerified === true,
+        'Repeated health confirmation is idempotent'
+    );
+
+    const healthReportsAfterRetry = db.prepare(`
+        SELECT *
+        FROM reports
+        WHERE session_id = ?
+    `).all(healthReportSession.session_id);
+
+    assert(
+        healthReportsAfterRetry.length === 1,
+        'Repeated health confirmation does NOT create duplicate reports'
+    );
+
+    // ───────────────────────────────────────────────────────────────────────
+    // HEALTH SNAPSHOT IMMUTABILITY / IDEMPOTENT RETRIES
+    // ───────────────────────────────────────────────────────────────────────
+
+    section('6C. Health Measurement Snapshot Immutability');
+
+    const snapshotSession =
+        sessionManager.createSession(
+            'RELIV-001',
+            'HEALTH_CHECKUP'
+        );
+
+    sessionManager.attachCustomer(
+        snapshotSession.session_id,
+        {
+            name: 'Snapshot Test Patient',
+            age: 30,
+            gender: 'Male'
+        }
+    );
+
+    sessionManager.selectService(
+        snapshotSession.session_id,
+        'HEALTH_CHECKUP'
+    );
+
+    const snapshotA = {
+        patient: {
+            name: 'Snapshot Test Patient',
+            age: 30,
+            gender: 'Male'
+        },
+
+        vitals: {
+            systolic: 121,
+            diastolic: 79,
+            bpm: 73,
+            oxygen: 98,
+            temperature: 98.2
+        },
+
+        eyesight: {
+            left: '6/6',
+            right: '6/9'
+        }
+    };
+
+
+    // 1. First freeze
+    const firstSnapshotSave =
+        sessionManager.saveCompletedHealthData(
+            snapshotSession.session_id,
+            snapshotA
+        );
+
+    assert(
+        firstSnapshotSave.status === 'MEASUREMENTS_COMPLETE',
+        'Initial health snapshot freezes successfully'
+    );
+
+    assert(
+        firstSnapshotSave.health_data?.vitals?.temperature === 98.2,
+        'Initial frozen temperature is 98.2'
+    );
+
+
+    // 2. Identical retry
+    const identicalRetry =
+        sessionManager.saveCompletedHealthData(
+            snapshotSession.session_id,
+            snapshotA
+        );
+
+    assert(
+        identicalRetry.status === 'MEASUREMENTS_COMPLETE',
+        'Identical snapshot retry is accepted idempotently'
+    );
+
+    assert(
+        identicalRetry.health_data?.vitals?.temperature === 98.2,
+        'Identical retry preserves original snapshot'
+    );
+
+
+    // 3. Same logical data but different object key order
+    const reorderedSnapshotA = {
+        eyesight: {
+            right: '6/9',
+            left: '6/6'
+        },
+
+        vitals: {
+            temperature: 98.2,
+            oxygen: 98,
+            bpm: 73,
+            diastolic: 79,
+            systolic: 121
+        },
+
+        patient: {
+            gender: 'Male',
+            age: 30,
+            name: 'Snapshot Test Patient'
+        }
+    };
+
+    let reorderedRetryAccepted = false;
+
+    try {
+        const reorderedRetry =
+            sessionManager.saveCompletedHealthData(
+                snapshotSession.session_id,
+                reorderedSnapshotA
+            );
+
+        reorderedRetryAccepted =
+            reorderedRetry.status === 'MEASUREMENTS_COMPLETE';
+
+    } catch {
+        reorderedRetryAccepted = false;
+    }
+
+    assert(
+        reorderedRetryAccepted,
+        'Same logical snapshot with different key order is accepted'
+    );
+
+
+    // 4. Changed measurement must be rejected
+    const changedSnapshot = {
+        ...snapshotA,
+
+        vitals: {
+            ...snapshotA.vitals,
+
+            // Deliberately changed after freeze
+            temperature: 99.7
+        }
+    };
+
+    let mismatchError = null;
+
+    try {
+        sessionManager.saveCompletedHealthData(
+            snapshotSession.session_id,
+            changedSnapshot
+        );
+
+    } catch (err) {
+        mismatchError = err;
+    }
+
+    assert(
+        mismatchError?.code === 'HEALTH_SNAPSHOT_MISMATCH',
+        'Changed frozen measurement is rejected with HEALTH_SNAPSHOT_MISMATCH'
+    );
+
+
+    // 5. Verify original SQLite snapshot was NOT overwritten
+    const snapshotAfterMismatch =
+        sessionManager.getSession(
+            snapshotSession.session_id
+        );
+
+    assert(
+        snapshotAfterMismatch.health_data?.vitals?.temperature === 98.2,
+        'Rejected retry does NOT overwrite original frozen temperature'
+    );
+
+    assert(
+        snapshotAfterMismatch.status === 'MEASUREMENTS_COMPLETE',
+        'Rejected retry leaves session in MEASUREMENTS_COMPLETE'
+    );
+
+
+    // 6. Verify raw persisted SQLite value too
+    const rawSnapshotRow = db.prepare(`
+        SELECT health_data
+        FROM sessions
+        WHERE session_id = ?
+    `).get(snapshotSession.session_id);
+
+    const rawPersistedSnapshot =
+        JSON.parse(rawSnapshotRow.health_data);
+
+    assert(
+        rawPersistedSnapshot.vitals.temperature === 98.2,
+        'SQLite still contains original frozen temperature 98.2'
+    );
+
+    // ───────────────────────────────────────────────────────────────────────
     // EXPIRY & PERSISTENCE
     // ───────────────────────────────────────────────────────────────────────
     section('7. Expiry & Database Persistence');
 
     // Session 3: Expiry test
     const sessionExp = sessionManager.createSession('RELIV-001', 'HEALTH_CHECKUP');
+    sessionManager.attachCustomer(sessionExp.session_id, { name: 'Exp Patient', email: 'exp@example.com' });
+    sessionManager.selectService(sessionExp.session_id, 'HEALTH_CHECKUP');
+    sessionManager.saveCompletedHealthData(sessionExp.session_id, fakeHealthData);
     const reqExp = await v2Service.createPaymentRequest(sessionExp.session_id);
 
     // Artificially expire the request in DB
@@ -462,6 +953,9 @@ db.prepare(`
     section('8. Security Boundary Mismatches');
 
     const otherSession = sessionManager.createSession('RELIV-001', 'HEALTH_CHECKUP');
+    sessionManager.attachCustomer(otherSession.session_id, { name: 'Other Patient', email: 'other@example.com' });
+    sessionManager.selectService(otherSession.session_id, 'HEALTH_CHECKUP');
+    sessionManager.saveCompletedHealthData(otherSession.session_id, fakeHealthData);
     const otherReq = await v2Service.createPaymentRequest(otherSession.session_id);
 
     // Mismatched session ID
@@ -488,6 +982,9 @@ db.prepare(`
     let notConfiguredThrown = false;
     try {
         const dummySession = sessionManager.createSession('RELIV-001', 'HEALTH_CHECKUP');
+        sessionManager.attachCustomer(dummySession.session_id, { name: 'Dummy Patient', email: 'dummy@example.com' });
+        sessionManager.selectService(dummySession.session_id, 'HEALTH_CHECKUP');
+        sessionManager.saveCompletedHealthData(dummySession.session_id, fakeHealthData);
         await unconfiguredService.createPaymentRequest(dummySession.session_id);
     } catch (e) {
         if (e.code === 'PAYMENT_V2_NOT_CONFIGURED') notConfiguredThrown = true;

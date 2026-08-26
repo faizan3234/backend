@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Customer information (JSON)
     customer_data TEXT,
     
+    -- Complete health measurement snapshot (JSON)
+    health_data TEXT,
+    
     -- Service details
     service_type TEXT, -- 'HEALTH_CHECKUP' or 'MEDICINE'
     

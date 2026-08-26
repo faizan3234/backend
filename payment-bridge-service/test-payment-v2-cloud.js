@@ -397,6 +397,10 @@ const v2CloudService = new PaymentV2CloudService({
     assert(dbOrder.payload_fingerprint === fp1, 'Stored payload_fingerprint matches calculated SHA-256');
     assert(!dbOrder.encrypted_code.includes('7294'), 'Plain confirmation code NOT stored in plain text');
     assert(decryptConfirmationCodeAtRest(dbOrder.encrypted_code, TEST_SECRET) === '7294', 'Encrypted code in SQLite decrypts to original code');
+    assert(
+        dbOrder.encrypted_health_snapshot === null,
+        'MEDICINE order stores no health snapshot'
+    );
 
     // IDEMPOTENCY: Repeated submission of identical package
     const duplicateOrderRes = await v2CloudService.createOrderFromPackage(package4096);
@@ -425,6 +429,365 @@ const v2CloudService = new PaymentV2CloudService({
         if (e.code === 'REPLAY_NONCE_DETECTED') replayNonceRejected = true;
     }
     assert(replayNonceRejected, 'Replay attack with reused requestNonce rejected (REPLAY_NONCE_DETECTED)');
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 4B. HEALTH REPORT SNAPSHOT SECURITY & PERSISTENCE
+    // ───────────────────────────────────────────────────────────────────────
+
+    section('4B. Health Report Snapshot Security & Persistence');
+
+    const validHealthReportSnapshot = {
+        version: 1,
+
+        patient: {
+            name: 'Cloud Test Patient',
+            age: 29,
+            gender: 'male'
+        },
+
+        vitals: {
+            systolic: 118,
+            diastolic: 76,
+            oxygen: 99,
+            bpm: 72,
+            temperature: 98.4,
+
+            leftEye: '6/6',
+            rightEye: '6/6',
+
+            weight: 68.5,
+            height: 183,
+            impedance: 512,
+
+            bodyFat: 16.8,
+            muscleMass: 54.2,
+            boneMass: 3.1,
+            bodyWater: 58.4,
+
+            skeletalMuscle: 42.1,
+            ffmi: 18.7,
+
+            bmr: 1690,
+            metabolicAge: 26,
+
+            isAthlete: false
+        }
+    };
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // CASE 1:
+    // HEALTH_CHECKUP + valid signed snapshot
+    // → accepted
+    // → encrypted snapshot stored
+    // → plaintext health JSON NOT stored
+    // ───────────────────────────────────────────────────────────────────────
+
+    const healthPayload = {
+        ...testPayload,
+
+        requestId: 'REQ-HEALTH-SNAPSHOT-1',
+        requestNonce: 'nonce-health-snapshot-1',
+
+        sessionId: 'KSK-HEALTH-1',
+        transactionId: 'TXN-HEALTH-1',
+
+        serviceType: 'HEALTH_CHECKUP',
+
+        confirmationCode: '4182',
+
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 300000,
+
+        healthReportSnapshot: validHealthReportSnapshot
+    };
+
+    const healthPackage = createPiHybridPackage(
+        healthPayload,
+        kioskKeys.privateKey,
+        cloudKeys4096.publicKey
+    );
+
+    const healthOrderRes =
+        await v2CloudService.createOrderFromPackage(
+            healthPackage
+        );
+
+    assert(
+        healthOrderRes.ok === true,
+        'HEALTH_CHECKUP with valid health snapshot is accepted'
+    );
+
+    const healthDbOrder = db
+        .prepare(
+            'SELECT * FROM payment_v2_orders WHERE request_id = ?'
+        )
+        .get('REQ-HEALTH-SNAPSHOT-1');
+
+    assert(
+        healthDbOrder !== undefined,
+        'HEALTH_CHECKUP order persisted in cloud SQLite'
+    );
+
+    assert(
+        typeof healthDbOrder.encrypted_health_snapshot === 'string' &&
+        healthDbOrder.encrypted_health_snapshot.length > 20,
+        'Health snapshot is stored as encrypted ciphertext'
+    );
+
+    assert(
+        !healthDbOrder.encrypted_health_snapshot.includes(
+            'Cloud Test Patient'
+        ),
+        'Patient name is NOT visible in encrypted SQLite snapshot'
+    );
+
+    assert(
+        !healthDbOrder.encrypted_health_snapshot.includes(
+            '"temperature":98.4'
+        ),
+        'Health measurements are NOT stored as readable JSON'
+    );
+
+    let decryptedStoredHealthSnapshot = null;
+
+    try {
+        decryptedStoredHealthSnapshot = JSON.parse(
+            decryptConfirmationCodeAtRest(
+                healthDbOrder.encrypted_health_snapshot,
+                TEST_SECRET
+            )
+        );
+    } catch {}
+
+    assert(
+        decryptedStoredHealthSnapshot?.version === 1,
+        'Encrypted health snapshot decrypts to version 1 payload'
+    );
+
+    assert(
+        decryptedStoredHealthSnapshot?.patient?.name ===
+            'Cloud Test Patient',
+        'Encrypted snapshot preserves authoritative patient name'
+    );
+
+    assert(
+        decryptedStoredHealthSnapshot?.vitals?.temperature ===
+            98.4,
+        'Encrypted snapshot preserves authoritative temperature'
+    );
+
+    assert(
+        decryptedStoredHealthSnapshot?.vitals?.oxygen === 99,
+        'Encrypted snapshot preserves authoritative oxygen reading'
+    );
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // CASE 2:
+    // HEALTH_CHECKUP without snapshot
+    // → rejected before order creation
+    // ───────────────────────────────────────────────────────────────────────
+
+    let missingHealthSnapshotRejected = false;
+
+    try {
+        const missingSnapshotPayload = {
+            ...testPayload,
+
+            requestId: 'REQ-HEALTH-MISSING-1',
+            requestNonce: 'nonce-health-missing-1',
+
+            sessionId: 'KSK-HEALTH-MISSING-1',
+            transactionId: 'TXN-HEALTH-MISSING-1',
+
+            serviceType: 'HEALTH_CHECKUP',
+
+            confirmationCode: '5271',
+
+            issuedAt: Date.now(),
+            expiresAt: Date.now() + 300000
+        };
+
+        const missingSnapshotPackage =
+            createPiHybridPackage(
+                missingSnapshotPayload,
+                kioskKeys.privateKey,
+                cloudKeys4096.publicKey
+            );
+
+        await v2CloudService.createOrderFromPackage(
+            missingSnapshotPackage
+        );
+    } catch (e) {
+        if (e.code === 'HEALTH_SNAPSHOT_MISSING') {
+            missingHealthSnapshotRejected = true;
+        }
+    }
+
+    assert(
+        missingHealthSnapshotRejected,
+        'HEALTH_CHECKUP without health snapshot is rejected'
+    );
+
+    const missingHealthDbOrder = db
+        .prepare(
+            'SELECT * FROM payment_v2_orders WHERE request_id = ?'
+        )
+        .get('REQ-HEALTH-MISSING-1');
+
+    assert(
+        missingHealthDbOrder === undefined,
+        'Rejected HEALTH_CHECKUP creates no cloud order record'
+    );
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // CASE 3:
+    // MEDICINE + health snapshot
+    // → rejected
+    // ───────────────────────────────────────────────────────────────────────
+
+    let medicineHealthSnapshotRejected = false;
+
+    try {
+        const medicineWithHealthPayload = {
+            ...testPayload,
+
+            requestId: 'REQ-MEDICINE-HEALTH-1',
+            requestNonce: 'nonce-medicine-health-1',
+
+            sessionId: 'KSK-MEDICINE-HEALTH-1',
+            transactionId: 'TXN-MEDICINE-HEALTH-1',
+
+            serviceType: 'MEDICINE',
+
+            confirmationCode: '6359',
+
+            issuedAt: Date.now(),
+            expiresAt: Date.now() + 300000,
+
+            healthReportSnapshot: validHealthReportSnapshot
+        };
+
+        const medicineWithHealthPackage =
+            createPiHybridPackage(
+                medicineWithHealthPayload,
+                kioskKeys.privateKey,
+                cloudKeys4096.publicKey
+            );
+
+        await v2CloudService.createOrderFromPackage(
+            medicineWithHealthPackage
+        );
+    } catch (e) {
+        if (e.code === 'INVALID_HEALTH_SNAPSHOT') {
+            medicineHealthSnapshotRejected = true;
+        }
+    }
+
+    assert(
+        medicineHealthSnapshotRejected,
+        'MEDICINE payment carrying a health snapshot is rejected'
+    );
+
+    const invalidMedicineDbOrder = db
+        .prepare(
+            'SELECT * FROM payment_v2_orders WHERE request_id = ?'
+        )
+        .get('REQ-MEDICINE-HEALTH-1');
+
+    assert(
+        invalidMedicineDbOrder === undefined,
+        'Rejected MEDICINE health payload creates no cloud order record'
+    );
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // CASE 4:
+    // Cloud-side allowlist strips unknown fields before encrypted storage.
+    // ───────────────────────────────────────────────────────────────────────
+
+    const allowlistPayload = {
+        ...testPayload,
+
+        requestId: 'REQ-HEALTH-ALLOWLIST-1',
+        requestNonce: 'nonce-health-allowlist-1',
+
+        sessionId: 'KSK-HEALTH-ALLOWLIST-1',
+        transactionId: 'TXN-HEALTH-ALLOWLIST-1',
+
+        serviceType: 'HEALTH_CHECKUP',
+
+        confirmationCode: '7416',
+
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 300000,
+
+        healthReportSnapshot: {
+            ...validHealthReportSnapshot,
+
+            secretUiState: 'DO_NOT_STORE',
+
+            patient: {
+                ...validHealthReportSnapshot.patient,
+
+                email: 'must-not-come-from-kiosk@example.com',
+                phone: '+919999999999'
+            },
+
+            vitals: {
+                ...validHealthReportSnapshot.vitals,
+
+                arbitraryInjectedMetric: 123456
+            }
+        }
+    };
+
+    const allowlistPackage =
+        createPiHybridPackage(
+            allowlistPayload,
+            kioskKeys.privateKey,
+            cloudKeys4096.publicKey
+        );
+
+    await v2CloudService.createOrderFromPackage(
+        allowlistPackage
+    );
+
+    const allowlistOrder = db
+        .prepare(
+            'SELECT * FROM payment_v2_orders WHERE request_id = ?'
+        )
+        .get('REQ-HEALTH-ALLOWLIST-1');
+
+    const sanitizedStoredSnapshot = JSON.parse(
+        decryptConfirmationCodeAtRest(
+            allowlistOrder.encrypted_health_snapshot,
+            TEST_SECRET
+        )
+    );
+
+    assert(
+        sanitizedStoredSnapshot.secretUiState === undefined,
+        'Cloud strips arbitrary top-level health snapshot fields'
+    );
+
+    assert(
+        sanitizedStoredSnapshot.patient.email === undefined,
+        'Kiosk-provided email is NOT persisted in health snapshot'
+    );
+
+    assert(
+        sanitizedStoredSnapshot.patient.phone === undefined,
+        'Kiosk-provided phone is NOT persisted in health snapshot'
+    );
+
+    assert(
+        sanitizedStoredSnapshot.vitals
+            .arbitraryInjectedMetric === undefined,
+        'Unknown measurement fields are stripped by cloud allowlist'
+    );
 
     // ───────────────────────────────────────────────────────────────────────
     // 5. CONCURRENT ORDER CREATION DEDUPLICATION

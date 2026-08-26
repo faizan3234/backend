@@ -180,18 +180,114 @@ export class PaymentV2Service {
         }
 
         const session = this.sessionManager.getSession(sessionId);
+
         if (!session) {
-            throw new Error(`Session ${sessionId} not found`);
+            const err = new Error(`Session ${sessionId} not found`);
+            err.code = 'SESSION_NOT_FOUND';
+            throw err;
         }
 
-        if (session.status === 'COMPLETED') {
-            throw new Error(`Session ${sessionId} is already completed`);
+        // Never create another payment after verified/finalized state.
+        if (
+            session.status === 'PAYMENT_VERIFIED' ||
+            session.status === 'FULFILLMENT' ||
+            session.status === 'COMPLETED' ||
+            session.payment_status === 'VERIFIED'
+        ) {
+            const err = new Error(
+                `Session ${sessionId} is already paid or finalized`
+            );
+            err.code = 'SESSION_ALREADY_PAID';
+            throw err;
         }
 
-        // Clean up expired requests first
+        // The service persisted in SQLite is authoritative.
+        // Never default to HEALTH_CHECKUP and never trust the browser to choose it here.
+        const persistedServiceType = String(
+            session.service_type || ''
+        )
+            .trim()
+            .toUpperCase();
+
+        if (
+            persistedServiceType !== 'HEALTH_CHECKUP' &&
+            persistedServiceType !== 'MEDICINE'
+        ) {
+            const err = new Error(
+                'Service must be selected before creating a payment request'
+            );
+            err.code = 'SERVICE_NOT_SELECTED';
+            throw err;
+        }
+
+        // The client may repeat its expected service type,
+        // but it is NOT allowed to override SQLite.
+        if (serviceType) {
+            const requestedServiceType = String(serviceType)
+                .trim()
+                .toUpperCase();
+
+            if (requestedServiceType !== persistedServiceType) {
+                const err = new Error(
+                    `Payment service mismatch: session is ${persistedServiceType}`
+                );
+                err.code = 'SERVICE_TYPE_MISMATCH';
+                throw err;
+            }
+        }
+
+        const effectiveServiceType = persistedServiceType;
+
+        // HEALTH CHECKUP must have completed/frozen measurements BEFORE
+        // any payment QR can be created.
+        if (effectiveServiceType === 'HEALTH_CHECKUP') {
+            const allowedHealthPaymentStates = [
+                'MEASUREMENTS_COMPLETE',
+                'PAYMENT_REQUIRED',
+                'PAYMENT_PENDING'
+            ];
+
+            if (!allowedHealthPaymentStates.includes(session.status)) {
+                const err = new Error(
+                    `Health checkup payment cannot start while session is ${session.status}`
+                );
+                err.code = 'MEASUREMENTS_NOT_COMPLETE';
+                throw err;
+            }
+
+            let frozenHealthData = session.health_data;
+
+            // getSession() normally already parses this, but keep this
+            // defensive for mocks/legacy databases.
+            if (typeof frozenHealthData === 'string') {
+                try {
+                    frozenHealthData = JSON.parse(frozenHealthData);
+                } catch {
+                    const err = new Error(
+                        'Stored health measurement snapshot is invalid'
+                    );
+                    err.code = 'INVALID_HEALTH_SNAPSHOT';
+                    throw err;
+                }
+            }
+
+            if (
+                !frozenHealthData ||
+                typeof frozenHealthData !== 'object' ||
+                Array.isArray(frozenHealthData) ||
+                Object.keys(frozenHealthData).length === 0
+            ) {
+                const err = new Error(
+                    'Completed health measurement snapshot is required before payment'
+                );
+                err.code = 'HEALTH_SNAPSHOT_MISSING';
+                throw err;
+            }
+        }
+
+        // Clean up expired requests only after all session gates pass.
         this.expireStaleRequests();
 
-        const effectiveServiceType = serviceType || session.service_type || 'HEALTH_CHECKUP';
         const now = Date.now();
 
         // 1. Resolve or create authoritative transaction with cart-aware idempotency
@@ -292,7 +388,7 @@ export class PaymentV2Service {
         let itemsSnapshot = [];
         let breakdownSnapshot = null;
 
-        const effectiveType = String(session.service_type || transaction.type || effectiveServiceType).toUpperCase();
+        const effectiveType = effectiveServiceType;
         if (effectiveType === 'MEDICINE' || effectiveType === 'MEDICINE_PURCHASE') {
             try {
                 const pricing = this.transactionManager.pricingService.calculateAuthoritativeCartTotal(canonicalNewCart);
@@ -361,6 +457,104 @@ export class PaymentV2Service {
         const customerData = session.customer_data ?
             (typeof session.customer_data === 'string' ? JSON.parse(session.customer_data) : session.customer_data) : {};
 
+        // ─────────────────────────────────────────────────────────────────────
+        // HEALTH REPORT SNAPSHOT
+        //
+        // For HEALTH_CHECKUP only, include the CURRENT frozen scan inside the
+        // existing signed + encrypted Payment V2 package.
+        //
+        // IMPORTANT:
+        // - SQLite session.health_data is authoritative.
+        // - Do NOT include email here. Email is collected on the phone after payment.
+        // - Do NOT include history, payment UI state, eco stats, etc.
+        // - Previous scans will be resolved by Oracle later using the customer's email.
+        // ─────────────────────────────────────────────────────────────────────
+
+        let healthReportSnapshot = null;
+
+        if (effectiveServiceType === 'HEALTH_CHECKUP') {
+            let frozenHealthData = session.health_data;
+
+            if (typeof frozenHealthData === 'string') {
+                frozenHealthData = JSON.parse(frozenHealthData);
+            }
+
+            if (
+                !frozenHealthData ||
+                typeof frozenHealthData !== 'object' ||
+                Array.isArray(frozenHealthData)
+            ) {
+                const err = new Error(
+                    'Frozen health snapshot is unavailable for cloud report delivery'
+                );
+                err.code = 'HEALTH_SNAPSHOT_MISSING';
+                throw err;
+            }
+
+            const frozenPatient =
+                frozenHealthData.patient &&
+                typeof frozenHealthData.patient === 'object'
+                    ? frozenHealthData.patient
+                    : {};
+
+            const frozenVitals =
+                frozenHealthData.vitals &&
+                typeof frozenHealthData.vitals === 'object'
+                    ? frozenHealthData.vitals
+                    : {};
+
+            healthReportSnapshot = {
+                version: 1,
+
+                patient: {
+                    name:
+                        frozenPatient.name ??
+                        customerData.name ??
+                        undefined,
+
+                    age:
+                        frozenPatient.age ??
+                        customerData.age ??
+                        undefined,
+
+                    gender:
+                        frozenPatient.gender ??
+                        customerData.gender ??
+                        undefined
+                },
+
+                vitals: {
+                    systolic: frozenVitals.systolic,
+                    diastolic: frozenVitals.diastolic,
+
+                    oxygen: frozenVitals.oxygen,
+                    bpm: frozenVitals.bpm,
+
+                    temperature: frozenVitals.temperature,
+
+                    leftEye: frozenVitals.leftEye,
+                    rightEye: frozenVitals.rightEye,
+
+                    weight: frozenVitals.weight,
+                    height: frozenVitals.height,
+                    impedance: frozenVitals.impedance,
+
+                    bodyFat: frozenVitals.bodyFat,
+                    muscleMass: frozenVitals.muscleMass,
+                    boneMass: frozenVitals.boneMass,
+                    bodyWater: frozenVitals.bodyWater,
+
+                    skeletalMuscle: frozenVitals.skeletalMuscle,
+                    ffmi: frozenVitals.ffmi,
+
+                    bmr: frozenVitals.bmr,
+                    metabolicAge: frozenVitals.metabolicAge,
+
+                    isAthlete: frozenVitals.isAthlete
+                }
+            };
+        }
+
         // Build canonical payload
         const canonicalPayload = {
             v: 2,
@@ -372,13 +566,17 @@ export class PaymentV2Service {
             transactionId: transaction.transaction_id,
             amount: authoritativeAmount,
             currency: 'INR',
-            serviceType: session.service_type || transaction.type,
+            serviceType: effectiveServiceType,
             confirmationCode,
             issuedAt: now,
             expiresAt,
             items: itemsSnapshot,
             breakdown: breakdownSnapshot,
-            customerName: customerData.name || undefined
+            customerName: customerData.name || undefined,
+
+            ...(healthReportSnapshot
+                ? { healthReportSnapshot }
+                : {})
         };
 
         // Legacy compatibility fields

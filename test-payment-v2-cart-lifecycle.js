@@ -90,7 +90,7 @@ try {
     // TEST 1: REFRESH IDEMPOTENCY (SAME CART)
     // ───────────────────────────────────────────────────────────────────────
     section('TEST 1: Refresh Idempotency with Same Cart');
-    const session1 = sessionManager.createSession('KSK-TEST-1');
+    const session1 = sessionManager.createSession('KSK-TEST-1', 'MEDICINE');
     const cartA = [{ kit_id: 'KIT-A', quantity: 1 }];
 
     const reqA1 = await service.createPaymentRequest(session1.session_id, { serviceType: 'MEDICINE', cart: cartA });
@@ -133,7 +133,7 @@ try {
     // TEST 3: CHANGE QUANTITY (KIT-A QTY 1 -> KIT-A QTY 2)
     // ───────────────────────────────────────────────────────────────────────
     section('TEST 3: Change Quantity');
-    const session3 = sessionManager.createSession('KSK-TEST-3');
+    const session3 = sessionManager.createSession('KSK-TEST-3', 'MEDICINE');
     const cartQty1 = [{ kit_id: 'KIT-A', quantity: 1 }];
     const reqQty1 = await service.createPaymentRequest(session3.session_id, { serviceType: 'MEDICINE', cart: cartQty1 });
     assert(reqQty1.amount === 17000, `Qty 1 created for ₹170.00 (17000 paise)`);
@@ -172,7 +172,7 @@ try {
     // TEST 5: EXPLICIT CANCEL METHOD
     // ───────────────────────────────────────────────────────────────────────
     section('TEST 5: Explicit Cancel Method');
-    const session5 = sessionManager.createSession('KSK-TEST-5');
+    const session5 = sessionManager.createSession('KSK-TEST-5', 'MEDICINE');
     const req5 = await service.createPaymentRequest(session5.session_id, { serviceType: 'MEDICINE', cart: cartA });
     assert(req5.status === 'ACTIVE' || service.getPaymentStatus(session5.session_id).status === 'ACTIVE', `Request 5 is active`);
 

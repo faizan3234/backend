@@ -158,6 +158,43 @@ export function initializeDatabase(customPath = null) {
         db.exec(schema);
 
         // ─────────────────────────────────────────────────────────────────────────────
+        // MIGRATION: persistent health measurement snapshot
+        // Existing kiosk databases created before health_data support need this column.
+        // Safe to run on every startup.
+        // ─────────────────────────────────────────────────────────────────────────────
+        try {
+            const sessionColumns = db
+                .prepare(`PRAGMA table_info(sessions)`)
+                .all();
+
+            const hasHealthData = sessionColumns.some(
+                (column) => column.name === "health_data"
+            );
+
+            if (!hasHealthData) {
+                console.log(
+                    "[Database] Adding health_data column to sessions..."
+                );
+
+                db.exec(`
+                    ALTER TABLE sessions
+                    ADD COLUMN health_data TEXT;
+                `);
+
+                console.log(
+                    "[Database] ✅ sessions.health_data migration complete"
+                );
+            }
+        } catch (err) {
+            console.error(
+                "[Database] ❌ sessions.health_data migration failed:",
+                err.message
+            );
+
+            throw err;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────────
         // MIGRATION: medicine local image support
         // Existing kiosks created before medicine images do not have image_path.
         // Safe to run on every startup.

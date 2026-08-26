@@ -266,6 +266,116 @@ export function createPaymentV2Router(paymentV2CloudService, {
         }
     });
 
+    /**
+     * POST /email-health-report
+     * Body: { requestId, email }
+     *
+     * HEALTH_CHECKUP only. Payment must already be PAID.
+     */
+    router.post('/email-health-report', emailReceiptLimiter, async (req, res) => {
+        try {
+            const { requestId, email } = req.body || {};
+
+            if (!requestId || typeof requestId !== 'string') {
+                return res.status(400).json({
+                    ok: false,
+                    code: 'MISSING_REQUEST_ID',
+                    message: 'requestId is required'
+                });
+            }
+
+            if (!email || typeof email !== 'string') {
+                return res.status(400).json({
+                    ok: false,
+                    code: 'MISSING_EMAIL',
+                    message: 'email is required'
+                });
+            }
+
+            const result = await paymentV2CloudService.sendEmailHealthReport({
+                requestId,
+                email
+            });
+
+            return res.json(result);
+        } catch (err) {
+            console.error('[PaymentV2Routes] âŒ Error sending health report:', err.message);
+
+            const statusCode = (
+                err.code === 'EMAIL_SERVICE_NOT_CONFIGURED' ||
+                err.code === 'PAYMENT_V2_NOT_CONFIGURED'
+            ) ? 503 : (
+                err.code === 'ORDER_NOT_FOUND'
+            ) ? 404 : (
+                err.code === 'REPORT_NOT_SENT'
+            ) ? 409 : (
+                err.code === 'INVALID_DOWNLOAD_TOKEN' ||
+                err.code === 'DOWNLOAD_TOKEN_EXPIRED'
+            ) ? 403 : (
+                err.code === 'ORDER_NOT_PAID' ||
+                err.code === 'NOT_HEALTH_CHECKUP' ||
+                err.code === 'HEALTH_SNAPSHOT_MISSING' ||
+                err.code === 'INVALID_EMAIL' ||
+                err.code === 'MISSING_EMAIL' ||
+                err.code === 'MISSING_REQUEST_ID' ||
+                err.code === 'REPORT_EMAIL_ALREADY_BOUND'
+            ) ? 400 : 500;
+
+            return res.status(statusCode).json({
+                ok: false,
+                code: err.code || 'HEALTH_REPORT_EMAIL_FAILED',
+                message: err.message || 'Failed to generate or email health report'
+            });
+        }
+    });
+
+    /**
+     * POST /health-report/download
+     * Body: { requestId, token }
+     *
+     * No email in URL/query. Token is short-lived and issued only after
+     * successful report delivery.
+     */
+    router.post('/health-report/download', emailReceiptLimiter, async (req, res) => {
+        try {
+            const { requestId, token } = req.body || {};
+
+            const result = await paymentV2CloudService.getHealthReportDownload({
+                requestId,
+                token
+            });
+
+            const safeScan = Number(result.scanNumber) || 1;
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader(
+                'Content-Disposition',
+                `attachment; filename="Reliv-Health-Report-Scan-${safeScan}.pdf"`
+            );
+            res.setHeader('Cache-Control', 'no-store, private');
+            return res.send(result.pdf);
+        } catch (err) {
+            console.error('[PaymentV2Routes] âŒ Error downloading health report:', err.message);
+
+            const statusCode = (
+                err.code === 'ORDER_NOT_FOUND'
+            ) ? 404 : (
+                err.code === 'REPORT_NOT_SENT'
+            ) ? 409 : (
+                err.code === 'INVALID_DOWNLOAD_TOKEN' ||
+                err.code === 'DOWNLOAD_TOKEN_EXPIRED'
+            ) ? 403 : (
+                err.code === 'ORDER_NOT_PAID' ||
+                err.code === 'NOT_HEALTH_CHECKUP' ||
+                err.code === 'MISSING_REQUEST_ID'
+            ) ? 400 : 500;
+
+            return res.status(statusCode).json({
+                ok: false,
+                code: err.code || 'HEALTH_REPORT_DOWNLOAD_FAILED',
+                message: err.message || 'Failed to download health report'
+            });
+        }
+    });
     return router;
 }
 

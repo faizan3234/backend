@@ -19,6 +19,10 @@ import {
 } from './paymentV2Crypto.js';
 import { initPaymentV2Schema } from './paymentV2Db.js';
 import { sendPaymentReceipt } from './services/receiptEmailService.js';
+import {
+    sendHealthReportEmail,
+    generateHealthReportDownload
+} from './services/healthReportEmailService.js';
 
 export class PaymentV2CloudService {
     constructor({
@@ -196,6 +200,215 @@ export class PaymentV2CloudService {
             throw err;
         }
 
+        // ─────────────────────────────────────────────────────────────────────
+        // HEALTH REPORT SNAPSHOT
+        //
+        // HEALTH_CHECKUP requests must contain the immutable current-scan
+        // snapshot signed by the kiosk.
+        //
+        // It will be encrypted again before being persisted in cloud SQLite.
+        // ─────────────────────────────────────────────────────────────────────
+
+        const normalizedServiceType = String(
+            payload.serviceType || 'HEALTH_CHECKUP'
+        )
+            .trim()
+            .toUpperCase();
+
+        if (
+            normalizedServiceType !== 'HEALTH_CHECKUP' &&
+            normalizedServiceType !== 'MEDICINE'
+        ) {
+            const err = new Error('Unsupported service type');
+            err.code = 'UNSUPPORTED_SERVICE_TYPE';
+            throw err;
+        }
+
+        let sanitizedHealthSnapshotJson = null;
+
+        if (
+            payload.healthReportSnapshot !== undefined &&
+            normalizedServiceType !== 'HEALTH_CHECKUP'
+        ) {
+            const err = new Error(
+                'Health report snapshot is not allowed for this service type'
+            );
+            err.code = 'INVALID_HEALTH_SNAPSHOT';
+            throw err;
+        }
+
+        if (normalizedServiceType === 'HEALTH_CHECKUP') {
+            const snapshot = payload.healthReportSnapshot;
+
+            if (
+                !snapshot ||
+                typeof snapshot !== 'object' ||
+                Array.isArray(snapshot)
+            ) {
+                const err = new Error(
+                    'Health report snapshot is required for HEALTH_CHECKUP'
+                );
+                err.code = 'HEALTH_SNAPSHOT_MISSING';
+                throw err;
+            }
+
+            if (Number(snapshot.version) !== 1) {
+                const err = new Error(
+                    'Unsupported health report snapshot version'
+                );
+                err.code = 'INVALID_HEALTH_SNAPSHOT';
+                throw err;
+            }
+
+            const patient = snapshot.patient;
+            const vitals = snapshot.vitals;
+
+            if (
+                !patient ||
+                typeof patient !== 'object' ||
+                Array.isArray(patient) ||
+                !vitals ||
+                typeof vitals !== 'object' ||
+                Array.isArray(vitals)
+            ) {
+                const err = new Error(
+                    'Invalid health report snapshot structure'
+                );
+                err.code = 'INVALID_HEALTH_SNAPSHOT';
+                throw err;
+            }
+
+            const name =
+                typeof patient.name === 'string'
+                    ? patient.name.trim()
+                    : '';
+
+            const age = patient.age;
+
+            const gender =
+                typeof patient.gender === 'string'
+                    ? patient.gender.trim()
+                    : '';
+
+            if (
+                !name ||
+                name.length > 120 ||
+                !String(age ?? '').trim() ||
+                !gender ||
+                gender.length > 32
+            ) {
+                const err = new Error(
+                    'Invalid patient information in health report snapshot'
+                );
+                err.code = 'INVALID_HEALTH_SNAPSHOT';
+                throw err;
+            }
+
+            const allowedVitalKeys = [
+                'systolic',
+                'diastolic',
+                'oxygen',
+                'bpm',
+                'temperature',
+
+                'leftEye',
+                'rightEye',
+
+                'weight',
+                'height',
+                'impedance',
+
+                'bodyFat',
+                'muscleMass',
+                'boneMass',
+                'bodyWater',
+
+                'skeletalMuscle',
+                'ffmi',
+
+                'bmr',
+                'metabolicAge',
+
+                'isAthlete'
+            ];
+
+            const cleanVitals = {};
+
+            for (const key of allowedVitalKeys) {
+                if (!Object.prototype.hasOwnProperty.call(vitals, key)) {
+                    continue;
+                }
+
+                const value = vitals[key];
+
+                if (value === undefined) {
+                    continue;
+                }
+
+                if (
+                    value !== null &&
+                    typeof value !== 'string' &&
+                    typeof value !== 'number' &&
+                    typeof value !== 'boolean'
+                ) {
+                    const err = new Error(
+                        `Invalid health measurement: ${key}`
+                    );
+                    err.code = 'INVALID_HEALTH_SNAPSHOT';
+                    throw err;
+                }
+
+                if (
+                    typeof value === 'number' &&
+                    !Number.isFinite(value)
+                ) {
+                    const err = new Error(
+                        `Invalid numeric health measurement: ${key}`
+                    );
+                    err.code = 'INVALID_HEALTH_SNAPSHOT';
+                    throw err;
+                }
+
+                cleanVitals[key] = value;
+            }
+
+            if (Object.keys(cleanVitals).length === 0) {
+                const err = new Error(
+                    'Health report snapshot contains no measurements'
+                );
+                err.code = 'INVALID_HEALTH_SNAPSHOT';
+                throw err;
+            }
+
+            const sanitizedHealthSnapshot = {
+                version: 1,
+
+                patient: {
+                    name,
+                    age,
+                    gender
+                },
+
+                vitals: cleanVitals
+            };
+
+            sanitizedHealthSnapshotJson =
+                JSON.stringify(sanitizedHealthSnapshot);
+
+            if (
+                Buffer.byteLength(
+                    sanitizedHealthSnapshotJson,
+                    'utf8'
+                ) > 32 * 1024
+            ) {
+                const err = new Error(
+                    'Health report snapshot is too large'
+                );
+                err.code = 'HEALTH_SNAPSHOT_TOO_LARGE';
+                throw err;
+            }
+        }
+
         // 7. Compute Payload Fingerprint (SHA-256)
         const payloadFingerprint = computePayloadFingerprint(payload);
 
@@ -341,8 +554,19 @@ export class PaymentV2CloudService {
                 breakdownJson = JSON.stringify(b);
             }
 
-            // Encrypt Confirmation Code At Rest
-            const encryptedCode = encryptConfirmationCodeAtRest(payload.confirmationCode, this.codeSecret);
+            // Encrypt sensitive values before persistent cloud storage.
+            const encryptedCode = encryptConfirmationCodeAtRest(
+                payload.confirmationCode,
+                this.codeSecret
+            );
+
+            const encryptedHealthSnapshot =
+                sanitizedHealthSnapshotJson
+                    ? encryptConfirmationCodeAtRest(
+                          sanitizedHealthSnapshotJson,
+                          this.codeSecret
+                      )
+                    : null;
 
             let itemName = payload.itemName || payload.medicineName || payload.item_name || payload.medicine_name || null;
             if (!itemName && payload.items && payload.items.length > 0) {
@@ -376,9 +600,9 @@ export class PaymentV2CloudService {
                     order_id, request_id, request_nonce, payload_fingerprint,
                     session_id, transaction_id, kiosk_id, amount, currency,
                     service_type, item_name, cart, customer_name,
-                    items_json, breakdown_json,
+                    items_json, breakdown_json, encrypted_health_snapshot,
                     encrypted_code, status, created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, ?, ?, ?, ?, ?, 'CREATED', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, ?, ?, ?, ?, ?, ?, 'CREATED', ?, ?)
             `).run(
                 rzpOrder.id,
                 payload.requestId,
@@ -388,12 +612,13 @@ export class PaymentV2CloudService {
                 payload.transactionId,
                 payload.kioskId,
                 authoritativeAmount,
-                payload.serviceType || 'HEALTH_CHECKUP',
+                normalizedServiceType,
                 itemName,
                 cartJson,
                 customerName,
                 itemsJson,
                 breakdownJson,
+                encryptedHealthSnapshot,
                 encryptedCode,
                 now,
                 payload.expiresAt
@@ -771,6 +996,38 @@ export class PaymentV2CloudService {
         };
     }
 
+    /**
+     * Generate + email the progressive health report for a PAID health order.
+     */
+    async sendEmailHealthReport({
+        requestId,
+        email,
+        transporterOverride = null,
+        reportPdfBuilderOverride = null,
+        receiptPdfBuilderOverride = null
+    }) {
+        return await sendHealthReportEmail({
+            db: this.db,
+            requestId,
+            email,
+            codeSecret: this.codeSecret,
+            transporter: transporterOverride,
+            reportPdfBuilderOverride,
+            receiptPdfBuilderOverride
+        });
+    }
+
+    /**
+     * Regenerate a delivered report for a short-lived tokenized phone download.
+     */
+    async getHealthReportDownload({ requestId, token }) {
+        return await generateHealthReportDownload({
+            db: this.db,
+            requestId,
+            token,
+            codeSecret: this.codeSecret
+        });
+    }
     /**
      * Send authoritative payment receipt email for a PAID order
      *

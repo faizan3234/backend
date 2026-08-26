@@ -94,6 +94,13 @@ class SessionManager {
             session.customer_data = JSON.parse(session.customer_data);
         }
         
+        if (session && session.health_data) {
+            session.health_data =
+                typeof session.health_data === 'string'
+                    ? JSON.parse(session.health_data)
+                    : session.health_data;
+        }
+        
         return session;
     }
     
@@ -110,6 +117,13 @@ class SessionManager {
             session.customer_data = JSON.parse(session.customer_data);
         }
         
+        if (session && session.health_data) {
+            session.health_data =
+                typeof session.health_data === 'string'
+                    ? JSON.parse(session.health_data)
+                    : session.health_data;
+        }
+        
         return session;
     }
     
@@ -124,6 +138,13 @@ class SessionManager {
         
         if (session && session.customer_data) {
             session.customer_data = JSON.parse(session.customer_data);
+        }
+        
+        if (session && session.health_data) {
+            session.health_data =
+                typeof session.health_data === 'string'
+                    ? JSON.parse(session.health_data)
+                    : session.health_data;
         }
         
         return session;
@@ -198,6 +219,174 @@ class SessionManager {
         
         stmt.run(serviceType, SESSION_STATES.SERVICE_SELECTED, sessionId);
         console.log(`[SessionManager] Service selected: ${serviceType} for session: ${sessionId}`);
+    }
+    
+    /**
+     * Persist the final health measurement snapshot and mark measurements complete.
+     *
+     * SECURITY / DATA-INTEGRITY RULES:
+     * - HEALTH_CHECKUP sessions only
+     * - Snapshot is written before payment
+     * - Once frozen, measurement data cannot be overwritten
+     * - Safe/idempotent retry if frontend loses the response
+     *
+     * @param {string} sessionId
+     * @param {Object} healthData
+     * @returns {Object} Updated session
+     */
+    saveCompletedHealthData(sessionId, healthData) {
+        if (!sessionId) {
+            throw new Error('Session ID is required');
+        }
+
+        if (
+            !healthData ||
+            typeof healthData !== 'object' ||
+            Array.isArray(healthData) ||
+            Object.keys(healthData).length === 0
+        ) {
+            throw new Error('Complete health measurement data is required');
+        }
+
+        const session = this.getSession(sessionId);
+
+        if (!session) {
+            throw new Error(`Session ${sessionId} not found`);
+        }
+
+        if (session.service_type !== 'HEALTH_CHECKUP') {
+            throw new Error(
+                'Health measurements can only be saved for a HEALTH_CHECKUP session'
+            );
+        }
+
+        // Never allow measurements to change after payment has started or completed.
+        const lockedStates = [
+            SESSION_STATES.PAYMENT_REQUIRED,
+            SESSION_STATES.PAYMENT_PENDING,
+            SESSION_STATES.PAYMENT_VERIFIED,
+            SESSION_STATES.FULFILLMENT,
+            SESSION_STATES.COMPLETED
+        ];
+
+        if (lockedStates.includes(session.status)) {
+            throw new Error(
+                `Health measurements are locked for session state ${session.status}`
+            );
+        }
+
+        // Canonicalize JSON before comparing snapshots.
+        //
+        // Object key order must NOT make two logically identical health snapshots
+        // appear different. Array order is preserved because measurement arrays
+        // may be meaningful.
+        const canonicalize = (value) => {
+            if (Array.isArray(value)) {
+                return value.map(canonicalize);
+            }
+
+            if (
+                value !== null &&
+                typeof value === 'object'
+            ) {
+                return Object.keys(value)
+                    .sort()
+                    .reduce((result, key) => {
+                        result[key] = canonicalize(value[key]);
+                        return result;
+                    }, {});
+            }
+
+            return value;
+        };
+
+        const incomingCanonicalJson =
+            JSON.stringify(canonicalize(healthData));
+
+        // Idempotent retry is allowed ONLY when the caller is submitting
+        // exactly the same logical snapshot that was already frozen.
+        if (
+            session.status === SESSION_STATES.MEASUREMENTS_COMPLETE &&
+            session.health_data
+        ) {
+            let existingHealthData = session.health_data;
+
+            // getSession() normally parses health_data already,
+            // but keep this defensive for legacy/mocked callers.
+            if (typeof existingHealthData === 'string') {
+                try {
+                    existingHealthData =
+                        JSON.parse(existingHealthData);
+                } catch {
+                    const err = new Error(
+                        'Stored health measurement snapshot is invalid'
+                    );
+                    err.code = 'INVALID_HEALTH_SNAPSHOT';
+                    throw err;
+                }
+            }
+
+            const existingCanonicalJson =
+                JSON.stringify(canonicalize(existingHealthData));
+
+            if (existingCanonicalJson !== incomingCanonicalJson) {
+                const err = new Error(
+                    'Health measurement snapshot does not match the already frozen snapshot'
+                );
+
+                err.code = 'HEALTH_SNAPSHOT_MISMATCH';
+
+                throw err;
+            }
+
+            console.log(
+                `[SessionManager] Identical health measurement retry accepted for session: ${sessionId}`
+            );
+
+            return session;
+        }
+
+        this._validateTransition(
+            sessionId,
+            SESSION_STATES.MEASUREMENTS_COMPLETE
+        );
+
+        const healthDataJson = JSON.stringify(healthData);
+
+        // Basic protection against accidentally storing an enormous payload.
+        if (Buffer.byteLength(healthDataJson, 'utf8') > 256 * 1024) {
+            throw new Error('Health measurement payload is too large');
+        }
+
+        const saveSnapshot = this.db.transaction(() => {
+            const stmt = this.db.prepare(`
+                UPDATE sessions
+                SET health_data = ?,
+                    status = ?,
+                    updated_at = datetime('now')
+                WHERE session_id = ?
+            `);
+
+            const result = stmt.run(
+                healthDataJson,
+                SESSION_STATES.MEASUREMENTS_COMPLETE,
+                sessionId
+            );
+
+            if (result.changes !== 1) {
+                throw new Error(
+                    `Failed to save measurements for session ${sessionId}`
+                );
+            }
+        });
+
+        saveSnapshot();
+
+        console.log(
+            `[SessionManager] ✅ Health measurements frozen for session: ${sessionId}`
+        );
+
+        return this.getSession(sessionId);
     }
     
     /**
@@ -392,6 +581,13 @@ class SessionManager {
         
         if (session && session.customer_data) {
             session.customer_data = JSON.parse(session.customer_data);
+        }
+        
+        if (session && session.health_data) {
+            session.health_data =
+                typeof session.health_data === 'string'
+                    ? JSON.parse(session.health_data)
+                    : session.health_data;
         }
         
         return session;
