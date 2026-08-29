@@ -138,8 +138,8 @@ function comparisonRows(current, previous) {
         ['systolic', 'Systolic BP', 'mmHg'],
         ['diastolic', 'Diastolic BP', 'mmHg'],
         ['bpm', 'Heart Rate', 'bpm'],
-        ['oxygen', 'SpOâ‚‚', '%'],
-        ['temperature', 'Temperature', 'Âdeg F'],
+        ['oxygen', 'SpO2', '%'],
+        ['temperature', 'Temperature', 'deg F'],
         ['weight', 'Weight', 'kg'],
         ['bodyFat', 'Body Fat', '%'],
         ['muscleMass', 'Muscle Mass', 'kg'],
@@ -217,9 +217,9 @@ export async function generateCloudHealthReportPdfBuffer({
                 doc.rect(0, 0, PAGE_W, PAGE_H).fill(C.white);
 
                 if (continued) {
-                    drawRelivHealthLogo(doc, M, 18, 24, fontB);
+                    drawRelivHealthLogo(doc, M, 14, 32, fontB);
                     doc.font(fontR).fontSize(8).fillColor(C.secondary)
-                        .text(`Health Report â€¢ Scan ${model.currentScanNumber}`, M + 80, 28, {
+                        .text(`Health Report | Scan ${model.currentScanNumber}`, M + 80, 28, {
                             width: CONTENT_W - 80,
                             align: 'right'
                         });
@@ -227,11 +227,14 @@ export async function generateCloudHealthReportPdfBuffer({
                     y = 64;
                 } else {
                     doc.roundedRect(M, 28, CONTENT_W, 108, 16).fill(C.surface);
-                    drawRelivHealthLogo(doc, M + 20, 40, 34, fontB);
+                    drawRelivHealthLogo(doc, M + 20, 36, 54, fontB);
                     doc.font(fontB).fontSize(18).fillColor(C.navy)
-                        .text('Health Report', M + 20, 82, { width: 260 });
+                        .text('Health Report', M + 20, 94, { width: 260 });
                     doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
-                        .text('Secure progressive wellness tracking report', M + 20, 106, { width: 300 });
+                        .text('Secure wellness tracking summary - not a medical report', M + 20, 118, { width: 310 });
+
+                    doc.font(fontB).fontSize(6.8).fillColor(C.orange)
+                        .text('WELLNESS SUMMARY - NOT A MEDICAL REPORT', M + 20, 129, { width: 310 });
 
                     doc.roundedRect(PAGE_W - M - 150, 46, 130, 56, 12).fill(C.paleOrange);
                     doc.font(fontB).fontSize(10).fillColor(C.orange)
@@ -312,7 +315,7 @@ export async function generateCloudHealthReportPdfBuffer({
 
                 doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
                     .text(
-                        `Age: ${safeText(model.patient.age)}   â€¢   Gender: ${safeText(model.patient.gender)}`,
+                        `Age: ${safeText(model.patient.age)} | Gender: ${safeText(model.patient.gender)}`,
                         M + 16,
                         top + 35,
                         { width: 300 }
@@ -344,7 +347,7 @@ export async function generateCloudHealthReportPdfBuffer({
                 { label: 'Diastolic BP', value: v.diastolic, unit: 'mmHg' },
                 { label: 'Heart Rate', value: v.bpm, unit: 'bpm' },
                 { label: 'Blood Oxygen', value: v.oxygen, unit: '%' },
-                { label: 'Body Temperature', value: v.temperature, unit: 'Âdeg F' },
+                { label: 'Body Temperature', value: v.temperature, unit: 'deg F' },
                 { label: 'Weight', value: v.weight, unit: 'kg' },
                 { label: 'Height', value: v.height, unit: 'cm' },
                 { label: 'Left Eye', value: v.leftEye, unit: '' },
@@ -360,7 +363,7 @@ export async function generateCloudHealthReportPdfBuffer({
                 { label: 'FFMI', value: v.ffmi, unit: '' },
                 { label: 'BMR', value: v.bmr, unit: 'kcal/day' },
                 { label: 'Metabolic Age', value: v.metabolicAge, unit: 'years' },
-                { label: 'Impedance', value: v.impedance, unit: 'Î©' }
+                { label: 'Impedance', value: v.impedance, unit: 'ohm' }
             ].filter(m => hasValue(m.value));
 
             if (bodyMetrics.length) {
@@ -428,7 +431,7 @@ export async function generateCloudHealthReportPdfBuffer({
                     ['Date', 88],
                     ['BP', 94],
                     ['HR', 66],
-                    ['SpOâ‚‚', 66],
+                    ['SpO2', 66],
                     ['Weight', 78],
                     ['Body Fat', 83]
                 ];
@@ -446,17 +449,17 @@ export async function generateCloudHealthReportPdfBuffer({
                 history.forEach((scan, idx) => {
                     const sv = scan.snapshot?.vitals || {};
                     const bp = hasValue(sv.systolic) || hasValue(sv.diastolic)
-                        ? `${safeText(sv.systolic, 'â€”')}/${safeText(sv.diastolic, 'â€”')}`
-                        : 'â€”';
+                        ? `${safeText(sv.systolic, '"')}/${safeText(sv.diastolic, '"')}`
+                        : '"';
 
                     const values = [
                         `#${scan.scanNumber}`,
                         formatDate(scan.createdAt),
                         bp,
-                        hasValue(sv.bpm) ? `${sv.bpm}` : 'â€”',
-                        hasValue(sv.oxygen) ? `${sv.oxygen}%` : 'â€”',
-                        hasValue(sv.weight) ? `${sv.weight} kg` : 'â€”',
-                        hasValue(sv.bodyFat) ? `${sv.bodyFat}%` : 'â€”'
+                        hasValue(sv.bpm) ? `${sv.bpm}` : '"',
+                        hasValue(sv.oxygen) ? `${sv.oxygen}%` : '"',
+                        hasValue(sv.weight) ? `${sv.weight} kg` : '"',
+                        hasValue(sv.bodyFat) ? `${sv.bodyFat}%` : '"'
                     ];
 
                     x = M;
@@ -530,7 +533,7 @@ export async function generateCloudHealthReportPdfBuffer({
                                 .text(t.label, x, ty, { width: cellW });
                             doc.font(fontR).fontSize(7.5).fillColor(C.secondary)
                                 .text(
-                                    `${t.data.direction} â€¢ ${t.data.delta} overall`,
+                                    `${t.data.direction} | ${t.data.delta} overall`,
                                     x,
                                     ty + 17,
                                     { width: cellW }
@@ -545,7 +548,7 @@ export async function generateCloudHealthReportPdfBuffer({
                 title('Health Journey');
                 const rows = model.scans.map(scan => {
                     const sv = scan.snapshot?.vitals || {};
-                    return `Scan ${scan.scanNumber} â€¢ ${formatDate(scan.createdAt)} â€¢ ${hasValue(sv.weight) ? `Weight ${sv.weight} kg` : 'weight not recorded'} â€¢ ${hasValue(sv.oxygen) ? `SpOâ‚‚ ${sv.oxygen}%` : 'SpOâ‚‚ not recorded'}`;
+                    return `Scan ${scan.scanNumber} | ${formatDate(scan.createdAt)} | ${hasValue(sv.weight) ? `Weight ${sv.weight} kg` : 'weight not recorded'} | ${hasValue(sv.oxygen) ? `SpO2 ${sv.oxygen}%` : 'SpO2 not recorded'}`;
                 });
 
                 const h = Math.min(180, 24 + rows.length * 18);
@@ -576,11 +579,11 @@ export async function generateCloudHealthReportPdfBuffer({
                 });
             }
 
-            title('Important Note');
-            card(74, (top) => {
-                doc.font(fontR).fontSize(8).fillColor(C.text)
+            title('Medical Disclaimer');
+            card(128, (top) => {
+                doc.font(fontR).fontSize(8.4).fillColor(C.text)
                     .text(
-                        'This report is intended for wellness tracking and informational use. It is not a diagnosis, medical prescription, or substitute for professional medical evaluation. Seek medical care for concerning symptoms or persistently unusual readings.',
+                        'IMPORTANT: This is NOT a medical report. It is an automated wellness summary based only on measurements captured by the Reliv kiosk. It is NOT intended to diagnose, treat, prevent, or cure any disease and is NOT medical advice, a prescription, or a substitute for evaluation by a qualified healthcare professional. Readings can be affected by device limitations, body position, movement, environment, and measurement conditions. Do not start, stop, or change any medicine or treatment based on this report. If you feel unwell, have concerning symptoms, or repeatedly receive unusual readings, consult a qualified medical professional. In an emergency, contact your local emergency services.',
                         M + 16,
                         top + 15,
                         { width: CONTENT_W - 32, lineGap: 2.2 }
@@ -595,7 +598,7 @@ export async function generateCloudHealthReportPdfBuffer({
                     .strokeColor(C.border).lineWidth(0.6).stroke();
                 doc.font(fontR).fontSize(7).fillColor(C.secondary)
                     .text(
-                        `Reliv Health â€¢ Page ${i + 1} of ${range.count}`,
+                        `Reliv Health | Page ${i + 1} of ${range.count}`,
                         M,
                         PAGE_H - 25,
                         { width: CONTENT_W / 2 }
