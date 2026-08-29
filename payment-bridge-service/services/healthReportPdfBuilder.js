@@ -1,5 +1,44 @@
 import PDFDocument from 'pdfkit';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { setupPdfFonts } from './receiptPdfBuilder.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function resolveHealthAssetPath(relativePath) {
+    const candidates = [
+        path.join(__dirname, '..', relativePath),
+        path.join(__dirname, '../..', relativePath),
+        path.join(process.cwd(), relativePath),
+        path.join(process.cwd(), 'payment-bridge-service', relativePath)
+    ];
+
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
+    return null;
+}
+
+const RELIV_HEALTH_LOGO_PATH =
+    resolveHealthAssetPath('assets/reliv.png') ||
+    resolveHealthAssetPath('reliv.png');
+
+function drawRelivHealthLogo(doc, x, y, height, fontB) {
+    if (RELIV_HEALTH_LOGO_PATH) {
+        try {
+            doc.image(RELIV_HEALTH_LOGO_PATH, x, y, { height });
+            return true;
+        } catch (err) {
+            console.warn('[HealthReportPdfBuilder] Logo render fallback:', err.message);
+        }
+    }
+
+    doc.font(fontB).fontSize(22).fillColor('#FF641A')
+        .text('RELIV', x, y + 4, { width: 120 });
+    return false;
+}
 
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
@@ -100,7 +139,7 @@ function comparisonRows(current, previous) {
         ['diastolic', 'Diastolic BP', 'mmHg'],
         ['bpm', 'Heart Rate', 'bpm'],
         ['oxygen', 'SpOâ‚‚', '%'],
-        ['temperature', 'Temperature', 'Â°F'],
+        ['temperature', 'Temperature', 'Âdeg F'],
         ['weight', 'Weight', 'kg'],
         ['bodyFat', 'Body Fat', '%'],
         ['muscleMass', 'Muscle Mass', 'kg'],
@@ -178,8 +217,7 @@ export async function generateCloudHealthReportPdfBuffer({
                 doc.rect(0, 0, PAGE_W, PAGE_H).fill(C.white);
 
                 if (continued) {
-                    doc.font(fontB).fontSize(13).fillColor(C.navy)
-                        .text('RELIV', M, 25, { width: 80 });
+                    drawRelivHealthLogo(doc, M, 18, 24, fontB);
                     doc.font(fontR).fontSize(8).fillColor(C.secondary)
                         .text(`Health Report â€¢ Scan ${model.currentScanNumber}`, M + 80, 28, {
                             width: CONTENT_W - 80,
@@ -189,12 +227,11 @@ export async function generateCloudHealthReportPdfBuffer({
                     y = 64;
                 } else {
                     doc.roundedRect(M, 28, CONTENT_W, 108, 16).fill(C.surface);
-                    doc.font(fontB).fontSize(25).fillColor(C.navy)
-                        .text('RELIV', M + 20, 44, { width: 130 });
+                    drawRelivHealthLogo(doc, M + 20, 40, 34, fontB);
                     doc.font(fontB).fontSize(18).fillColor(C.navy)
-                        .text('Health Report', M + 20, 74, { width: 260 });
+                        .text('Health Report', M + 20, 82, { width: 260 });
                     doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
-                        .text('Secure progressive wellness tracking report', M + 20, 99, { width: 300 });
+                        .text('Secure progressive wellness tracking report', M + 20, 106, { width: 300 });
 
                     doc.roundedRect(PAGE_W - M - 150, 46, 130, 56, 12).fill(C.paleOrange);
                     doc.font(fontB).fontSize(10).fillColor(C.orange)
@@ -307,7 +344,7 @@ export async function generateCloudHealthReportPdfBuffer({
                 { label: 'Diastolic BP', value: v.diastolic, unit: 'mmHg' },
                 { label: 'Heart Rate', value: v.bpm, unit: 'bpm' },
                 { label: 'Blood Oxygen', value: v.oxygen, unit: '%' },
-                { label: 'Body Temperature', value: v.temperature, unit: 'Â°F' },
+                { label: 'Body Temperature', value: v.temperature, unit: 'Âdeg F' },
                 { label: 'Weight', value: v.weight, unit: 'kg' },
                 { label: 'Height', value: v.height, unit: 'cm' },
                 { label: 'Left Eye', value: v.leftEye, unit: '' },
