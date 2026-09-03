@@ -1,0 +1,2 @@
+websockets>=14,<16
+requests>=2.32,<3

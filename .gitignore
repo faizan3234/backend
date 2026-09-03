@@ -45,3 +45,12 @@ payment-bridge-service/*.db*
 reports/
 receipts/
 
+
+# RELIV local voice models/runtime
+voice-service/.venv/
+voice-service/venv/
+voice-service/__pycache__/
+voice-service/*.wav
+voice-service/models/
+*.gguf
+ggml-*.bin
