@@ -114,19 +114,24 @@ class WhisperClient:
 
         # Very smart filtering of fake/noise transcripts and Whisper hallucinations
         if text:
-            # 1. Strip brackets and parentheses (Whisper tags for noise)
+            # 1. Strip all noise tags: [], (), **, <>
             text = re.sub(r"\[.*?\]", "", text)
             text = re.sub(r"\(.*?\)", "", text)
+            text = re.sub(r"\*.*?\*", "", text)
+            text = re.sub(r"<.*?>", "", text)
             text = text.strip()
             
             # 2. Drop if text contains NO letters or numbers (pure symbols like "...", "---", "?!")
-            # Checking against Latin, Devanagari (Hindi), and Bengali unicode blocks
             if not re.search(r"[a-zA-Z0-9ऀ-ॿঀ-৿]", text):
                 text = ""
             
             # 3. Filter common Whisper hallucinations when there is background noise
             lower_clean = re.sub(r"[^a-z]", "", text.lower())
-            hallucinations = ["thankyou", "thanksforwatching", "subscribe", "subscribetomychannel", "amaraorg", "by"]
+            hallucinations = [
+                "thankyou", "thanksforwatching", "subscribe", "subscribetomychannel", 
+                "amaraorg", "by", "you", "it", "music", "silence", "laughs", "sighs", 
+                "bell", "birds", "birdschirping", "mimics"
+            ]
             if lower_clean in hallucinations:
                 text = ""
 
