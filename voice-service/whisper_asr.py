@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -110,6 +111,12 @@ class WhisperClient:
             except Exception as e:
                 logger.debug(f"Google Fallback failed: {e}")
                 text = ""
+
+        # Filter out noise transcripts like [BLANK_AUDIO] or (birds chirping)
+        if text:
+            text = re.sub(r"\[.*?\]", "", text)
+            text = re.sub(r"\(.*?\)", "", text)
+            text = text.strip()
 
         if not text:
             confidence = 0.0
