@@ -123,6 +123,26 @@ class TestEchoController(unittest.TestCase):
         # Now both are gone
         self.assertFalse(aec.should_suppress_mic())
 
+    def test_concurrent_clients(self):
+        import threading
+        import time
+        aec = EchoController(allow_barge_in=False)
+        
+        def client_worker(client_id):
+            aec.set_reliv_speaking(client_id, True)
+            time.sleep(0.01)
+            aec.should_suppress_mic()
+            time.sleep(0.01)
+            aec.set_reliv_speaking(client_id, False)
+
+        threads = [threading.Thread(target=client_worker, args=(f"client_{i}",)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+            
+        self.assertFalse(aec.should_suppress_mic())
+
 
 class TestSpeechSession(unittest.TestCase):
     def test_session_state(self):

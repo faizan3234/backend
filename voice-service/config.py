@@ -10,7 +10,7 @@ PORT = int(os.getenv("RELIV_VOICE_PORT", "5100"))
 
 # Audio Hardware & Format
 MIC_DEVICE_HINT = os.getenv("RELIV_MIC_DEVICE_HINT", "PCM2902")
-MIC_DEVICE_FALLBACK = os.getenv("RELIV_MIC_DEVICE", "plughw:3,0")
+MIC_DEVICE_FALLBACK = os.getenv("RELIV_MIC_DEVICE", "reliv_mic")
 SAMPLE_RATE = int(os.getenv("RELIV_SAMPLE_RATE", "16000"))
 CHANNELS = 1
 SAMPLE_WIDTH = 2  # 16-bit PCM (S16_LE)
