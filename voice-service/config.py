@@ -21,7 +21,7 @@ BYTES_PER_FRAME = SAMPLES_PER_FRAME * SAMPLE_WIDTH
 # Voice Activity Detection (VAD)
 VAD_RMS = int(os.getenv("RELIV_VAD_RMS", "150"))
 VAD_START_FRAMES = int(os.getenv("RELIV_VAD_START_FRAMES", "3"))
-VAD_END_SILENCE_MS = int(os.getenv("RELIV_VAD_END_MS", "1200"))
+VAD_END_SILENCE_MS = int(os.getenv("RELIV_VAD_END_MS", "450"))
 VAD_MIN_SPEECH_MS = int(os.getenv("RELIV_VAD_MIN_MS", "150"))
 VAD_MAX_UTTERANCE_MS = int(os.getenv("RELIV_VAD_MAX_MS", "12000"))
 VAD_PREROLL_MS = int(os.getenv("RELIV_VAD_PREROLL_MS", "240"))
@@ -32,7 +32,14 @@ WHISPER_TIMEOUT_SECS = int(os.getenv("RELIV_WHISPER_TIMEOUT", "30"))
 
 # Barge-In & Echo Suppression
 # Default 0 (disabled): suppress mic input while RELIV speaker is playing
-ALLOW_BARGE_IN = os.getenv("RELIV_ALLOW_BARGE_IN", "0") == "1"
+_allow_barge = os.getenv(
+    "RELIV_ALLOW_BARGE_IN",
+    os.getenv("ALLOW_BARGE_IN", "0")
+).strip().lower()
+
+ALLOW_BARGE_IN = _allow_barge in (
+    "1", "true", "yes", "on"
+)
 
 # Allowed CORS / WebSocket Origins
 ALLOWED_ORIGINS = [

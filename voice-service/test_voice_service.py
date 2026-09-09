@@ -4,6 +4,7 @@ Verifies VAD logic, DialogueBridge protocol formatting/parsing, EchoController s
 and SpeechSessionState concurrency.
 """
 import unittest
+import config
 from aec import EchoController
 from dialogue_bridge import DialogueBridge
 from speech_session import SpeechSessionState
@@ -111,15 +112,36 @@ class TestEchoController(unittest.TestCase):
 
 class TestSpeechSession(unittest.TestCase):
     def test_session_state(self):
+        # A. new session: is_paused == False
         session = SpeechSessionState()
+        self.assertFalse(session.is_paused())
+
         session.update_context(page="PAYMENT", expecting="code", hints=["one", "two"])
         snap = session.get_snapshot()
         self.assertEqual(snap["page"], "PAYMENT")
         self.assertEqual(snap["expecting"], "code")
         self.assertEqual(snap["vocabulary_hints"], ["one", "two"])
 
+        # B. PAUSE_LISTENING: is_paused == True
         session.set_listening_paused(True)
         self.assertTrue(session.is_paused())
+
+        # C. force_resume: is_paused == False
+        session.force_resume()
+        self.assertFalse(session.is_paused())
+
+class TestConfigDefaults(unittest.TestCase):
+    def test_vad_defaults(self):
+        # G. VAD end default == 0.45
+        self.assertEqual(config.VAD_END_SILENCE_MS, 450)
+        # H. VAD start default == 0.06
+        self.assertEqual(config.VAD_START_FRAMES, 3)
+        # I. VAD min default == 0.15
+        self.assertEqual(config.VAD_MIN_SPEECH_MS, 150)
+
+    def test_barge_in_default(self):
+        # F. RELIV_ALLOW_BARGE_IN=0 => ALLOW_BARGE_IN False
+        self.assertFalse(config.ALLOW_BARGE_IN)
 
 
 if __name__ == "__main__":

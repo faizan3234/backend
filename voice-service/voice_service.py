@@ -176,8 +176,10 @@ async def ws_handler(websocket: ServerConnection):
     """
     Handles incoming WebSocket connections and messages from React frontend.
     """
+    logger.info("Client connected; listening state forced active.")
     with clients_lock:
         clients.add(websocket)
+    session_state.force_resume()
 
     _, dev_name = resolve_capture_device()
     greeting = DialogueBridge.make_connected_event(dev_name, echo_controller.allow_barge_in)

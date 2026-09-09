@@ -61,6 +61,10 @@ class SpeechSessionState:
         with self._lock:
             return self.listening_paused
 
+    def force_resume(self):
+        with self._lock:
+            self.listening_paused = False
+
     def get_snapshot(self) -> Dict[str, Any]:
         with self._lock:
             return {
