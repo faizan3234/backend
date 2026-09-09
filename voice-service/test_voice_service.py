@@ -98,15 +98,29 @@ class TestEchoController(unittest.TestCase):
         aec = EchoController(allow_barge_in=False)
         self.assertFalse(aec.should_suppress_mic())
 
-        aec.set_reliv_speaking(True)
+        aec.set_reliv_speaking("client1", True)
         self.assertTrue(aec.should_suppress_mic())
 
-        aec.set_reliv_speaking(False)
+        aec.set_reliv_speaking("client1", False)
         self.assertFalse(aec.should_suppress_mic())
 
     def test_barge_in_allowed(self):
         aec = EchoController(allow_barge_in=True)
-        aec.set_reliv_speaking(True)
+        aec.set_reliv_speaking("client1", True)
+        self.assertFalse(aec.should_suppress_mic())
+
+    def test_multiple_clients(self):
+        aec = EchoController(allow_barge_in=False)
+        aec.set_reliv_speaking("client1", True)
+        aec.set_reliv_speaking("client2", True)
+        self.assertTrue(aec.should_suppress_mic())
+
+        aec.set_reliv_speaking("client1", False)
+        # Still suppressed because client2 is speaking
+        self.assertTrue(aec.should_suppress_mic())
+
+        aec.remove_client("client2")
+        # Now both are gone
         self.assertFalse(aec.should_suppress_mic())
 
 

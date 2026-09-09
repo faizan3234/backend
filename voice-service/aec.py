@@ -15,12 +15,19 @@ class EchoController:
 
     def __init__(self, allow_barge_in: bool = ALLOW_BARGE_IN):
         self.allow_barge_in = allow_barge_in
-        self.reliv_speaking = False
+        self.speaking_clients = set()
         self.suppressed_frame_count = 0
 
-    def set_reliv_speaking(self, is_speaking: bool):
-        """Called when RELIV starts or stops audio playback."""
-        self.reliv_speaking = bool(is_speaking)
+    def set_reliv_speaking(self, client_id, is_speaking: bool):
+        """Called when a client starts or stops audio playback."""
+        if is_speaking:
+            self.speaking_clients.add(client_id)
+        else:
+            self.speaking_clients.discard(client_id)
+
+    def remove_client(self, client_id):
+        """Called when a client disconnects."""
+        self.speaking_clients.discard(client_id)
 
     def should_suppress_mic(self) -> bool:
         """
@@ -29,7 +36,7 @@ class EchoController:
         """
         if self.allow_barge_in:
             return False
-        return self.reliv_speaking
+        return len(self.speaking_clients) > 0
 
     def record_suppression(self):
         """Increments internal counter for metrics/debugging."""

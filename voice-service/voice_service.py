@@ -214,8 +214,8 @@ async def ws_handler(websocket: ServerConnection):
                 )
 
             elif action == "SET_RELIV_SPEAKING":
-                echo_controller.set_reliv_speaking(data["active"])
-                logger.debug("RELIV speaking state set to: %s", data["active"])
+                echo_controller.set_reliv_speaking(id(websocket), data["active"])
+                logger.debug("RELIV speaking state set to: %s by client %s", data["active"], id(websocket))
 
             elif action == "PAUSE_LISTENING":
                 session_state.set_listening_paused(True)
@@ -233,6 +233,7 @@ async def ws_handler(websocket: ServerConnection):
     finally:
         with clients_lock:
             clients.discard(websocket)
+        echo_controller.remove_client(id(websocket))
 
 
 async def main():
