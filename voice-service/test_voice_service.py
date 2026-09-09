@@ -4,6 +4,14 @@ Verifies VAD logic, DialogueBridge protocol formatting/parsing, EchoController s
 and SpeechSessionState concurrency.
 """
 import unittest
+import sys
+from unittest.mock import MagicMock
+sys.modules['pyaudio'] = MagicMock()
+sys.modules['websockets'] = MagicMock()
+sys.modules['websockets.asyncio'] = MagicMock()
+sys.modules['websockets.asyncio.server'] = MagicMock()
+sys.modules['requests'] = MagicMock()
+
 import config
 from aec import EchoController
 from dialogue_bridge import DialogueBridge
@@ -102,6 +110,7 @@ class TestEchoController(unittest.TestCase):
         self.assertTrue(aec.should_suppress_mic())
 
         aec.set_reliv_speaking("client1", False)
+        import time; time.sleep(0.26)
         self.assertFalse(aec.should_suppress_mic())
 
     def test_barge_in_allowed(self):
@@ -120,7 +129,8 @@ class TestEchoController(unittest.TestCase):
         self.assertTrue(aec.should_suppress_mic())
 
         aec.remove_client("client2")
-        # Now both are gone
+        # Now both are gone, wait for guard
+        import time; time.sleep(0.26)
         self.assertFalse(aec.should_suppress_mic())
 
     def test_concurrent_clients(self):
@@ -141,6 +151,19 @@ class TestEchoController(unittest.TestCase):
         for t in threads:
             t.join()
             
+        import time; time.sleep(0.26)
+        self.assertFalse(aec.should_suppress_mic())
+
+    def test_suppression_guard(self):
+        import time
+        aec = EchoController(allow_barge_in=False)
+        aec.set_reliv_speaking("client1", True)
+        self.assertTrue(aec.should_suppress_mic())
+        aec.set_reliv_speaking("client1", False)
+        # Should still be true due to guard
+        self.assertTrue(aec.should_suppress_mic())
+        # wait 0.25
+        time.sleep(0.26)
         self.assertFalse(aec.should_suppress_mic())
 
 
@@ -163,6 +186,35 @@ class TestSpeechSession(unittest.TestCase):
         # C. force_resume: is_paused == False
         session.force_resume()
         self.assertFalse(session.is_paused())
+        
+    def test_locale_normalization(self):
+        session = SpeechSessionState()
+        session.set_language("en-gb")
+        self.assertEqual(session.language, "en")
+        session.set_language("hi-in")
+        self.assertEqual(session.language, "hi")
+        session.set_language("bn-in")
+        self.assertEqual(session.language, "bn")
+        session.set_language("unknown")
+        self.assertEqual(session.language, "auto")
+        
+    def test_generation(self):
+        session = SpeechSessionState()
+        self.assertEqual(session.get_generation(), 0)
+        session.increment_generation()
+        self.assertEqual(session.get_generation(), 1)
+
+
+class TestVADDynamic(unittest.TestCase):
+    def test_dynamic_endpointing(self):
+        vad = VoiceActivityDetector()
+        vad.update_context("confirmation")
+        self.assertEqual(vad.silence_frames_to_end, max(1, 220 // config.FRAME_MS))
+        vad.update_context("name")
+        self.assertEqual(vad.silence_frames_to_end, max(1, 350 // config.FRAME_MS))
+        vad.update_context("unknown")
+        self.assertEqual(vad.silence_frames_to_end, max(1, 450 // config.FRAME_MS))
+
 
 class TestConfigDefaults(unittest.TestCase):
     def test_vad_defaults(self):
@@ -177,6 +229,43 @@ class TestConfigDefaults(unittest.TestCase):
         # F. RELIV_ALLOW_BARGE_IN=0 => ALLOW_BARGE_IN False
         self.assertFalse(config.ALLOW_BARGE_IN)
 
+
+class MockWebSocket:
+    def __init__(self, messages=None):
+        self.messages = messages or []
+        self.sent_messages = []
+        self._closed = False
+    async def send(self, data):
+        self.sent_messages.append(data)
+    async def close(self):
+        self._closed = True
+    def __aiter__(self):
+        self.iter = iter(self.messages)
+        return self
+    async def __anext__(self):
+        try:
+            return next(self.iter)
+        except StopIteration:
+            raise StopAsyncIteration
+
+class TestVoiceServiceLogic(unittest.IsolatedAsyncioTestCase):
+    async def test_handshake_flow(self):
+        import json
+        import voice_service
+        voice_service.active_controller_ws = None
+        voice_service.active_controller_id = None
+        
+        # Test basic connection with CLIENT_HELLO
+        ws1 = MockWebSocket([json.dumps({"type": "client_hello", "clientId": "c1", "role": "kiosk-controller"})])
+        await voice_service.ws_handler(ws1)
+        self.assertEqual(voice_service.active_controller_id, None) # It gets cleared in finally block of ws_handler because iterator finishes and it disconnects!
+        
+        # It's difficult to assert internal state while running, so let's verify sent messages
+        connected_events = [json.loads(m) for m in ws1.sent_messages if "type" in m and json.loads(m)["type"] == "connected"]
+        self.assertEqual(len(connected_events), 1)
+        
+        active_events = [json.loads(m) for m in ws1.sent_messages if "type" in m and json.loads(m)["type"] == "CONTROLLER_ACTIVE"]
+        self.assertEqual(len(active_events), 1)
 
 if __name__ == "__main__":
     unittest.main()

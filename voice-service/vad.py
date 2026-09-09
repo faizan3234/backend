@@ -62,6 +62,23 @@ class VoiceActivityDetector:
         self.silence_run = 0
         self.current_utterance: List[bytes] = []
 
+    def update_context(self, expecting: str):
+        """Dynamically adjusts endpointing silence duration based on expected response."""
+        expecting = (expecting or "").strip().lower()
+        if expecting in {"confirmation", "yes", "no", "wrong", "yes/no"}:
+            duration_ms = 220
+        elif expecting == "language":
+            duration_ms = 250
+        elif expecting in {"age", "gender"}:
+            duration_ms = 250
+        elif expecting == "name":
+            duration_ms = 350
+        else:
+            duration_ms = 450
+            
+        from config import FRAME_MS
+        self.silence_frames_to_end = max(1, duration_ms // FRAME_MS)
+
     def reset(self):
         """Resets VAD tracking state and clears buffers."""
         self.active = False

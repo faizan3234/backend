@@ -42,6 +42,9 @@ logger = logging.getLogger("reliv_voice.main")
 # State & Services
 clients: Set[ServerConnection] = set()
 clients_lock = threading.Lock()
+active_controller_ws: ServerConnection = None
+active_controller_id: str = None
+
 session_state = SpeechSessionState()
 echo_controller = EchoController(allow_barge_in=ALLOW_BARGE_IN)
 whisper_client = WhisperClient()
@@ -51,24 +54,16 @@ event_loop: asyncio.AbstractEventLoop = None
 
 
 async def broadcast_event(payload: dict):
-    """Asynchronously broadcasts a JSON payload to all connected frontend clients."""
-    with clients_lock:
-        targets = list(clients)
-    if not targets:
+    """Asynchronously broadcasts a JSON payload only to the active controller."""
+    global active_controller_ws
+    if not active_controller_ws:
         return
 
     raw = json.dumps(payload, ensure_ascii=False)
-    dead = []
-    for ws in targets:
-        try:
-            await ws.send(raw)
-        except Exception:
-            dead.append(ws)
-
-    if dead:
-        with clients_lock:
-            for ws in dead:
-                clients.discard(ws)
+    try:
+        await active_controller_ws.send(raw)
+    except Exception:
+        pass
 
 
 def broadcast_threadsafe(payload: dict):
@@ -84,7 +79,7 @@ def on_mic_status(connected: bool, device_name: str, error: str = None):
     broadcast_threadsafe(event)
 
 
-def async_transcribe_worker(frames: list, started_at: float):
+def async_transcribe_worker(frames: list, started_at: float, original_generation: int):
     """
     Executes Whisper STT in a worker thread and broadcasts the resulting transcript.
     """
@@ -102,6 +97,10 @@ def async_transcribe_worker(frames: list, started_at: float):
         )
 
         duration_ms = int((time.monotonic() - started_at) * 1000)
+
+        if session_state.get_generation() != original_generation:
+            logger.info("Discarding stale transcript from older generation")
+            return
 
         if text:
             logger.info("Recognized: '%s' (lang: %s, conf: %.2f)", text, used_lang, confidence)
@@ -148,10 +147,13 @@ def capture_loop_worker():
         # 2. Check echo suppression (RELIV speaker active and barge-in disabled)
         if echo_controller.should_suppress_mic():
             echo_controller.record_suppression()
-            vad.reset()
+            if vad.active:
+                vad.reset()
+                session_state.increment_generation()
             continue
 
         # 3. Process frame through VAD
+        vad.update_context(session_state.expecting)
         event, level, completed_frames = vad.process_frame(frame)
 
         if event == "SPEECH_STARTED":
@@ -165,9 +167,10 @@ def capture_loop_worker():
 
             if completed_frames:
                 # Dispatch transcription to background thread to avoid blocking capture
+                gen = session_state.get_generation()
                 threading.Thread(
                     target=async_transcribe_worker,
-                    args=(completed_frames, started_at),
+                    args=(completed_frames, started_at, gen),
                     daemon=True,
                 ).start()
 
@@ -176,10 +179,11 @@ async def ws_handler(websocket: ServerConnection):
     """
     Handles incoming WebSocket connections and messages from React frontend.
     """
-    logger.info("Client connected; listening state forced active.")
+    global active_controller_ws, active_controller_id
+    
+    logger.info("Client connected; awaiting CLIENT_HELLO handshake.")
     with clients_lock:
         clients.add(websocket)
-    session_state.force_resume()
 
     _, dev_name = resolve_capture_device()
     greeting = DialogueBridge.make_connected_event(dev_name, echo_controller.allow_barge_in)
@@ -193,6 +197,33 @@ async def ws_handler(websocket: ServerConnection):
                 continue
 
             action, data = DialogueBridge.parse_client_message(msg)
+
+            if action == "CLIENT_HELLO":
+                if data["role"] != "kiosk-controller":
+                    continue
+                client_id = data["clientId"]
+                
+                with clients_lock:
+                    if active_controller_ws and active_controller_ws != websocket:
+                        logger.info("Replacing stale controller: %s", active_controller_id)
+                        try:
+                            asyncio.create_task(active_controller_ws.close())
+                        except Exception:
+                            pass
+                        echo_controller.remove_client(id(active_controller_ws))
+                        
+                    active_controller_ws = websocket
+                    active_controller_id = client_id
+                    logger.info("Active controller registered: %s", client_id)
+                
+                await websocket.send(json.dumps({"type": "CONTROLLER_ACTIVE"}))
+                session_state.force_resume()
+                continue
+
+            if websocket != active_controller_ws:
+                if action not in ("PING", "UNKNOWN"):
+                    logger.debug("Ignoring command from inactive socket: %s", action)
+                continue
 
             if action == "SET_LANGUAGE":
                 session_state.set_language(data["language"])
@@ -233,6 +264,14 @@ async def ws_handler(websocket: ServerConnection):
     finally:
         with clients_lock:
             clients.discard(websocket)
+            if websocket == active_controller_ws:
+                logger.info("Active controller disconnected.")
+                active_controller_ws = None
+                active_controller_id = None
+                # Clean up speaker state and retain the guard
+                echo_controller.remove_client(id(websocket))
+        
+        # Fallback to remove client if not active
         echo_controller.remove_client(id(websocket))
 
 

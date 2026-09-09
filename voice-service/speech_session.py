@@ -27,6 +27,7 @@ class SpeechSessionState:
         self.vocabulary_hints: List[str] = []
         self.prompt = ""
         self.listening_paused = False
+        self.generation = 0
 
     def update_context(
         self,
@@ -45,7 +46,14 @@ class SpeechSessionState:
     def set_language(self, language: str):
         with self._lock:
             norm = language.strip().lower()
-            self.language = norm if norm in {"en", "hi", "bn", "auto"} else "auto"
+            if norm.startswith("en"):
+                self.language = "en"
+            elif norm.startswith("hi"):
+                self.language = "hi"
+            elif norm.startswith("bn"):
+                self.language = "bn"
+            else:
+                self.language = "auto"
 
     def set_legacy_context(self, page: str, language: str, prompt: str):
         with self._lock:
@@ -64,6 +72,14 @@ class SpeechSessionState:
     def force_resume(self):
         with self._lock:
             self.listening_paused = False
+
+    def get_generation(self) -> int:
+        with self._lock:
+            return self.generation
+
+    def increment_generation(self):
+        with self._lock:
+            self.generation += 1
 
     def get_snapshot(self) -> Dict[str, Any]:
         with self._lock:

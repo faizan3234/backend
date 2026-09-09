@@ -21,6 +21,11 @@ class DialogueBridge:
         """
         msg_type = str(msg.get("type", "")).strip().lower()
 
+        if msg_type == "client_hello":
+            clientId = str(msg.get("clientId", "")).strip()
+            role = str(msg.get("role", "")).strip()
+            return ("CLIENT_HELLO", {"clientId": clientId, "role": role})
+
         if msg_type == "set_language":
             lang = str(msg.get("language", "auto")).strip().lower()
             return ("SET_LANGUAGE", {"language": lang})
