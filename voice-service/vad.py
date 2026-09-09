@@ -65,7 +65,7 @@ class VoiceActivityDetector:
     def update_context(self, expecting: str):
         """Dynamically adjusts endpointing silence duration based on expected response."""
         expecting = (expecting or "").strip().lower()
-        if expecting in {"confirmation", "yes", "no", "wrong", "yes/no"}:
+        if expecting.startswith("confirm") or expecting in {"yes", "no", "wrong", "yes/no", "galat", "sahi", "nahi"}:
             duration_ms = 220
         elif expecting == "language":
             duration_ms = 250
