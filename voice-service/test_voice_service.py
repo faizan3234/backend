@@ -10,6 +10,7 @@ sys.modules['pyaudio'] = MagicMock()
 sys.modules['websockets'] = MagicMock()
 sys.modules['websockets.asyncio'] = MagicMock()
 sys.modules['websockets.asyncio.server'] = MagicMock()
+sys.modules['websockets.exceptions'] = MagicMock()
 sys.modules['requests'] = MagicMock()
 
 import config
@@ -213,7 +214,7 @@ class TestVADDynamic(unittest.TestCase):
         vad.update_context("name")
         self.assertEqual(vad.silence_frames_to_end, max(1, 350 // config.FRAME_MS))
         vad.update_context("unknown")
-        self.assertEqual(vad.silence_frames_to_end, max(1, 450 // config.FRAME_MS))
+        self.assertEqual(vad.silence_frames_to_end, max(1, 400 // config.FRAME_MS))
 
 
 class TestConfigDefaults(unittest.TestCase):

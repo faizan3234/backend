@@ -46,7 +46,7 @@ class WhisperClient:
             "temperature_inc": "0.0",
             "response_format": "json",
             "token_timestamps": "false",
-            "language": normalized_lang,
+            "language": "auto",
         }
         if final_prompt:
             form_data["prompt"] = final_prompt
@@ -67,19 +67,6 @@ class WhisperClient:
             data = res.json()
             text = str(data.get("text") or "").strip()
 
-            if not text and normalized_lang != "auto":
-                form_data["language"] = "auto"
-                with open(wav_path, "rb") as fh:
-                    res = requests.post(
-                        self.endpoint_url,
-                        files={"file": ("utterance.wav", fh, "audio/wav")},
-                        data=form_data,
-                        timeout=self.timeout_secs,
-                    )
-                res.raise_for_status()
-                data = res.json()
-                text = str(data.get("text") or "").strip()
-                normalized_lang = "auto"
 
         except requests.RequestException as exc:
             # We don't want to spam the user's console with connection refused errors on Windows

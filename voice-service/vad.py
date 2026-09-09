@@ -68,13 +68,15 @@ class VoiceActivityDetector:
         if expecting.startswith("confirm") or expecting in {"yes", "no", "wrong", "yes/no", "galat", "sahi", "nahi"}:
             duration_ms = 220
         elif expecting == "language":
-            duration_ms = 250
+            duration_ms = 220
         elif expecting in {"age", "gender"}:
+            duration_ms = 220
+        elif expecting == "service":
             duration_ms = 250
         elif expecting == "name":
             duration_ms = 350
         else:
-            duration_ms = 450
+            duration_ms = 400
             
         from config import FRAME_MS
         self.silence_frames_to_end = max(1, duration_ms // FRAME_MS)

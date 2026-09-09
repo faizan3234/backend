@@ -33,6 +33,7 @@ from dialogue_bridge import DialogueBridge
 from speech_session import SpeechSessionState, safe_delete_file, write_frames_to_temp_wav
 from vad import VoiceActivityDetector
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.exceptions import ConnectionClosed
 from whisper_asr import WhisperClient
 
 logging.basicConfig(
@@ -254,8 +255,10 @@ async def ws_handler(websocket: ServerConnection):
                     active_controller_id = client_id
                     logger.info("Active controller registered: %s", client_id)
                 
-                await websocket.send(json.dumps({"type": "CONTROLLER_ACTIVE"}))
                 session_state.force_resume()
+                vad.reset()
+
+                await websocket.send(json.dumps({"type": "CONTROLLER_ACTIVE", "clientId": client_id}))
                 continue
 
             if websocket != active_controller_ws:
@@ -301,8 +304,15 @@ async def ws_handler(websocket: ServerConnection):
             elif action == "PING":
                 await websocket.send(json.dumps({"type": "pong"}))
 
+    except ConnectionClosed as exc:
+        logger.warning(
+            "Controller socket closed: client=%s code=%s reason=%r",
+            active_controller_id,
+            exc.code,
+            exc.reason,
+        )
     except Exception as exc:
-        logger.debug("WebSocket client error or disconnect: %s", exc)
+        logger.exception("Controller websocket failed: client=%s", active_controller_id)
     finally:
         with clients_lock:
             clients.discard(websocket)
@@ -332,6 +342,9 @@ async def main():
         PORT,
         origins=ALLOWED_ORIGINS,
         max_size=1_000_000,
+        ping_interval=10,
+        ping_timeout=30,
+        close_timeout=2,
     ):
         await asyncio.Future()  # run forever until shutdown
 
