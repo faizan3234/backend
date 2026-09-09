@@ -229,6 +229,29 @@ class TestConfigDefaults(unittest.TestCase):
         # F. RELIV_ALLOW_BARGE_IN=0 => ALLOW_BARGE_IN False
         self.assertFalse(config.ALLOW_BARGE_IN)
 
+class TestHallucinationFilter(unittest.TestCase):
+    def test_repetitive_hallucination_rejected(self):
+        import voice_service
+        text = "I'm not going to be a doctor. " * 20
+        self.assertTrue(voice_service.is_pathological_transcript(text))
+
+    def test_normal_phrases_accepted(self):
+        import voice_service
+        self.assertFalse(voice_service.is_pathological_transcript("health checkup"))
+        self.assertFalse(voice_service.is_pathological_transcript("Faizan Khan"))
+        self.assertFalse(voice_service.is_pathological_transcript("43 years"))
+        self.assertFalse(voice_service.is_pathological_transcript("I want to check my health today and then go home."))
+
+class TestTranscriptionBusy(unittest.TestCase):
+    def test_busy_flag_flow(self):
+        import voice_service
+        voice_service.transcription_busy.set()
+        self.assertTrue(voice_service.transcription_busy.is_set())
+        
+        # Test worker clears it
+        voice_service.async_transcribe_worker(frames=[], started_at=0.0, original_generation=0)
+        self.assertFalse(voice_service.transcription_busy.is_set())
+
 
 class MockWebSocket:
     def __init__(self, messages=None):
