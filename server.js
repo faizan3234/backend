@@ -3879,8 +3879,8 @@ app.post("/api/sessions/:sessionId/service", (req, res) => {
             });
         }
 
-        // Once selected, do not silently allow changing service.
-        if (session.status !== "CUSTOMER_ATTACHED") {
+        // Allow service selection if customer is attached, or if service was previously selected but customer is switching before measurements/payment
+        if (!["CUSTOMER_ATTACHED", "SERVICE_SELECTED"].includes(session.status)) {
             return res.status(409).json({
                 ok: false,
                 message: `Service cannot be selected while session is ${session.status}`
