@@ -160,6 +160,7 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
     finally:
         safe_delete_file(wav_path)
         transcription_busy.clear()
+        broadcast_threadsafe({"type": "processing", "active": False})
 
 def capture_loop_worker():
     """
@@ -214,6 +215,7 @@ def capture_loop_worker():
                     continue
                     
                 transcription_busy.set()
+                broadcast_threadsafe({"type": "processing", "active": True})
                 
                 # Dispatch transcription to background thread to avoid blocking capture
                 threading.Thread(
@@ -234,11 +236,11 @@ async def ws_handler(websocket: ServerConnection):
     with clients_lock:
         clients.add(websocket)
 
-    _, dev_name = resolve_capture_device()
-    greeting = DialogueBridge.make_connected_event(dev_name, echo_controller.allow_barge_in)
-    await websocket.send(json.dumps(greeting))
-
     try:
+        _, dev_name = resolve_capture_device()
+        greeting = DialogueBridge.make_connected_event(dev_name, echo_controller.allow_barge_in)
+        greeting["processing"] = transcription_busy.is_set()
+        await websocket.send(json.dumps(greeting))
         async for raw in websocket:
             try:
                 msg = json.loads(raw)
@@ -251,21 +253,21 @@ async def ws_handler(websocket: ServerConnection):
                 if data["role"] != "kiosk-controller" or not data["clientId"]:
                     continue
                 client_id = data["clientId"]
-                
+                # A second HTTP kiosk tab may not have navigator.locks. Keep
+                # the live controller instead of letting reconnects steal it.
+                if active_controller_ws and active_controller_ws != websocket:
+                    await websocket.send(json.dumps({"type": "CONTROLLER_BUSY"}))
+                    await websocket.close(code=1013, reason="A kiosk controller is already active")
+                    return
+
+                already_active = active_controller_ws == websocket
                 with clients_lock:
-                    if active_controller_ws and active_controller_ws != websocket:
-                        logger.info("Replacing stale controller: %s", active_controller_id)
-                        try:
-                            asyncio.create_task(active_controller_ws.close())
-                        except Exception:
-                            pass
-                        echo_controller.remove_client(id(active_controller_ws))
-                        
                     active_controller_ws = websocket
                     active_controller_id = client_id
                     logger.info("Active controller registered: %s", client_id)
                 
-                session_state.force_resume()
+                if not already_active:
+                    session_state.force_resume()
 
                 await websocket.send(json.dumps({"type": "CONTROLLER_ACTIVE", "clientId": client_id}))
                 continue

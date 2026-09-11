@@ -368,11 +368,48 @@ class TestWhisperLocalOnly(unittest.TestCase):
              patch.object(voice_service.whisper_client, "transcribe", side_effect=transcribe), \
              patch.object(voice_service, "broadcast_threadsafe") as send:
             voice_service.async_transcribe_worker([b"\x00" * 640], 0, generation)
-            send.assert_not_called()
+            self.assertFalse(any(call.args[0].get("type") == "transcript" for call in send.call_args_list))
+            send.assert_called_with({"type": "processing", "active": False})
             self.assertFalse(voice_service.transcription_busy.is_set())
 
 
 class TestRealWebSocketProtocol(unittest.IsolatedAsyncioTestCase):
+    async def test_second_tab_cannot_steal_controller_or_clear_speaker_gate(self):
+        import json
+        import voice_service
+        from websockets.asyncio.server import serve
+        from websockets.asyncio.client import connect
+
+        state = SpeechSessionState()
+        echo = EchoController(allow_barge_in=False)
+        hello = json.dumps({"type": "CLIENT_HELLO", "clientId": "shared-tab-id", "role": "kiosk-controller"})
+        with patch.object(voice_service, "session_state", state), \
+             patch.object(voice_service, "echo_controller", echo), \
+             patch.object(voice_service, "resolve_capture_device", return_value=(None, "test microphone")):
+            async with serve(voice_service.ws_handler, "127.0.0.1", 0) as server:
+                url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+                async with connect(url) as first:
+                    await first.recv()
+                    await first.send(hello)
+                    self.assertEqual(json.loads(await first.recv())["type"], "CONTROLLER_ACTIVE")
+                    await first.send(json.dumps({"type": "SET_RELIV_SPEAKING", "active": True}))
+                    await first.send(json.dumps({"type": "PAUSE_LISTENING"}))
+                    await first.send(json.dumps({"type": "PING"}))
+                    await first.recv()
+                    generation = state.get_generation()
+                    await first.send(hello)
+                    self.assertEqual(json.loads(await first.recv())["type"], "CONTROLLER_ACTIVE")
+                    self.assertEqual(state.get_generation(), generation)
+                    self.assertTrue(state.is_paused())
+                    async with connect(url) as second:
+                        await second.recv()
+                        await second.send(hello)
+                        self.assertEqual(json.loads(await second.recv())["type"], "CONTROLLER_BUSY")
+                    self.assertTrue(echo.should_suppress_mic())
+                    self.assertTrue(state.is_paused())
+                    await first.send(json.dumps({"type": "PING"}))
+                    self.assertEqual(json.loads(await first.recv())["type"], "pong")
+
     async def test_actual_handshake_speaker_gate_context_and_reconnect(self):
         import json
         import voice_service
