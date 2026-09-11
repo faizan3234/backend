@@ -38,6 +38,7 @@ import { handlePaymentComplete } from "./src/routes/paymentComplete.js";
 import { buildValidatedRedirectUrl } from "./src/utils/redirectHelper.js";
 import paymentV2Service from "./src/services/paymentV2Service.js";
 import { createPaymentV2Router } from "./src/routes/paymentV2Routes.js";
+import { createSpeechConfigHandler } from "./src/routes/speechConfig.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 🔐 STAGE I: SECURE PAYMENT ARCHITECTURE (Post-Stage H Security Fix)
@@ -3507,6 +3508,12 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000);
 
+app.get("/api/speech-config", createSpeechConfigHandler({
+    getDb: () => db,
+    isConnected: () => dbConnected,
+    warn: (message) => log.warn(message),
+}));
+
 function createQrSessionHandler(req, res) {
     res.set({
         'Cache-Control': 'no-store, no-cache, must-revalidate, private',
@@ -3730,6 +3737,12 @@ async function saveCustomerDataHandler(req, res) {
             return res.status(403).json({ error: pErr.message || "Invalid or expired session pairing" });
         }
 
+        if (new Date(session.expires_at) < new Date() || session.status === "EXPIRED") {
+            return res.status(410).json({ error: "Session expired. Please start again." });
+        }
+        if (!["CREATED", "CUSTOMER_ATTACHED"].includes(session.status)) {
+            return res.status(409).json({ error: `Customer details cannot change while session is ${session.status}` });
+        }
         sessionManager.attachCustomer(sessionId, customerData);
 
         customerDataStore.set(sessionId, {
@@ -3797,9 +3810,6 @@ app.post("/api/sessions/:sessionId/service", (req, res) => {
             });
         }
 
-        // Verify that this request belongs to the active kiosk session.
-        sessionManager.verifyPairingToken(sessionId, pairingToken);
-
         const session = sessionManager.getSession(sessionId);
 
         if (!session) {
@@ -3807,6 +3817,15 @@ app.post("/api/sessions/:sessionId/service", (req, res) => {
                 ok: false,
                 message: "Session not found"
             });
+        }
+
+        try {
+            sessionManager.verifyPairingToken(sessionId, pairingToken);
+        } catch (error) {
+            return res.status(403).json({ ok: false, message: error.message });
+        }
+        if (new Date(session.expires_at) < new Date() || session.status === "EXPIRED") {
+            return res.status(410).json({ ok: false, message: "Session expired. Please start again." });
         }
 
         // Idempotent retry: same service was already selected.

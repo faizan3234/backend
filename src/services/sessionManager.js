@@ -187,7 +187,12 @@ class SessionManager {
      * @param {Object} customerData
      */
     attachCustomer(sessionId, customerData) {
-        this._validateTransition(sessionId, SESSION_STATES.CUSTOMER_ATTACHED);
+        const session = this.getSession(sessionId);
+        if (session?.status !== SESSION_STATES.CUSTOMER_ATTACHED) {
+            this._validateTransition(sessionId, SESSION_STATES.CUSTOMER_ATTACHED);
+        } else if (new Date(session.expires_at) < new Date()) {
+            throw new Error(`Session expired: ${sessionId}`);
+        }
         
         const stmt = this.db.prepare(`
             UPDATE sessions 

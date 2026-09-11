@@ -5,13 +5,8 @@ and SpeechSessionState concurrency.
 """
 import unittest
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 sys.modules['pyaudio'] = MagicMock()
-sys.modules['websockets'] = MagicMock()
-sys.modules['websockets.asyncio'] = MagicMock()
-sys.modules['websockets.asyncio.server'] = MagicMock()
-sys.modules['websockets.exceptions'] = MagicMock()
-sys.modules['requests'] = MagicMock()
 
 import config
 from aec import EchoController
@@ -86,6 +81,24 @@ class TestDialogueBridge(unittest.TestCase):
         action, data = DialogueBridge.parse_client_message(msg)
         self.assertEqual(action, "SET_RELIV_SPEAKING")
         self.assertTrue(data["active"])
+
+    def test_actual_frontend_speaker_message(self):
+        for active in (True, False):
+            action, data = DialogueBridge.parse_client_message({"type": "SET_RELIV_SPEAKING", "active": active})
+            self.assertEqual(action, "SET_RELIV_SPEAKING")
+            self.assertEqual(data["active"], active)
+
+    def test_partial_context_does_not_erase_question(self):
+        action, data = DialogueBridge.parse_client_message({"type": "SET_CONTEXT", "page": "/customer-details"})
+        session = SpeechSessionState()
+        session.update_context(page="/customer-details", expecting="gender", hints=["female"])
+        session.update_context(page=data["page"], expecting=data["expecting"], hints=data["vocabulary_hints"])
+        self.assertEqual(session.get_snapshot()["expecting"], "gender")
+        self.assertEqual(session.get_snapshot()["vocabulary_hints"], ["female"])
+
+    def test_non_object_message_is_ignored(self):
+        for value in (None, [], 12, "text"):
+            self.assertEqual(DialogueBridge.parse_client_message(value)[0], "UNKNOWN")
 
     def test_parse_set_language(self):
         msg = {"type": "set_language", "language": "hi"}
@@ -205,6 +218,25 @@ class TestSpeechSession(unittest.TestCase):
         session.increment_generation()
         self.assertEqual(session.get_generation(), 1)
 
+    def test_only_context_changes_invalidate_transcripts(self):
+        session = SpeechSessionState()
+        session.update_context(page="/customer-details", expecting="name", hints=["name"])
+        generation = session.get_generation()
+        session.update_context(page="/customer-details", expecting="name", hints=["name"])
+        self.assertEqual(session.get_generation(), generation)
+        session.update_context(expecting="confirm")
+        self.assertGreater(session.get_generation(), generation)
+        session.update_context(page="/two-options")
+        self.assertEqual(session.get_snapshot()["expecting"], "")
+        self.assertEqual(session.get_snapshot()["vocabulary_hints"], [])
+
+    def test_pause_and_reconnect_invalidate_transcripts(self):
+        session = SpeechSessionState()
+        session.set_listening_paused(True)
+        self.assertEqual(session.get_generation(), 1)
+        session.force_resume()
+        self.assertEqual(session.get_generation(), 2)
+
 
 class TestVADDynamic(unittest.TestCase):
     def test_dynamic_endpointing(self):
@@ -250,7 +282,8 @@ class TestTranscriptionBusy(unittest.TestCase):
         self.assertTrue(voice_service.transcription_busy.is_set())
         
         # Test worker clears it
-        voice_service.async_transcribe_worker(frames=[], started_at=0.0, original_generation=0)
+        with patch.object(voice_service.whisper_client, 'transcribe', return_value=("", 0, "auto")):
+            voice_service.async_transcribe_worker(frames=[], started_at=0.0, original_generation=voice_service.session_state.get_generation())
         self.assertFalse(voice_service.transcription_busy.is_set())
 
 
@@ -290,6 +323,91 @@ class TestVoiceServiceLogic(unittest.IsolatedAsyncioTestCase):
         
         active_events = [json.loads(m) for m in ws1.sent_messages if "type" in m and json.loads(m)["type"] == "CONTROLLER_ACTIVE"]
         self.assertEqual(len(active_events), 1)
+
+
+class TestWhisperLocalOnly(unittest.TestCase):
+    def test_auto_language_and_detected_language(self):
+        import whisper_asr
+        from speech_session import write_frames_to_temp_wav, safe_delete_file
+        path = write_frames_to_temp_wav([b"\x00" * 640])
+        try:
+            response = MagicMock()
+            response.json.return_value = {"text": "चालीस साल", "language": "hindi"}
+            with patch.object(whisper_asr.requests, "post", return_value=response) as post:
+                text, confidence, language = whisper_asr.WhisperClient().transcribe(path, language="auto", vocabulary_hints=["age"])
+                self.assertEqual(text, "चालीस साल")
+                self.assertEqual(language, "hi")
+                self.assertEqual(post.call_args.kwargs["data"]["language"], "auto")
+                self.assertIn("age", post.call_args.kwargs["data"]["prompt"])
+        finally:
+            safe_delete_file(path)
+
+    def test_connection_failure_never_uses_cloud_fallback(self):
+        import whisper_asr
+        from speech_session import write_frames_to_temp_wav, safe_delete_file
+        path = write_frames_to_temp_wav([b"\x00" * 640])
+        try:
+            with patch.object(whisper_asr.requests, "post", side_effect=whisper_asr.requests.ConnectionError("offline")) as post:
+                self.assertEqual(whisper_asr.WhisperClient().transcribe(path), ("", 0.0, "auto"))
+                self.assertEqual(post.call_count, 1)
+        finally:
+            safe_delete_file(path)
+
+    def test_worker_uses_auto_and_drops_answer_after_context_changes(self):
+        import voice_service
+        state = SpeechSessionState()
+        state.update_context(page="/customer-details", expecting="name")
+        generation = state.get_generation()
+
+        def transcribe(**kwargs):
+            self.assertEqual(kwargs["language"], "auto")
+            state.update_context(page="/two-options", expecting="service")
+            return ("Faizan Khan", 0.9, "en")
+
+        with patch.object(voice_service, "session_state", state), \
+             patch.object(voice_service.whisper_client, "transcribe", side_effect=transcribe), \
+             patch.object(voice_service, "broadcast_threadsafe") as send:
+            voice_service.async_transcribe_worker([b"\x00" * 640], 0, generation)
+            send.assert_not_called()
+            self.assertFalse(voice_service.transcription_busy.is_set())
+
+
+class TestRealWebSocketProtocol(unittest.IsolatedAsyncioTestCase):
+    async def test_actual_handshake_speaker_gate_context_and_reconnect(self):
+        import json
+        import voice_service
+        from websockets.asyncio.server import serve
+        from websockets.asyncio.client import connect
+
+        state = SpeechSessionState()
+        echo = EchoController(allow_barge_in=False)
+        with patch.object(voice_service, "session_state", state), \
+             patch.object(voice_service, "echo_controller", echo), \
+             patch.object(voice_service, "resolve_capture_device", return_value=(None, "test microphone")):
+            async with serve(voice_service.ws_handler, "127.0.0.1", 0) as server:
+                port = server.sockets[0].getsockname()[1]
+                async with connect(f"ws://127.0.0.1:{port}") as socket:
+                    self.assertEqual(json.loads(await socket.recv())["type"], "connected")
+                    await socket.send(json.dumps({"type": "CLIENT_HELLO", "clientId": "test-controller", "role": "kiosk-controller"}))
+                    self.assertEqual(json.loads(await socket.recv())["type"], "CONTROLLER_ACTIVE")
+                    await socket.send(json.dumps({"type": "SET_RELIV_SPEAKING", "active": True}))
+                    await socket.send(json.dumps({"type": "SET_CONTEXT", "page": "/customer-details", "expecting": "gender", "vocabulary_hints": ["female"]}))
+                    await socket.send(json.dumps({"type": "PING"}))
+                    self.assertEqual(json.loads(await socket.recv())["type"], "pong")
+                    self.assertTrue(echo.should_suppress_mic())
+                    self.assertEqual(state.get_snapshot()["expecting"], "gender")
+                    await socket.send(json.dumps({"type": "SET_RELIV_SPEAKING", "active": False}))
+                    await socket.send(json.dumps({"type": "PAUSE_LISTENING"}))
+                    await socket.send(json.dumps({"type": "PING"}))
+                    await socket.recv()
+                    self.assertTrue(state.is_paused())
+                    self.assertTrue(echo.should_suppress_mic())
+                async with connect(f"ws://127.0.0.1:{port}") as socket:
+                    await socket.recv()
+                    await socket.send(json.dumps({"type": "CLIENT_HELLO", "clientId": "test-controller", "role": "kiosk-controller"}))
+                    self.assertEqual(json.loads(await socket.recv())["type"], "CONTROLLER_ACTIVE")
+                    self.assertFalse(state.is_paused())
+
 
 if __name__ == "__main__":
     unittest.main()

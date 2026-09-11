@@ -19,6 +19,8 @@ class DialogueBridge:
         Parses incoming JSON message from frontend and extracts standardized action.
         Supports both modern V2 protocol and legacy commands.
         """
+        if not isinstance(msg, dict):
+            return ("UNKNOWN", {})
         msg_type = str(msg.get("type", "")).strip().lower()
 
         if msg_type == "client_hello":
@@ -31,11 +33,11 @@ class DialogueBridge:
             return ("SET_LANGUAGE", {"language": lang})
 
         if msg_type == "set_context":
-            page = str(msg.get("page", "unknown")).strip()
-            expecting = str(msg.get("expecting", "")).strip()
-            hints = msg.get("vocabulary_hints", [])
-            if not isinstance(hints, list):
-                hints = []
+            page = str(msg["page"]).strip() if "page" in msg else None
+            expecting = str(msg["expecting"]).strip() if "expecting" in msg else None
+            hints = msg.get("vocabulary_hints")
+            if hints is not None:
+                hints = [h for h in hints if isinstance(h, str)] if isinstance(hints, list) else []
             return ("SET_CONTEXT", {"page": page, "expecting": expecting, "vocabulary_hints": hints})
 
         # Legacy context payload support
@@ -45,7 +47,7 @@ class DialogueBridge:
             prompt = str(msg.get("prompt", "")).strip()
             return ("SET_CONTEXT_LEGACY", {"page": page, "language": lang, "prompt": prompt})
 
-        if msg_type == "reliv_speaking":
+        if msg_type in {"set_reliv_speaking", "reliv_speaking"}:
             active = bool(msg.get("active", False))
             return ("SET_RELIV_SPEAKING", {"active": active})
 

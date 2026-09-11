@@ -11,8 +11,7 @@ logger = logging.getLogger("reliv_voice.whisper")
 
 class WhisperClient:
     """
-    Client for the local whisper.cpp server, with a fallback to Google Free API
-    for local testing on Windows laptops when the Whisper server isn't running.
+    Local-only whisper.cpp client. Captured customer audio never leaves the kiosk.
     """
 
     def __init__(self, endpoint_url: str = WHISPER_URL, timeout_secs: int = WHISPER_TIMEOUT_SECS):
@@ -38,7 +37,10 @@ class WhisperClient:
         prompt: str = "",
         vocabulary_hints: Optional[List[str]] = None,
     ) -> Tuple[str, float, str]:
-        normalized_lang = language.lower() if language in {"en", "hi", "bn"} else "auto"
+        normalized_lang = str(language).lower().split("-")[0]
+        if normalized_lang not in {"en", "hi", "bn"}:
+            normalized_lang = "auto"
+        used_lang = normalized_lang
         final_prompt = self.build_prompt(prompt, vocabulary_hints)
 
         form_data = {
@@ -46,7 +48,7 @@ class WhisperClient:
             "temperature_inc": "0.0",
             "response_format": "json",
             "token_timestamps": "false",
-            "language": "auto",
+            "language": normalized_lang,
         }
         if final_prompt:
             form_data["prompt"] = final_prompt
@@ -66,38 +68,15 @@ class WhisperClient:
             res.raise_for_status()
             data = res.json()
             text = str(data.get("text") or "").strip()
+            detected = str(data.get("language") or normalized_lang).lower()
+            used_lang = {"english": "en", "hindi": "hi", "bengali": "bn"}.get(detected, detected)
+            if used_lang not in {"en", "hi", "bn"}:
+                used_lang = normalized_lang
 
 
-        except requests.RequestException as exc:
-            # We don't want to spam the user's console with connection refused errors on Windows
-            # when they are just testing without the Pi's Whisper server.
-            try:
-                import speech_recognition as sr
-                r = sr.Recognizer()
-                with sr.AudioFile(wav_path) as source:
-                    audio = r.record(source)
-                
-                # Map language to Google API format
-                google_lang = "en-IN"
-                if normalized_lang == "hi":
-                    google_lang = "hi-IN"
-                elif normalized_lang == "bn":
-                    google_lang = "bn-IN"
-                    
-                text = r.recognize_google(audio, language=google_lang)
-                logger.info(f"Google Fallback Transcribed: {text}")
-            except sr.UnknownValueError:
-                # Normal when there is background noise but no speech
-                text = ""
-            except sr.RequestError as e:
-                logger.error(f"Google Fallback API unavailable: {e}")
-                text = ""
-            except ImportError:
-                logger.error("speech_recognition module not installed. Please run: pip install SpeechRecognition")
-                text = ""
-            except Exception as e:
-                logger.debug(f"Google Fallback failed: {e}")
-                text = ""
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("Local Whisper unavailable: %s", exc)
+            return ("", 0.0, used_lang)
 
         # Very smart filtering of fake/noise transcripts and Whisper hallucinations
         if text:
@@ -127,4 +106,4 @@ class WhisperClient:
         elif len(text) < 3:
             confidence = 0.5
 
-        return (text, confidence, normalized_lang)
+        return (text, confidence, used_lang)
