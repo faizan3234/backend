@@ -756,27 +756,38 @@ const app = express();
 
 // Production-ready CORS configuration
 const allowedOrigins = [
-    // Local Kiosk Base URL
+    // Local Kiosk Base URL & IP
     KIOSK_BASE_URL,
     "http://192.168.50.1:5000",
     "http://192.168.50.1",
+    "http://192.168.50.1:5173",
+    "http://192.168.50.1:4173",
 
     // Local Development
+    "http://localhost",
+    "http://localhost:80",
     "http://localhost:3000",
+    "http://localhost:5000",
     "http://localhost:5001",
     "http://localhost:5173",
     "http://localhost:5174",
+    "http://localhost:4173",
+    "http://127.0.0.1",
+    "http://127.0.0.1:80",
     "http://127.0.0.1:3000",
+    "http://127.0.0.1:5000",
     "http://127.0.0.1:5001",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
+    "http://127.0.0.1:4173",
 
     // Local Network
     "http://192.168.1.8:5173",
     "http://192.168.1.8:5174",
     "http://192.168.0.101:5173",
 
-    // Vercel Deployments
+    // Vercel Deployments (Mobile QR Scan Domains)
+    "https://reliv7.vercel.app",
     "https://reliv.vercel.app",
     "https://reliv-frontend-henna.vercel.app",
     "https://mail-request-m33c.vercel.app",
@@ -788,20 +799,33 @@ const allowedOrigins = [
 app.use(
     cors({
         origin: (origin, callback) => {
-            // Allow requests with no origin (mobile apps, Postman, etc.)
+            // Allow requests with no origin (mobile apps, Postman, curl, server-to-server)
             if (!origin) return callback(null, true);
 
-            // Allow only specific origins
+            // Allow only specific origins or dev mode
             if (allowedOrigins.indexOf(origin) !== -1 || isDev) {
-                callback(null, true);
-            } else {
-                log.warn('Blocked CORS request from:', origin);
-                callback(new Error('Not allowed by CORS'));
+                return callback(null, true);
             }
+
+            // Pattern-based matching for local network, AP subnet, and known domains
+            const isAllowedPattern =
+                origin.startsWith('http://192.168.50.1') ||
+                origin.startsWith('http://localhost') ||
+                origin.startsWith('http://127.0.0.1') ||
+                origin.startsWith('http://192.168.') ||
+                origin.endsWith('.vercel.app') ||
+                origin.endsWith('.reliv.in');
+
+            if (isAllowedPattern) {
+                return callback(null, true);
+            }
+
+            log.warn('Blocked CORS request from:', origin);
+            callback(new Error('Not allowed by CORS'));
         },
         credentials: true,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control']
+        allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'X-Requested-With', 'Accept', 'Origin']
     })
 );
 
@@ -815,7 +839,13 @@ const RATE_LIMIT_MAX_ENTRIES = 10000; // Max IPs to track (prevents memory leak)
 
 function rateLimitMiddleware(req, res, next) {
     const ip = req.ip || req.connection?.remoteAddress || 'unknown';
-    if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || process.env.NODE_ENV === 'test') {
+    if (
+        ip === '127.0.0.1' ||
+        ip === '::1' ||
+        ip === '::ffff:127.0.0.1' ||
+        ip.includes('192.168.50.1') ||
+        process.env.NODE_ENV === 'test'
+    ) {
         return next();
     }
     const now = Date.now();
@@ -3550,6 +3580,7 @@ function createQrSessionHandler(req, res) {
         res.json({
             path,
             sessionId: session.session_id,  // Include for debugging
+            id: session.session_id,          // Frontend compatibility
             pairingToken, // Customer URL/HTTPS site needs this for payment completion
             kioskId: session.kiosk_id || KIOSK_ID,
             kioskUrl: KIOSK_BASE_URL
@@ -3764,7 +3795,7 @@ async function saveCustomerDataHandler(req, res) {
             return res.redirect(302, redirectUrl);
         }
 
-        res.json({ success: true, sessionId, step: 'service' });
+        res.json({ success: true, ok: true, sessionId, step: 'service' });
     } catch (err) {
         console.error("Error saving customer data:", err);
         res.status(500).json({ error: err.message || "Failed to save customer data" });
@@ -3803,7 +3834,12 @@ app.post("/api/sessions/:sessionId/service", (req, res) => {
             });
         }
 
-        if (!["HEALTH_CHECKUP", "MEDICINE"].includes(serviceType)) {
+        let normalizedServiceType = serviceType;
+        if (serviceType === "HEALTH") {
+            normalizedServiceType = "HEALTH_CHECKUP";
+        }
+
+        if (!["HEALTH_CHECKUP", "MEDICINE"].includes(normalizedServiceType)) {
             return res.status(400).json({
                 ok: false,
                 message: "Invalid service type"
@@ -3831,12 +3867,13 @@ app.post("/api/sessions/:sessionId/service", (req, res) => {
         // Idempotent retry: same service was already selected.
         if (
             session.status === "SERVICE_SELECTED" &&
-            session.service_type === serviceType
+            (session.service_type === normalizedServiceType || session.service_type === serviceType)
         ) {
             return res.json({
                 ok: true,
+                success: true,
                 sessionId,
-                serviceType,
+                serviceType: session.service_type,
                 status: session.status,
                 alreadySelected: true
             });
@@ -3850,12 +3887,13 @@ app.post("/api/sessions/:sessionId/service", (req, res) => {
             });
         }
 
-        sessionManager.selectService(sessionId, serviceType);
+        sessionManager.selectService(sessionId, normalizedServiceType);
 
         const updatedSession = sessionManager.getSession(sessionId);
 
         return res.json({
             ok: true,
+            success: true,
             sessionId,
             serviceType: updatedSession.service_type,
             status: updatedSession.status,
