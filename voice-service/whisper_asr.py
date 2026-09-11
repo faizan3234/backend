@@ -96,7 +96,7 @@ class WhisperClient:
             hallucinations = [
                 "thankyou", "thanksforwatching", "subscribe", "subscribetomychannel", 
                 "amaraorg", "by", "you", "it", "music", "silence", "laughs", "sighs", 
-                "bell", "birds", "birdschirping", "mimics"
+                "bell", "birds", "birdschirping", "mimics", "subtitle", "subtitles", "transcribed", "translated", "closedcaptions", "caption", "copyright"
             ]
             if lower_clean in hallucinations:
                 text = ""

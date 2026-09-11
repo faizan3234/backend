@@ -4,7 +4,46 @@ from typing import Callable, Generator, Optional
 import pyaudio
 
 from audio_devices import resolve_capture_device
-from config import BYTES_PER_FRAME, SAMPLE_RATE
+from config import BYTES_PER_FRAME, SAMPLE_RATE, MIC_DEVICE_HINT
+
+def find_pyaudio_input_device(pa, hint="PCM2902"):
+    try:
+        count = pa.get_device_count()
+    except Exception:
+        return (None, "default")
+    hint_lower = (hint or "").lower()
+    candidates = [hint_lower, "pcm2902", "usb audio", "codec", "usb", "mic"]
+    for target in candidates:
+        if not target:
+            continue
+        for i in range(count):
+            try:
+                info = pa.get_device_info_by_index(i)
+                channels = int(info.get("maxInputChannels", 0))
+                name = str(info.get("name", ""))
+                if channels > 0 and target in name.lower():
+                    logger.info("Matched PyAudio input device [%d]: %s (channels: %d)", i, name, channels)
+                    return (i, name)
+            except Exception:
+                pass
+    try:
+        default_info = pa.get_default_input_device_info()
+        idx = default_info.get("index")
+        name = default_info.get("name", "Default")
+        logger.info("Using default PyAudio input device [%d]: %s", idx, name)
+        return (idx, name)
+    except Exception:
+        pass
+    for i in range(count):
+        try:
+            info = pa.get_device_info_by_index(i)
+            if int(info.get("maxInputChannels", 0)) > 0:
+                name = str(info.get("name", ""))
+                logger.info("Using first available PyAudio input device [%d]: %s", i, name)
+                return (i, name)
+        except Exception:
+            pass
+    return (None, "default")
 
 logger = logging.getLogger("reliv_voice.capture")
 
@@ -36,18 +75,26 @@ class AudioCaptureStream:
         """
         while not stop_event.is_set():
             self._device_id, self._device_name = resolve_capture_device()
-            logger.info("Starting capture on device: %s (%s)", self._device_id, self._device_name)
+            dev_idx, dev_matched_name = find_pyaudio_input_device(self.pa, MIC_DEVICE_HINT)
+            if dev_matched_name and dev_matched_name != "default":
+                self._device_name = dev_matched_name
+            logger.info(
+                "Starting capture on device: %s (%s), PyAudio idx=%s",
+                self._device_id, self._device_name, dev_idx
+            )
             
             stream = None
             try:
-                # Try to use default input device (PyAudio abstracts the OS-level devices)
-                stream = self.pa.open(
-                    format=pyaudio.paInt16,
-                    channels=1,
-                    rate=SAMPLE_RATE,
-                    input=True,
-                    frames_per_buffer=int(BYTES_PER_FRAME / 2)  # 2 bytes per sample
-                )
+                open_kwargs = {
+                    "format": pyaudio.paInt16,
+                    "channels": 1,
+                    "rate": SAMPLE_RATE,
+                    "input": True,
+                    "frames_per_buffer": int(BYTES_PER_FRAME / 2),
+                }
+                if dev_idx is not None:
+                    open_kwargs["input_device_index"] = dev_idx
+                stream = self.pa.open(**open_kwargs)
                 self._notify_status(True, None)
 
                 while not stop_event.is_set():
