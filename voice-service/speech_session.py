@@ -36,12 +36,19 @@ class SpeechSessionState:
         hints: Optional[List[str]] = None,
     ):
         with self._lock:
+            changed = (page is not None and page != self.page) or (expecting is not None and expecting != self.expecting)
+            if page is not None and page != self.page:
+                self.expecting = ""
+                self.vocabulary_hints = []
+                self.prompt = ""
             if page is not None:
                 self.page = page
             if expecting is not None:
                 self.expecting = expecting
             if hints is not None:
-                self.vocabulary_hints = hints
+                self.vocabulary_hints = list(hints)
+            if changed:
+                self.generation += 1
 
     def set_language(self, language: str):
         with self._lock:
@@ -57,12 +64,16 @@ class SpeechSessionState:
 
     def set_legacy_context(self, page: str, language: str, prompt: str):
         with self._lock:
+            if page != self.page or prompt != self.prompt:
+                self.generation += 1
             self.page = page
             self.language = language if language in {"en", "hi", "bn"} else "en"
             self.prompt = prompt
 
     def set_listening_paused(self, paused: bool):
         with self._lock:
+            if self.listening_paused != bool(paused):
+                self.generation += 1
             self.listening_paused = bool(paused)
 
     def is_paused(self) -> bool:
@@ -72,6 +83,7 @@ class SpeechSessionState:
     def force_resume(self):
         with self._lock:
             self.listening_paused = False
+            self.generation += 1
 
     def get_generation(self) -> int:
         with self._lock:

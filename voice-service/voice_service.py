@@ -74,10 +74,16 @@ def is_pathological_transcript(text: str) -> bool:
                 return True
     return False
 
-async def broadcast_event(payload: dict):
+async def broadcast_event(payload: dict, generation=None):
     """Asynchronously broadcasts a JSON payload only to the active controller."""
     global active_controller_ws
     if not active_controller_ws:
+        return
+    if generation is not None and (
+        session_state.get_generation() != generation
+        or session_state.is_paused()
+        or echo_controller.should_suppress_mic()
+    ):
         return
 
     raw = json.dumps(payload, ensure_ascii=False)
@@ -87,11 +93,11 @@ async def broadcast_event(payload: dict):
         pass
 
 
-def broadcast_threadsafe(payload: dict):
+def broadcast_threadsafe(payload: dict, generation=None):
     """Thread-safe event broadcast helper from background capture/transcription threads."""
     global event_loop
     if event_loop and not event_loop.is_closed():
-        asyncio.run_coroutine_threadsafe(broadcast_event(payload), event_loop)
+        asyncio.run_coroutine_threadsafe(broadcast_event(payload, generation), event_loop)
 
 
 def on_mic_status(connected: bool, device_name: str, error: str = None):
@@ -109,10 +115,12 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
         wav_path = write_frames_to_temp_wav(frames)
         ctx = session_state.get_snapshot()
 
-        logger.info("Transcribing utterance (%d frames, language hint: %s)", len(frames), ctx["language"])
+        if session_state.get_generation() != original_generation or ctx["listening_paused"]:
+            return
+        logger.info("Transcribing utterance (%d frames, UI language: %s, ASR: auto)", len(frames), ctx["language"])
         text, confidence, used_lang = whisper_client.transcribe(
             wav_path=wav_path,
-            language=ctx["language"],
+            language="auto",
             prompt=ctx["prompt"],
             vocabulary_hints=ctx["vocabulary_hints"],
         )
@@ -143,7 +151,7 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
             is_final=True,
             duration_ms=duration_ms,
         )
-        broadcast_threadsafe(event)
+        broadcast_threadsafe(event, original_generation)
 
     except Exception as exc:
         logger.exception("Transcription failed: %s", exc)
@@ -160,10 +168,16 @@ def capture_loop_worker():
     """
     stream = AudioCaptureStream(on_mic_status=on_mic_status)
     started_at = 0.0
+    utterance_generation = session_state.get_generation()
 
     for frame in stream.stream_frames(stop_event):
         if stop_event.is_set():
             break
+
+        generation = session_state.get_generation()
+        if generation != utterance_generation:
+            vad.reset()
+            utterance_generation = generation
 
         # 1. Check listening paused by frontend
         if session_state.is_paused():
@@ -173,19 +187,16 @@ def capture_loop_worker():
         # 2. Check echo suppression (RELIV speaker active and barge-in disabled)
         if echo_controller.should_suppress_mic():
             echo_controller.record_suppression()
-            if vad.active:
-                vad.reset()
-                session_state.increment_generation()
+            vad.reset()
             continue
             
         # 3. Whisper is processing the previous answer
         if transcription_busy.is_set():
-            if vad.active:
-                vad.reset()
+            vad.reset()
             continue
 
         # 4. Process frame through VAD
-        vad.update_context(session_state.expecting)
+        vad.update_context(session_state.get_snapshot()["expecting"])
         event, level, completed_frames = vad.process_frame(frame)
 
         if event == "SPEECH_STARTED":
@@ -205,10 +216,9 @@ def capture_loop_worker():
                 transcription_busy.set()
                 
                 # Dispatch transcription to background thread to avoid blocking capture
-                gen = session_state.get_generation()
                 threading.Thread(
                     target=async_transcribe_worker,
-                    args=(completed_frames, started_at, gen),
+                    args=(completed_frames, started_at, utterance_generation),
                     daemon=True,
                     name="WhisperTranscriptionWorker",
                 ).start()
@@ -238,7 +248,7 @@ async def ws_handler(websocket: ServerConnection):
             action, data = DialogueBridge.parse_client_message(msg)
 
             if action == "CLIENT_HELLO":
-                if data["role"] != "kiosk-controller":
+                if data["role"] != "kiosk-controller" or not data["clientId"]:
                     continue
                 client_id = data["clientId"]
                 
@@ -256,7 +266,6 @@ async def ws_handler(websocket: ServerConnection):
                     logger.info("Active controller registered: %s", client_id)
                 
                 session_state.force_resume()
-                vad.reset()
 
                 await websocket.send(json.dumps({"type": "CONTROLLER_ACTIVE", "clientId": client_id}))
                 continue
@@ -289,7 +298,6 @@ async def ws_handler(websocket: ServerConnection):
                 active = bool(data["active"])
                 echo_controller.set_reliv_speaking(id(websocket), active)
                 if active:
-                    vad.reset()
                     session_state.increment_generation()
                 logger.debug("RELIV speaking state set to: %s by client %s", active, id(websocket))
 
