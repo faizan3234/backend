@@ -1,103 +1,204 @@
+"""
+audio_capture.py
+
+Continuous microphone capture with automatic hardware sample-rate fallback
+and software resampling to SAMPLE_RATE (typically 16000 Hz for Whisper).
+
+Design notes
+------------
+* Opens the PyAudio stream ONCE per device and keeps it open. Only reopens
+  if the read loop raises or the device disappears.
+* If the USB hardware rejects SAMPLE_RATE (common on Pi + PCM2902 / UAC1
+  mics that only do 44100/48000), we open at the closest supported rate
+  and resample to SAMPLE_RATE in software.
+* Frame sizes are computed from the open rate so each yielded frame has
+  the same duration regardless of the underlying hardware rate.
+"""
+from __future__ import annotations
+
 import logging
 import time
 from typing import Callable, Generator, Optional
+
 import pyaudio
 
 from audio_devices import resolve_capture_device
 from config import BYTES_PER_FRAME, SAMPLE_RATE, MIC_DEVICE_HINT
 
+# ---------------------------------------------------------------------------
+# Silence ALSA/JACK probe noise from PortAudio (cosmetic but very noisy).
+# Has to happen before any pyaudio.PyAudio() is constructed.
+# ---------------------------------------------------------------------------
+try:
+    import ctypes
+    _asound = ctypes.CDLL("libasound.so.2")
+    _ERR_HANDLER = ctypes.CFUNCTYPE(
+        None, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+        ctypes.c_int, ctypes.c_char_p,
+    )
+    _asound.snd_lib_error_set_handler(_ERR_HANDLER(lambda *_: None))
+except Exception:
+    # libasound not present or handler signature mismatch — ignore.
+    pass
+
+
 logger = logging.getLogger("reliv_voice.capture")
 
 
-# ---- Fallback sample rates to try if the primary SAMPLE_RATE fails ----
-FALLBACK_RATES = [SAMPLE_RATE, 48000, 44100, 32000, 22050, 16000, 8000]
+# Sample-rate candidates, ordered by preference. SAMPLE_RATE first as the
+# fast path; then common hardware rates; then narrow-band fallbacks.
+_FALLBACK_RATES = tuple(dict.fromkeys([
+    SAMPLE_RATE, 48000, 44100, 32000, 22050, 16000, 8000,
+]))
+
+# Reconnect backoff ladder (seconds). Caps so a dead mic doesn't spam.
+_RECONNECT_BACKOFF = (1.0, 2.0, 5.0, 10.0)
 
 
-def _resample_pcm16_mono(pcm_bytes: bytes, src_rate: int, dst_rate: int) -> bytes:
+# ---------------------------------------------------------------------------
+# Resampling
+# ---------------------------------------------------------------------------
+
+def _make_resampler(src_rate: int, dst_rate: int) -> Callable[[bytes], bytes]:
     """
-    Linear-interpolation resampler for 16-bit mono PCM.
-    Good enough for speech at 16 kHz. No external deps.
+    Return a function that converts a 16-bit mono PCM byte buffer from
+    src_rate to dst_rate. Uses scipy if available (high quality); otherwise
+    a vectorized pure-Python fallback.
     """
-    if src_rate == dst_rate or not pcm_bytes:
-        return pcm_bytes
+    if src_rate == dst_rate:
+        return lambda b: b
 
+    # ---- Preferred: scipy.signal.resample_poly ----
+    try:
+        import array
+        import numpy as np
+        from scipy.signal import resample_poly
+        from math import gcd
+
+        g = gcd(src_rate, dst_rate)
+        up, down = dst_rate // g, src_rate // g
+
+        def _resample_scipy(pcm_bytes: bytes) -> bytes:
+            if not pcm_bytes:
+                return pcm_bytes
+            x = np.frombuffer(pcm_bytes, dtype=np.int16)
+            y = resample_poly(x, up, down)
+            # Clip to int16 range and convert back.
+            y = np.clip(y, -32768, 32767).astype(np.int16, copy=False)
+            return y.tobytes()
+
+        logger.info(
+            "Resampler: scipy.signal.resample_poly (%d -> %d Hz, up=%d down=%d)",
+            src_rate, dst_rate, up, down,
+        )
+        return _resample_scipy
+    except Exception:
+        pass
+
+    # ---- Fallback: vectorized linear interpolation in pure Python ----
     import array
-    src = array.array("h")
-    src.frombytes(pcm_bytes)
-    n_src = len(src)
-    if n_src < 2:
-        return pcm_bytes
 
-    ratio = dst_rate / float(src_rate)
-    n_dst = int(n_src * ratio)
-    dst = array.array("h", [0] * n_dst)
+    def _resample_py(pcm_bytes: bytes) -> bytes:
+        if not pcm_bytes:
+            return pcm_bytes
+        src = array.array("h")
+        src.frombytes(pcm_bytes)
+        n_src = len(src)
+        if n_src < 2:
+            return pcm_bytes
 
-    for i in range(n_dst):
-        # Position in source samples
-        pos = i / ratio
-        idx = int(pos)
-        frac = pos - idx
-        if idx + 1 < n_src:
-            s0 = src[idx]
-            s1 = src[idx + 1]
-            val = s0 + (s1 - s0) * frac
-        else:
-            val = src[idx]
-        # Clamp to int16 range
-        if val > 32767:
-            val = 32767
-        elif val < -32768:
-            val = -32768
-        dst[i] = int(val)
+        ratio = dst_rate / float(src_rate)
+        n_dst = int(n_src * ratio)
+        dst = array.array("h", bytes(2 * n_dst))
 
-    return dst.tobytes()
+        # Vectorized-ish: integer index + fractional weight.
+        for i in range(n_dst):
+            pos = i / ratio
+            idx = int(pos)
+            frac = pos - idx
+            if idx + 1 < n_src:
+                s0 = src[idx]
+                s1 = src[idx + 1]
+                v = s0 + (s1 - s0) * frac
+            else:
+                v = src[idx]
+            if v > 32767:
+                v = 32767
+            elif v < -32768:
+                v = -32768
+            dst[i] = int(v)
+
+        return dst.tobytes()
+
+    logger.warning(
+        "Resampler: pure-Python fallback (%d -> %d Hz). "
+        "Install scipy for better quality: pip install scipy",
+        src_rate, dst_rate,
+    )
+    return _resample_py
 
 
-def find_pyaudio_input_device(pa, hint="PCM2902"):
+# ---------------------------------------------------------------------------
+# Device discovery
+# ---------------------------------------------------------------------------
+
+def find_pyaudio_input_device(pa: pyaudio.PyAudio, hint: str = "PCM2902"):
+    """Pick the best input device by name hint, falling back to default."""
     try:
         count = pa.get_device_count()
     except Exception:
         return (None, "default")
+
     hint_lower = (hint or "").lower()
-    candidates = [hint_lower, "pcm2902", "usb audio", "codec", "usb", "mic"]
+    candidates = [hint_lower, "pcm2902", "usb audio", "usb", "mic", "codec"]
+
     for target in candidates:
         if not target:
             continue
         for i in range(count):
             try:
                 info = pa.get_device_info_by_index(i)
-                channels = int(info.get("maxInputChannels", 0))
-                name = str(info.get("name", ""))
-                if channels > 0 and target in name.lower():
-                    logger.info("Matched PyAudio input device [%d]: %s (channels: %d)", i, name, channels)
+                if int(info.get("maxInputChannels", 0)) > 0 and \
+                        target in str(info.get("name", "")).lower():
+                    name = str(info.get("name", ""))
+                    logger.info(
+                        "Matched PyAudio input device [%d]: %s (channels: %d)",
+                        i, name, int(info["maxInputChannels"]),
+                    )
                     return (i, name)
             except Exception:
-                pass
+                continue
+
     try:
-        default_info = pa.get_default_input_device_info()
-        idx = default_info.get("index")
-        name = default_info.get("name", "Default")
+        info = pa.get_default_input_device_info()
+        idx = info.get("index")
+        name = str(info.get("name", "Default"))
         logger.info("Using default PyAudio input device [%d]: %s", idx, name)
         return (idx, name)
     except Exception:
         pass
+
     for i in range(count):
         try:
             info = pa.get_device_info_by_index(i)
             if int(info.get("maxInputChannels", 0)) > 0:
                 name = str(info.get("name", ""))
-                logger.info("Using first available PyAudio input device [%d]: %s", i, name)
+                logger.info("Using first available input device [%d]: %s", i, name)
                 return (i, name)
         except Exception:
-            pass
+            continue
+
     return (None, "default")
 
 
+# ---------------------------------------------------------------------------
+# Capture stream
+# ---------------------------------------------------------------------------
+
 class AudioCaptureStream:
     """
-    Manages continuous audio capture from the system microphone using PyAudio.
-    Handles hardware sample-rate mismatch by opening at a supported rate and
-    resampling in software to SAMPLE_RATE (e.g. 16000 Hz for Whisper).
+    Continuous microphone capture. Yields fixed-size 16-bit mono PCM frames
+    at SAMPLE_RATE, resampling from the hardware rate if necessary.
     """
 
     def __init__(
@@ -109,105 +210,143 @@ class AudioCaptureStream:
         self._device_name = ""
         self.pa = pyaudio.PyAudio()
 
-    def _notify_status(self, connected: bool, error: Optional[str] = None):
-        if self.on_mic_status:
-            try:
-                self.on_mic_status(connected, self._device_name or self._device_id, error)
-            except Exception:
-                pass
+    # -- helpers ------------------------------------------------------------
 
-    def _open_stream(self, dev_idx, open_rate: int):
-        """Try to open the PyAudio stream at the given rate. Raises on failure."""
-        open_kwargs = {
+    def _notify_status(self, connected: bool, error: Optional[str] = None) -> None:
+        if not self.on_mic_status:
+            return
+        try:
+            self.on_mic_status(
+                connected,
+                self._device_name or self._device_id,
+                error,
+            )
+        except Exception:
+            logger.debug("on_mic_status callback raised", exc_info=True)
+
+    def _open_stream(self, dev_idx: Optional[int], rate: int):
+        kwargs = {
             "format": pyaudio.paInt16,
             "channels": 1,
-            "rate": open_rate,
+            "rate": rate,
             "input": True,
-            "frames_per_buffer": int(BYTES_PER_FRAME / 2),
+            "frames_per_buffer": 1024,  # internal PortAudio buffer, not our frame
         }
         if dev_idx is not None:
-            open_kwargs["input_device_index"] = dev_idx
-        return self.pa.open(**open_kwargs)
+            kwargs["input_device_index"] = dev_idx
+        return self.pa.open(**kwargs)
 
-    def _open_stream_with_fallback(self, dev_idx):
+    def _open_with_rate_fallback(self, dev_idx: Optional[int]):
         """
-        Try SAMPLE_RATE first; if the hardware rejects it, fall back through
-        FALLBACK_RATES until one works. Returns (stream, actual_open_rate).
+        Try _FALLBACK_RATES in order. Return (stream, open_rate) on success.
+        Raise RuntimeError if no rate works.
         """
-        last_exc = None
-        tried = set()
-        for rate in FALLBACK_RATES:
-            if rate in tried:
-                continue
-            tried.add(rate)
+        last_exc: Optional[Exception] = None
+        for rate in _FALLBACK_RATES:
             try:
                 stream = self._open_stream(dev_idx, rate)
                 if rate != SAMPLE_RATE:
                     logger.warning(
-                        "Hardware rejected %d Hz; opened at %d Hz and will resample to %d Hz.",
+                        "Hardware rejected %d Hz; opened at %d Hz and will "
+                        "resample to %d Hz.",
                         SAMPLE_RATE, rate, SAMPLE_RATE,
                     )
                 else:
-                    logger.info("Capture opened at %d Hz (native match).", rate)
+                    logger.info("Capture opened at native %d Hz.", rate)
                 return stream, rate
             except Exception as exc:
                 last_exc = exc
                 logger.debug("Open at %d Hz failed: %s", rate, exc)
-        raise RuntimeError(f"Could not open capture stream at any rate: {last_exc}")
+        raise RuntimeError(
+            f"Could not open capture stream at any rate "
+            f"({_FALLBACK_RATES}); last error: {last_exc}"
+        )
+
+    # -- main loop ----------------------------------------------------------
 
     def stream_frames(self, stop_event) -> Generator[bytes, None, None]:
         """
-        Continuously yields raw PCM audio frames (at SAMPLE_RATE, 16-bit mono)
-        until stop_event is set.
+        Yield raw PCM frames at SAMPLE_RATE until stop_event is set.
+        Reconnects automatically on failure with bounded backoff.
         """
+        target_frames = int(BYTES_PER_FRAME / 2)  # frames per yielded chunk at SAMPLE_RATE
+        backoff_idx = 0
+
         while not stop_event.is_set():
             self._device_id, self._device_name = resolve_capture_device()
-            dev_idx, dev_matched_name = find_pyaudio_input_device(self.pa, MIC_DEVICE_HINT)
-            if dev_matched_name and dev_matched_name != "default":
-                self._device_name = dev_matched_name
+            dev_idx, dev_name = find_pyaudio_input_device(self.pa, MIC_DEVICE_HINT)
+            if dev_name and dev_name != "default":
+                self._device_name = dev_name
+
             logger.info(
                 "Starting capture on device: %s (%s), PyAudio idx=%s",
-                self._device_id, self._device_name, dev_idx
+                self._device_id, self._device_name, dev_idx,
             )
 
             stream = None
             open_rate = SAMPLE_RATE
-            try:
-                stream, open_rate = self._open_stream_with_fallback(dev_idx)
-                self._notify_status(True, None)
+            resample: Callable[[bytes], bytes] = lambda b: b
 
-                need_resample = (open_rate != SAMPLE_RATE)
-                # Compute how many source frames to read to get ~BYTES_PER_FRAME at target rate.
-                frames_to_read = int(BYTES_PER_FRAME / 2)
-                if need_resample:
+            try:
+                stream, open_rate = self._open_with_rate_fallback(dev_idx)
+                resample = _make_resampler(open_rate, SAMPLE_RATE)
+
+                # How many source frames to read so we produce ~target_frames
+                # after resampling? For 44100->16000: read 4410, get 1600.
+                if open_rate == SAMPLE_RATE:
+                    frames_to_read = target_frames
+                else:
                     frames_to_read = int(
-                        round(frames_to_read * (open_rate / float(SAMPLE_RATE)))
+                        round(target_frames * (open_rate / float(SAMPLE_RATE)))
                     )
+                    if frames_to_read < 1:
+                        frames_to_read = 1
+
+                self._notify_status(True, None)
+                backoff_idx = 0  # reset on successful open
 
                 while not stop_event.is_set():
                     try:
-                        frame = stream.read(frames_to_read, exception_on_overflow=False)
-                        if not frame:
-                            break
-                        if need_resample:
-                            frame = _resample_pcm16_mono(frame, open_rate, SAMPLE_RATE)
-                        yield frame
-                    except IOError as e:
-                        logger.warning("Audio capture stream underrun or error: %s", e)
+                        raw = stream.read(frames_to_read, exception_on_overflow=False)
+                    except IOError as exc:
+                        logger.warning("Audio stream IOError: %s", exc)
+                        break
+                    if not raw:
+                        logger.warning("Audio stream returned empty frame; reopening.")
                         break
 
+                    frame = resample(raw) if open_rate != SAMPLE_RATE else raw
+                    yield frame
+
             except Exception as exc:
-                logger.error("Failed to start or stream audio capture: %s", exc)
+                logger.error("Audio capture failed: %s", exc)
                 self._notify_status(False, str(exc))
-                time.sleep(2)
             finally:
-                if stream:
+                if stream is not None:
                     try:
                         stream.stop_stream()
                         stream.close()
                     except Exception:
-                        pass
+                        logger.debug("Error closing stream", exc_info=True)
 
-            if not stop_event.is_set():
-                self._notify_status(False, "Capture device disconnected, reconnecting...")
-                time.sleep(1)
+            if stop_event.is_set():
+                break
+
+            # Bounded backoff before reconnect.
+            delay = _RECONNECT_BACKOFF[min(backoff_idx, len(_RECONNECT_BACKOFF) - 1)]
+            backoff_idx += 1
+            self._notify_status(False, "Capture device disconnected; reconnecting...")
+            logger.info("Reconnecting audio capture in %.1fs", delay)
+            # Sleep in small slices so stop_event is honored promptly.
+            deadline = time.monotonic() + delay
+            while not stop_event.is_set() and time.monotonic() < deadline:
+                time.sleep(0.1)
+
+    # -- cleanup ------------------------------------------------------------
+
+    def close(self) -> None:
+        """Release the PyAudio instance. Call on shutdown."""
+        try:
+            self.pa.terminate()
+        except Exception:
+            logger.debug("Error terminating PyAudio", exc_info=True)
