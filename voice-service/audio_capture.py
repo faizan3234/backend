@@ -25,23 +25,6 @@ import pyaudio
 from audio_devices import resolve_capture_device
 from config import BYTES_PER_FRAME, SAMPLE_RATE, MIC_DEVICE_HINT
 
-# ---------------------------------------------------------------------------
-# Silence ALSA/JACK probe noise from PortAudio (cosmetic but very noisy).
-# Has to happen before any pyaudio.PyAudio() is constructed.
-# ---------------------------------------------------------------------------
-try:
-    import ctypes
-    _asound = ctypes.CDLL("libasound.so.2")
-    _ERR_HANDLER = ctypes.CFUNCTYPE(
-        None, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
-        ctypes.c_int, ctypes.c_char_p,
-    )
-    _asound.snd_lib_error_set_handler(_ERR_HANDLER(lambda *_: None))
-except Exception:
-    # libasound not present or handler signature mismatch — ignore.
-    pass
-
-
 logger = logging.getLogger("reliv_voice.capture")
 
 
@@ -277,6 +260,10 @@ class AudioCaptureStream:
             dev_idx, dev_name = find_pyaudio_input_device(self.pa, MIC_DEVICE_HINT)
             if dev_name and dev_name != "default":
                 self._device_name = dev_name
+
+            # Force ALSA 'default' (→ RELIV_MIC via /etc/asound.conf).
+            # Makes the service independent of card numbers.
+            dev_idx = None
 
             logger.info(
                 "Starting capture on device: %s (%s), PyAudio idx=%s",
