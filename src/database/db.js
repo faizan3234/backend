@@ -6,7 +6,7 @@
  */
 
 import Database from 'better-sqlite3';
-import { readFileSync } from 'fs';
+import { readFileSync, renameSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -35,9 +35,9 @@ export function getDatabasePath() {
  * @param {string|null} [customPath] - Optional custom database file path (e.g. for isolated test suites)
  */
 export function initializeDatabase(customPath = null) {
-    try {
-        const targetPath = customPath || process.env.DB_PATH || join(process.cwd(), 'data', 'kiosk.db');
-        
+    const targetPath = customPath || process.env.DB_PATH || join(process.cwd(), 'data', 'kiosk.db');
+
+    const setupDatabase = () => {
         // If a different database is already open, close it cleanly first
         if (db && currentDbPath !== targetPath) {
             try { db.close(); } catch {}
@@ -240,8 +240,23 @@ export function initializeDatabase(customPath = null) {
         
         // Return database instance
         return db;
-        
+    };
+
+    try {
+        return setupDatabase();
     } catch (err) {
+        if (err.code === 'SQLITE_CORRUPT' || err.code === 'SQLITE_NOTADB' || err.message?.includes('malformed database schema') || err.message?.includes('already exists')) {
+            console.error(`[DB] ⚠️ Corrupt SQLite schema detected in ${targetPath}: ${err.message}`);
+            const backupPath = `${targetPath}.corrupt.${Date.now()}`;
+            console.warn(`[DB] Moving corrupt database to ${backupPath} and re-initializing clean database...`);
+            try { if (db) db.close(); } catch {}
+            db = null;
+            currentDbPath = null;
+            try { renameSync(targetPath, backupPath); } catch {}
+            try { unlinkSync(`${targetPath}-wal`); } catch {}
+            try { unlinkSync(`${targetPath}-shm`); } catch {}
+            return setupDatabase();
+        }
         console.error('[DB] ❌ Failed to initialize database:', err);
         throw err;
     }
