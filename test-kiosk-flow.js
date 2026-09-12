@@ -30,6 +30,7 @@ test("real offline API: session -> customer -> health/medicine, retries and fail
       MQTT_BROKER_URL: "mqtt://127.0.0.1:9",
       MONGODB_URI: "", GMAIL_USER: "", GMAIL_PASS: "", CUSTOMER_GMAIL_USER: "",
       RAZORPAY_KEY_ID: "", RAZORPAY_KEY_SECRET: "",
+      RELIV_ADMIN_EMAIL: "audit@example.invalid", RELIV_ADMIN_PASSWORD: "Synthetic-admin-password",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -79,6 +80,9 @@ test("real offline API: session -> customer -> health/medicine, retries and fail
     const selected = await post(path + "/service", { pairingToken, serviceType });
     assert.equal(selected.status, 200, JSON.stringify(selected.body));
     assert.equal(selected.body.serviceType, serviceType);
+    const otherService = serviceType === 'MEDICINE' ? 'HEALTH_CHECKUP' : 'MEDICINE';
+    assert.equal((await post(path + '/service', { pairingToken, serviceType: otherService })).body.serviceType, otherService);
+    assert.equal((await post(path + '/service', { pairingToken, serviceType })).body.serviceType, serviceType);
     assert.equal((await post(path + "/service", { pairingToken, serviceType })).body.alreadySelected, true);
     assert.equal((await post(path + "/service", { pairingToken: "wrong", serviceType })).status, 403);
     assert.equal((await post(path + "/customer", { customerData, pairingToken })).status, 409);
@@ -86,11 +90,29 @@ test("real offline API: session -> customer -> health/medicine, retries and fail
     const stored = db.prepare("SELECT status, customer_data FROM sessions WHERE session_id = ?").get(sessionId);
     assert.equal(stored.status, "SERVICE_SELECTED");
     assert.equal(JSON.parse(stored.customer_data).gender, "female");
+    const transactionId = 'TX-' + sessionId;
+    db.prepare('INSERT INTO transactions(transaction_id,session_id,type,amount,status) VALUES(?,?,?,?,?)').run(transactionId, sessionId, serviceType, 2700, 'PENDING');
+    assert.equal((await post(path + '/receipt', {})).status, 403);
+    assert.equal((await post('/api/send-receipt', { sessionId })).status, 403);
+    assert.notEqual((await post('/api/save-report', { sessionId, healthData: {} })).status, 200);
+    assert.equal((await post('/api/receipts/generate', { sessionId })).status, 403);
+    db.prepare("UPDATE transactions SET verified=1,status='VERIFIED' WHERE transaction_id=?").run(transactionId);
+    const receipt = await post('/api/receipts/generate', { sessionId });
+    assert.equal(receipt.status, 200, JSON.stringify(receipt.body));
+    assert.equal(receipt.body.emailQueued, false);
+    assert.equal((await post(path + '/receipt', {})).body.receiptId, receipt.body.receiptId);
+    assert.match(await (await fetch(base + path + '/receipt/download')).text(), /^%PDF-/);
     db.prepare("UPDATE sessions SET expires_at = '2000-01-01T00:00:00.000Z' WHERE session_id = ?").run(sessionId);
     db.close();
     assert.equal((await post(path + "/service", { pairingToken, serviceType })).status, 410);
     assert.equal((await post(path + "/customer", { customerData, pairingToken })).status, 410);
   }
+  const admin = await post('/api/check-login', { email: 'audit@example.invalid', password: 'Synthetic-admin-password' });
+  assert.equal(admin.status, 200);
+  const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + admin.body.token };
+  const speechEdit = await fetch(base + '/api/speech-config', { method: 'PUT', headers, body: JSON.stringify({ config: { 'two-options': { en: 'Audit prompt' } } }) });
+  assert.equal(speechEdit.status, 200, await speechEdit.text());
+  assert.equal((await (await fetch(base + '/api/speech-config')).json())['two-options'].en, 'Audit prompt');
   console.log("Verified both service paths, duplicate requests, token rejection and expiration.");
 });
 

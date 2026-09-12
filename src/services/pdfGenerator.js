@@ -19,10 +19,13 @@ import { normalizeReceiptData, drawReceiptDocument } from './receiptPdfBuilder.j
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const pendingByDatabase = new WeakMap();
 
 class PDFGenerator {
     constructor(db) {
         this.db = db;
+        if (!pendingByDatabase.has(db)) pendingByDatabase.set(db, new Map());
+        this.pending = pendingByDatabase.get(db);
         this.reportsDir = path.join(process.cwd(), 'reports');
         this.receiptsDir = path.join(process.cwd(), 'receipts');
         
@@ -40,6 +43,34 @@ class PDFGenerator {
      * Returns: { reportId, pdfPath, pdfBuffer }
      */
     async generateHealthReport(sessionId, customerData, healthData) {
+        return this._once(`report:${sessionId}`, async () => {
+            const existing = this.getReportBySession(sessionId);
+            const cached = this._readExisting(existing, 'reportId', 'report_id');
+            if (cached) return cached;
+            return this._generateHealthReport(sessionId, customerData, healthData);
+        });
+    }
+
+    _once(key, generate) {
+        if (!this.pending.has(key)) {
+            const task = Promise.resolve().then(generate).finally(() => {
+                if (this.pending.get(key) === task) this.pending.delete(key);
+            });
+            this.pending.set(key, task);
+        }
+        return this.pending.get(key);
+    }
+
+    _readExisting(row, idName, column) {
+        if (!row?.pdf_path) return null;
+        try {
+            const pdfBuffer = fs.readFileSync(row.pdf_path);
+            if (pdfBuffer.length < 8 || pdfBuffer.subarray(0, 5).toString() !== '%PDF-') return null;
+            return { [idName]: row[column], pdfPath: row.pdf_path, pdfBuffer };
+        } catch { return null; }
+    }
+
+    async _generateHealthReport(sessionId, customerData, healthData) {
         const reportId = `RPT-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
         const filename = `${reportId}.pdf`;
         const pdfPath = path.join(this.reportsDir, filename);
@@ -49,7 +80,7 @@ class PDFGenerator {
         const buffer = await this._createHealthReportPDF(customerData, healthData);
         
         // Save to file
-        fs.writeFileSync(pdfPath, buffer);
+        await fs.promises.writeFile(pdfPath, buffer, { flag: 'wx' });
 
         // Save to database
         const stmt = this.db.prepare(`
@@ -77,6 +108,18 @@ class PDFGenerator {
      * Returns: { receiptId, pdfPath, pdfBuffer }
      */
     async generateReceipt(sessionId, customerData, transaction, ecoStats = null) {
+        const transactionId = transaction?.transaction_id || transaction?.receipt_id;
+        if (!transactionId) throw new Error('A transaction ID is required for a receipt');
+        return this._once(`receipt:${sessionId}:${transactionId}`, async () => {
+            const existing = this.db.prepare(`SELECT * FROM receipts
+                WHERE session_id = ? AND transaction_id = ? ORDER BY rowid DESC LIMIT 1`).get(sessionId, transactionId);
+            const cached = this._readExisting(existing, 'receiptId', 'receipt_id');
+            if (cached) return cached;
+            return this._generateReceipt(sessionId, customerData, transaction, ecoStats);
+        });
+    }
+
+    async _generateReceipt(sessionId, customerData, transaction, ecoStats = null) {
         const receiptId = `RCP-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
         const filename = `${receiptId}.pdf`;
         const pdfPath = path.join(this.receiptsDir, filename);
@@ -86,17 +129,18 @@ class PDFGenerator {
         const buffer = await this._createReceiptPDF(customerData, transaction, ecoStats);
         
         // Save to file
-        fs.writeFileSync(pdfPath, buffer);
+        await fs.promises.writeFile(pdfPath, buffer, { flag: 'wx' });
 
         // Save to database
         const stmt = this.db.prepare(`
             INSERT INTO receipts (
-                receipt_id, session_id, transaction_id, pdf_path, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+                receipt_id, session_id, transaction_id, cart, amount, payment_ref, pdf_path, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         `);
 
         const txId = transaction?.transaction_id || transaction?.receipt_id || receiptId;
-        stmt.run(receiptId, sessionId, txId, pdfPath, 'GENERATED');
+        const cart = typeof transaction.cart === 'string' ? transaction.cart : JSON.stringify(transaction.cart || []);
+        stmt.run(receiptId, sessionId, txId, cart, transaction.amount, transaction.payment_ref || null, pdfPath, 'GENERATED');
 
         console.log(`[PDFGenerator] ✅ Receipt saved: ${pdfPath}`);
 
@@ -110,7 +154,7 @@ class PDFGenerator {
         const stmt = this.db.prepare(`
             SELECT * FROM reports 
             WHERE session_id = ? 
-            ORDER BY created_at DESC 
+            ORDER BY created_at DESC, rowid DESC
             LIMIT 1
         `);
         return stmt.get(sessionId);
@@ -123,7 +167,7 @@ class PDFGenerator {
         const stmt = this.db.prepare(`
             SELECT * FROM receipts 
             WHERE session_id = ? 
-            ORDER BY created_at DESC 
+            ORDER BY created_at DESC, rowid DESC
             LIMIT 1
         `);
         return stmt.get(sessionId);
@@ -176,11 +220,11 @@ class PDFGenerator {
             if (vitals.temperature) {
                 doc.text(`Temperature: ${vitals.temperature}°F`);
             }
-            if (healthData?.height) {
-                doc.text(`Height: ${healthData.height} cm`);
+            if (vitals.height ?? healthData?.height) {
+                doc.text(`Height: ${vitals.height ?? healthData.height} cm`);
             }
-            if (healthData?.weight) {
-                doc.text(`Weight: ${healthData.weight} kg`);
+            if (vitals.weight ?? healthData?.weight) {
+                doc.text(`Weight: ${vitals.weight ?? healthData.weight} kg`);
             }
             
             doc.moveDown(2);

@@ -106,7 +106,30 @@ export const DEFAULT_SPEECH_CONFIG = {
   }
 };
 
-export function createSpeechConfigHandler({ getDb, isConnected, warn = () => {} }) {
+export function validateSpeechConfig(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config) || Object.keys(config).length > 100) {
+    throw new Error('Invalid speech configuration');
+  }
+  const validText = (text) => typeof text === 'string' && text.length <= 4000;
+  for (const [key, value] of Object.entries(config)) {
+    if (key === '_voiceSettings') {
+      if (!value || typeof value !== 'object' || Array.isArray(value) ||
+          !Number.isFinite(value.rate) || value.rate < 0.5 || value.rate > 2 ||
+          !Number.isFinite(value.pitch) || value.pitch < 0 || value.pitch > 2 ||
+          typeof value.lang !== 'string' || value.lang.length > 20 ||
+          typeof value.voicePreference !== 'string' || value.voicePreference.length > 40) {
+        throw new Error('Invalid voice settings');
+      }
+    } else if (!/^[a-z][a-z0-9-]{0,63}$/.test(key) || ['constructor', 'prototype'].includes(key) ||
+        !(validText(value) || (value && typeof value === 'object' && !Array.isArray(value) &&
+          Object.entries(value).every(([lang, text]) => ['en', 'hi', 'bn'].includes(lang) && validText(text))))) {
+      throw new Error('Invalid speech page or text');
+    }
+  }
+  return config;
+}
+
+export function createSpeechConfigHandler({ getDb, isConnected, getLocal = () => null, warn = () => {} }) {
   return async (_req, res) => {
     res.set("Cache-Control", "no-store");
     let saved = null;
@@ -119,8 +142,11 @@ export function createSpeechConfigHandler({ getDb, isConnected, warn = () => {} 
       warn("Speech config fallback: " + error.message);
     }
     const config = { ...DEFAULT_SPEECH_CONFIG };
-    if (saved?.config && typeof saved.config === "object" && !Array.isArray(saved.config)) {
-      for (const [key, value] of Object.entries(saved.config)) {
+    let local;
+    try { local = getLocal(); } catch (error) { warn('Local speech config: ' + error.message); }
+    for (const overrides of [saved?.config, local]) {
+      if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) continue;
+      for (const [key, value] of Object.entries(overrides)) {
         if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
         config[key] = typeof value === "object" && value !== null && !Array.isArray(value)
           ? { ...config[key], ...value } : value;
@@ -129,4 +155,3 @@ export function createSpeechConfigHandler({ getDb, isConnected, warn = () => {} 
     return res.json(config);
   };
 }
-

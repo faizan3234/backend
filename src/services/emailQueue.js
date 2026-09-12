@@ -1,4 +1,9 @@
 import fs from 'fs';
+import { createHash, randomUUID } from 'node:crypto';
+
+const EMAIL_TYPES = ['EMAIL_REPORT', 'EMAIL_RECEIPT', 'EMAIL_ADMIN_RESET'];
+const escapeHTML = (value) => String(value).replace(/[&<>"']/g,
+    (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 
 class EmailQueueService {
     constructor(db, transporter) {
@@ -13,10 +18,14 @@ class EmailQueueService {
      * Returns immediately - does NOT wait for email to send
      */
     queueEmail(sessionId, type, payload) {
-        const eventId = `EVT-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+        if (!EMAIL_TYPES.includes(type)) throw new Error('Unsupported email type');
+        const documentId = payload?.reportId || payload?.receiptId;
+        const eventId = documentId && type !== 'EMAIL_ADMIN_RESET'
+            ? 'EVT-' + createHash('sha256').update(JSON.stringify([sessionId, type, documentId])).digest('hex')
+            : 'EVT-' + randomUUID();
 
         const stmt = this.db.prepare(`
-            INSERT INTO event_queue (
+            INSERT OR IGNORE INTO event_queue (
                 event_id, session_id, type, payload, 
                 status, attempts, created_at
             ) VALUES (?, ?, ?, ?, 'PENDING', 0, datetime('now'))
@@ -89,11 +98,15 @@ class EmailQueueService {
         this.isProcessing = true;
 
         try {
+            // Repair legacy rows that exhausted retries but remained PENDING.
+            this.db.prepare(`UPDATE event_queue SET status = 'FAILED'
+                WHERE status = 'PENDING' AND attempts >= 5
+                AND type IN ('EMAIL_REPORT', 'EMAIL_RECEIPT', 'EMAIL_ADMIN_RESET')`).run();
             // Get pending emails (ordered by oldest first)
             const stmt = this.db.prepare(`
                 SELECT * FROM event_queue 
                 WHERE status = 'PENDING' 
-                AND type IN ('EMAIL_REPORT', 'EMAIL_RECEIPT')
+                AND type IN ('EMAIL_REPORT', 'EMAIL_RECEIPT', 'EMAIL_ADMIN_RESET')
                 AND attempts < 5
                 ORDER BY created_at ASC
                 LIMIT 10
@@ -117,7 +130,7 @@ class EmailQueueService {
                     sent++;
                 } catch (err) {
                     console.error(`[EmailQueue] ❌ Failed to send ${event.event_id}:`, err.message);
-                    this._incrementAttempts(event.event_id, err.message);
+                    this._incrementAttempts(event.event_id, err.message, err.permanent === true);
                     failed++;
                 }
             }
@@ -156,7 +169,20 @@ class EmailQueueService {
         // Prepare email based on type
         let mailOptions;
 
-        if (event.type === 'EMAIL_REPORT') {
+        if (event.type === 'EMAIL_ADMIN_RESET') {
+            if (!Number.isFinite(payload.expiresAt) || payload.expiresAt <= Date.now()) {
+                const error = new Error('Recovery code expired; request a new code.');
+                error.permanent = true;
+                throw error;
+            }
+            if (typeof payload.text !== 'string' || !payload.text) throw new Error('Recovery email text missing');
+            mailOptions = {
+                from: process.env.GMAIL_USER,
+                to: toEmail,
+                subject: 'Admin password reset — your recovery code',
+                text: payload.text,
+            };
+        } else if (event.type === 'EMAIL_REPORT') {
             const pdfBuffer = this._getPdfBuffer(payload, 'Health Report');
             mailOptions = {
                 from: process.env.GMAIL_USER,
@@ -191,7 +217,10 @@ class EmailQueueService {
         }
 
         // Send email
-        await this.transporter.sendMail(mailOptions);
+        const result = await this.transporter.sendMail(mailOptions);
+        if (Array.isArray(result?.accepted) && result.accepted.length === 0) {
+            throw new Error('Mail server did not accept the recipient');
+        }
 
         // Mark as sent
         this._markSent(event.event_id);
@@ -205,13 +234,18 @@ class EmailQueueService {
      * @private
      */
     _getPdfBuffer(payload, pdfType = 'PDF') {
+        let buffer;
         if (payload?.pdfBuffer) {
-            return Buffer.from(payload.pdfBuffer);
+            buffer = Buffer.from(payload.pdfBuffer);
+        } else if (payload?.pdfPath && fs.existsSync(payload.pdfPath)) {
+            buffer = fs.readFileSync(payload.pdfPath);
+        } else {
+            throw new Error(`Real ${pdfType} attachment file not found at path: ${payload?.pdfPath || 'undefined'}`);
         }
-        if (payload?.pdfPath && fs.existsSync(payload.pdfPath)) {
-            return fs.readFileSync(payload.pdfPath);
+        if (buffer.length < 8 || buffer.subarray(0, 5).toString() !== '%PDF-') {
+            throw new Error(`Invalid or empty ${pdfType} attachment`);
         }
-        throw new Error(`Real ${pdfType} attachment file not found at path: ${payload?.pdfPath || 'undefined'}`);
+        return buffer;
     }
 
     /**
@@ -232,14 +266,15 @@ class EmailQueueService {
      * Increment failed attempt counter
      * @private
      */
-    _incrementAttempts(eventId, errorMsg = '') {
+    _incrementAttempts(eventId, errorMsg = '', permanent = false) {
         const stmt = this.db.prepare(`
             UPDATE event_queue 
             SET attempts = attempts + 1,
-                last_error = ?
+                last_error = ?,
+                status = CASE WHEN attempts + 1 >= 5 OR ? = 1 THEN 'FAILED' ELSE 'PENDING' END
             WHERE event_id = ?
         `);
-        stmt.run(errorMsg, eventId);
+        stmt.run(errorMsg, permanent ? 1 : 0, eventId);
     }
 
     /**
@@ -263,7 +298,7 @@ class EmailQueueService {
                     <p style="margin:6px 0 0;color:#94a3b8;font-size:13px;">Your Personalized Health Checkup</p>
                 </td></tr>
                 <tr><td style="padding:32px 40px 20px;">
-                    <h2 style="margin:0;color:#172033;font-size:18px;font-weight:600;">Dear ${customerData.name || 'Valued Customer'},</h2>
+                    <h2 style="margin:0;color:#172033;font-size:18px;font-weight:600;">Dear ${escapeHTML(customerData.name || 'Valued Customer')},</h2>
                     <p style="color:#475569;font-size:14px;line-height:1.6;margin:12px 0 0;">
                         Your comprehensive health report from today's session is attached as an authoritative PDF.
                     </p>
@@ -306,7 +341,7 @@ class EmailQueueService {
                     <p style="margin:6px 0 0;color:#94a3b8;font-size:13px;">Purchase Receipt & Payment Confirmation</p>
                 </td></tr>
                 <tr><td style="padding:32px 40px 20px;">
-                    <h2 style="margin:0;color:#172033;font-size:18px;font-weight:600;">Dear ${customerData.name || 'Valued Customer'},</h2>
+                    <h2 style="margin:0;color:#172033;font-size:18px;font-weight:600;">Dear ${escapeHTML(customerData.name || 'Valued Customer')},</h2>
                     <p style="color:#475569;font-size:14px;line-height:1.6;margin:12px 0 0;">
                         Your payment has been successfully verified. Your official purchase receipt is attached as a PDF.
                     </p>
@@ -341,7 +376,7 @@ class EmailQueueService {
                 status,
                 COUNT(*) as count
             FROM event_queue
-            WHERE type IN ('EMAIL_REPORT', 'EMAIL_RECEIPT')
+            WHERE type IN ('EMAIL_REPORT', 'EMAIL_RECEIPT', 'EMAIL_ADMIN_RESET')
             GROUP BY status
         `);
 
