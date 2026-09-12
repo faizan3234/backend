@@ -93,8 +93,8 @@ export function initializeDatabase(customPath = null) {
         // Migration helper: ensure event_queue check constraint allows EMAIL_REPORT & EMAIL_RECEIPT
         try {
             const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='event_queue'").get();
-            if (tableSql && tableSql.sql && !tableSql.sql.includes('EMAIL_REPORT')) {
-                db.exec(`
+            if (tableSql && tableSql.sql && !tableSql.sql.includes('EMAIL_ADMIN_RESET')) {
+                db.transaction(() => db.exec(`
                     CREATE TABLE IF NOT EXISTS event_queue_new (
                         event_id TEXT PRIMARY KEY,
                         type TEXT NOT NULL,
@@ -107,7 +107,7 @@ export function initializeDatabase(customPath = null) {
                         next_attempt_at TEXT,
                         processed_at TEXT,
                         last_error TEXT,
-                        CHECK (type IN ('EMAIL_REPORT', 'EMAIL_RECEIPT', 'EMAIL_PENDING', 'SYNC_PENDING', 'REPORT_CREATED', 'RECEIPT_CREATED', 'PAYMENT_VERIFIED', 'DISPENSE_STARTED', 'DISPENSE_COMPLETED')),
+                        CHECK (type IN ('EMAIL_REPORT', 'EMAIL_RECEIPT', 'EMAIL_ADMIN_RESET', 'EMAIL_PENDING', 'SYNC_PENDING', 'REPORT_CREATED', 'RECEIPT_CREATED', 'PAYMENT_VERIFIED', 'DISPENSE_STARTED', 'DISPENSE_COMPLETED')),
                         CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED'))
                     );
                     INSERT INTO event_queue_new SELECT * FROM event_queue;
@@ -116,7 +116,7 @@ export function initializeDatabase(customPath = null) {
                     CREATE INDEX IF NOT EXISTS idx_event_queue_type ON event_queue(type);
                     CREATE INDEX IF NOT EXISTS idx_event_queue_status ON event_queue(status);
                     CREATE INDEX IF NOT EXISTS idx_event_queue_next_attempt ON event_queue(next_attempt_at);
-                `);
+                `))();
             }
         } catch (e) {}
 

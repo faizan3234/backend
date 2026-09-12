@@ -15,6 +15,39 @@ from speech_session import SpeechSessionState
 from vad import VoiceActivityDetector, compute_frame_rms
 
 
+class TestCaptureRecovery(unittest.TestCase):
+    def test_select_mic_not_loopback(self):
+        from audio_capture import find_pyaudio_input_device
+        pa = MagicMock()
+        devices = [{"name": "PCM2902 monitor", "maxInputChannels": 2}, {"name": "USB Audio Microphone", "maxInputChannels": 1}]
+        pa.get_device_count.return_value = 2
+        pa.get_device_info_by_index.side_effect = devices.__getitem__
+        self.assertEqual(find_pyaudio_input_device(pa)[0], 1)
+
+    def test_no_loopback_fallback(self):
+        from audio_capture import find_pyaudio_input_device
+        pa = MagicMock()
+        pa.get_device_count.return_value = 1
+        pa.get_device_info_by_index.return_value = {"name": "USB loopback", "maxInputChannels": 1}
+        pa.get_default_input_device_info.return_value = {"name": "Stereo Mix", "maxInputChannels": 2, "index": 0}
+        with self.assertRaises(RuntimeError):
+            find_pyaudio_input_device(pa)
+
+    def test_unplug_cleanup_and_malformed_audio(self):
+        import threading
+        import audio_capture
+        stop = threading.Event()
+        stream = MagicMock()
+        valid = b"\x00" * config.BYTES_PER_FRAME
+        stream.read.side_effect = [b"\x00", valid, IOError("USB unplugged")]
+        stream.stop_stream.side_effect = OSError("Already unplugged")
+        with patch.object(audio_capture, "resolve_capture_device", return_value=("usb", "Test mic")), patch.object(audio_capture, "find_pyaudio_input_device", return_value=(1, "Test mic")), patch.object(stop, "wait", side_effect=lambda _: stop.set()):
+            capture = audio_capture.AudioCaptureStream()
+            capture.pa.open.return_value = stream
+            self.assertEqual(list(capture.stream_frames(stop)), [valid])
+            stream.close.assert_called_once()
+
+
 class TestVAD(unittest.TestCase):
     def test_silence_rms(self):
         silence = b"\x00" * 640

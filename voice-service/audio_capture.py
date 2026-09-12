@@ -1,16 +1,21 @@
 import logging
-import time
 from typing import Callable, Generator, Optional
 import pyaudio
 
 from audio_devices import resolve_capture_device
 from config import BYTES_PER_FRAME, SAMPLE_RATE, MIC_DEVICE_HINT
 
+def is_microphone_input(info):
+    name = str(info.get("name", "")).lower()
+    return int(info.get("maxInputChannels", 0)) > 0 and not any(
+        word in name for word in ("monitor", "loopback", "stereo mix", "what u hear")
+    )
+
 def find_pyaudio_input_device(pa, hint="PCM2902"):
     try:
         count = pa.get_device_count()
-    except Exception:
-        return (None, "default")
+    except Exception as exc:
+        raise RuntimeError("Microphone device enumeration failed") from exc
     hint_lower = (hint or "").lower()
     candidates = [hint_lower, "pcm2902", "usb audio", "codec", "usb", "mic"]
     for target in candidates:
@@ -21,13 +26,15 @@ def find_pyaudio_input_device(pa, hint="PCM2902"):
                 info = pa.get_device_info_by_index(i)
                 channels = int(info.get("maxInputChannels", 0))
                 name = str(info.get("name", ""))
-                if channels > 0 and target in name.lower():
+                if is_microphone_input(info) and target in name.lower():
                     logger.info("Matched PyAudio input device [%d]: %s (channels: %d)", i, name, channels)
                     return (i, name)
             except Exception:
                 pass
     try:
         default_info = pa.get_default_input_device_info()
+        if not is_microphone_input(default_info):
+            raise ValueError("Default input is an output monitor")
         idx = default_info.get("index")
         name = default_info.get("name", "Default")
         logger.info("Using default PyAudio input device [%d]: %s", idx, name)
@@ -37,13 +44,13 @@ def find_pyaudio_input_device(pa, hint="PCM2902"):
     for i in range(count):
         try:
             info = pa.get_device_info_by_index(i)
-            if int(info.get("maxInputChannels", 0)) > 0:
+            if is_microphone_input(info):
                 name = str(info.get("name", ""))
                 logger.info("Using first available PyAudio input device [%d]: %s", i, name)
                 return (i, name)
         except Exception:
             pass
-    return (None, "default")
+    raise RuntimeError("No microphone input found; speaker loopback is not a microphone")
 
 logger = logging.getLogger("reliv_voice.capture")
 
@@ -74,17 +81,11 @@ class AudioCaptureStream:
         Continuously yields raw PCM audio frames until stop_event is set.
         """
         while not stop_event.is_set():
-            self._device_id, self._device_name = resolve_capture_device()
-            dev_idx, dev_matched_name = find_pyaudio_input_device(self.pa, MIC_DEVICE_HINT)
-            if dev_matched_name and dev_matched_name != "default":
-                self._device_name = dev_matched_name
-            logger.info(
-                "Starting capture on device: %s (%s), PyAudio idx=%s",
-                self._device_id, self._device_name, dev_idx
-            )
-            
             stream = None
             try:
+                self._device_id, self._device_name = resolve_capture_device()
+                dev_idx, self._device_name = find_pyaudio_input_device(self.pa, MIC_DEVICE_HINT)
+                logger.info("Starting capture: %s, PyAudio idx=%s", self._device_name, dev_idx)
                 open_kwargs = {
                     "format": pyaudio.paInt16,
                     "channels": 1,
@@ -102,6 +103,8 @@ class AudioCaptureStream:
                         frame = stream.read(int(BYTES_PER_FRAME / 2), exception_on_overflow=False)
                         if not frame:
                             break
+                        if len(frame) != BYTES_PER_FRAME:
+                            continue
                         yield frame
                     except IOError as e:
                         logger.warning("Audio capture stream underrun or error: %s", e)
@@ -110,12 +113,15 @@ class AudioCaptureStream:
             except Exception as exc:
                 logger.error("Failed to start or stream audio capture: %s", exc)
                 self._notify_status(False, str(exc))
-                time.sleep(2)
             finally:
                 if stream:
-                    stream.stop_stream()
-                    stream.close()
+                    # USB unplug can make stop_stream throw; still close and retry.
+                    for cleanup in (stream.stop_stream, stream.close):
+                        try:
+                            cleanup()
+                        except Exception as exc:
+                            logger.warning("Capture cleanup: %s", exc)
 
             if not stop_event.is_set():
                 self._notify_status(False, "Capture device disconnected, reconnecting...")
-                time.sleep(1)
+                stop_event.wait(1)

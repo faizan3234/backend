@@ -38,7 +38,8 @@ import { handlePaymentComplete } from "./src/routes/paymentComplete.js";
 import { buildValidatedRedirectUrl } from "./src/utils/redirectHelper.js";
 import paymentV2Service from "./src/services/paymentV2Service.js";
 import { createPaymentV2Router } from "./src/routes/paymentV2Routes.js";
-import { createSpeechConfigHandler } from "./src/routes/speechConfig.js";
+import { createSpeechConfigHandler, validateSpeechConfig } from "./src/routes/speechConfig.js";
+import { createAdminAuth } from "./src/services/adminAuth.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 🔐 STAGE I: SECURE PAYMENT ARCHITECTURE (Post-Stage H Security Fix)
@@ -902,6 +903,25 @@ app.use('/api', rateLimitMiddleware
 );
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ limit: "5mb", extended: true }));
+const adminAuth = createAdminAuth({
+    loadCredentials: () => loadJsonSafe(CRED_STORE_FILE),
+    saveCredentials: store => saveJsonSafe(CRED_STORE_FILE, store),
+    loadResets: () => loadJsonSafe(TOKEN_STORE_FILE),
+    saveResets: store => saveJsonSafe(TOKEN_STORE_FILE, store),
+    bootstrapEmail: process.env.RELIV_ADMIN_EMAIL || '',
+    bootstrapPassword: process.env.RELIV_ADMIN_PASSWORD || '',
+    queueReset: (email, token, expiresAt) => {
+        if (!emailQueue) throw new Error('Email queue unavailable');
+        const session = sessionManager.createSession('RELIV-001', null);
+        sessionManager.attachCustomer(session.session_id, { email, name: 'Admin' });
+        emailQueue.queueEmail(session.session_id, 'EMAIL_ADMIN_RESET', {
+            text: `Your recovery code is: ${token}\n\nThis code expires in 15 minutes.`, expiresAt,
+        });
+    },
+});
+app.use(adminAuth.protectWrites);
+adminAuth.register(app);
+
 // Request logging middleware
 app.use((req, res, next) => {
     if (req.path.startsWith("/api/gdrive")) {
@@ -3541,8 +3561,19 @@ setInterval(() => {
 app.get("/api/speech-config", createSpeechConfigHandler({
     getDb: () => db,
     isConnected: () => dbConnected,
+    getLocal: () => JSON.parse(settingsManager.get('speechConfig', 'null')),
     warn: (message) => log.warn(message),
 }));
+app.put('/api/speech-config', (req, res) => {
+    let config;
+    try { config = validateSpeechConfig(req.body?.config); }
+    catch (error) { return res.status(400).json({ ok: false, message: error.message }); }
+    try {
+        settingsManager.set('speechConfig', JSON.stringify(config));
+        return res.json({ ok: true, config });
+    } catch { return res.status(503).json({ ok: false, message: 'Speech settings could not be saved. Please retry.' }); }
+});
+
 
 function createQrSessionHandler(req, res) {
     res.set({
@@ -4191,25 +4222,10 @@ app.get("/api/report-price", (req, res) => {
 // Update report price (admin only)
 app.put("/api/report-price", async (req, res) => {
     try {
-        const { price, password } = req.body;
-        if (typeof price !== 'number' || price < 0) {
+        const { price } = req.body;
+        if (typeof price !== 'number' || !Number.isFinite(price) || price < 0 || !Number.isSafeInteger(Math.round(price * 100))) {
             return res.status(400).json({ ok: false, message: 'Invalid price' });
         }
-        // Verify admin password
-        if (!password) return res.status(401).json({ ok: false, message: 'Password required' });
-        // Load credentials (same pattern as check-login)
-        let credStore;
-        if (dbConnected) {
-            const doc = await db.collection('admin_credentials').findOne({ _id: 'admin_store' });
-            credStore = doc && doc.data ? doc.data : {};
-        } else {
-            credStore = JSON.parse(await fs.readFile(CRED_STORE_FILE, 'utf8'));
-        }
-        const adminEmail = Object.keys(credStore)[0];
-        if (!adminEmail) return res.status(401).json({ ok: false, message: 'No admin configured' });
-        const admin = credStore[adminEmail];
-        const hash = crypto.pbkdf2Sync(password, admin.salt, admin.iterations || 100000, admin.keyLen || 64, admin.digest || 'sha512').toString('hex');
-        if (hash !== admin.hash) return res.status(401).json({ ok: false, message: 'Invalid password' });
         reportPrice = settingsManager.setReportPrice(price);
         log.info(`✅ Report price updated to ₹${price} by admin`);
         res.json({ ok: true, price: reportPrice });
@@ -4817,9 +4833,10 @@ function getAuthorizedHealthReportContext(sessionId) {
 // ───────────────────────────────────────────────────────────────────────────
 // POST /api/sessions/:sessionId/report - Generate health report
 // ───────────────────────────────────────────────────────────────────────────
-app.post("/api/sessions/:sessionId/report", async (req, res) => {
+async function generateSessionReport(req, res) {
     try {
-        const { sessionId } = req.params;
+        const sessionId = req.params.sessionId || req.body?.sessionId;
+        if (typeof sessionId !== 'string' || !sessionId.trim()) return res.status(400).json({ ok: false, message: 'Session ID is required' });
 
         if (!pdfGenerator) {
             pdfGenerator = new PDFGenerator(getDb());
@@ -4848,7 +4865,7 @@ app.post("/api/sessions/:sessionId/report", async (req, res) => {
 
         if (
             session.report_status === "READY" &&
-            existingReport
+            existingReport && pdfGenerator._readExisting(existingReport, 'reportId', 'report_id')
         ) {
             return res.json({
                 ok: true,
@@ -4905,7 +4922,7 @@ app.post("/api/sessions/:sessionId/report", async (req, res) => {
 
         try {
             sessionManager.updateReportStatus(
-                req.params.sessionId,
+                req.params.sessionId || req.body?.sessionId,
                 "FAILED"
             );
         } catch {}
@@ -4917,7 +4934,8 @@ app.post("/api/sessions/:sessionId/report", async (req, res) => {
                 "Failed to generate report"
         });
     }
-});
+}
+app.post("/api/sessions/:sessionId/report", generateSessionReport);
 
 // Legacy / alias route for report generation
 app.post("/api/reports/generate", async (req, res) => {
@@ -4957,7 +4975,7 @@ app.post("/api/reports/generate", async (req, res) => {
 
         if (
             session.report_status === "READY" &&
-            existingReport
+            existingReport && pdfGenerator._readExisting(existingReport, 'reportId', 'report_id')
         ) {
             return res.json({
                 ok: true,
@@ -5167,9 +5185,10 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
 // ───────────────────────────────────────────────────────────────────────────
 // POST /api/sessions/:sessionId/receipt - Generate receipt
 // ───────────────────────────────────────────────────────────────────────────
-app.post("/api/sessions/:sessionId/receipt", async (req, res) => {
+async function generateSessionReceipt(req, res) {
     try {
-        const { sessionId } = req.params;
+        const sessionId = req.params.sessionId || req.body?.sessionId;
+        if (typeof sessionId !== 'string' || !sessionId.trim()) return res.status(400).json({ ok: false, message: 'Session ID is required' });
 
         if (!pdfGenerator) {
             return res.status(503).json({ ok: false, message: "PDF service not available" });
@@ -5185,6 +5204,10 @@ app.post("/api/sessions/:sessionId/receipt", async (req, res) => {
         const transaction = transactionManager.getTransactionBySession(sessionId);
         if (!transaction) {
             return res.status(404).json({ ok: false, message: "No transaction found for session" });
+        }
+
+        if (transaction.verified !== 1 && !['VERIFIED', 'FULFILLED'].includes(transaction.status)) {
+            return res.status(403).json({ ok: false, message: 'Payment must be verified before generating a receipt' });
         }
 
         // Get customer data
@@ -5210,10 +5233,6 @@ app.post("/api/sessions/:sessionId/receipt", async (req, res) => {
                 amount: transaction.amount / 100
             });
 
-            app.post("/api/receipts/generate", async (req, res) => {
-                req.params = { sessionId: req.body.sessionId };
-                return app._router.handle({ ...req, url: `/api/sessions/${req.body.sessionId}/receipt` }, res);
-            });
             log.info(`📧 Receipt email queued for ${customerData.email}`);
         }
 
@@ -5225,14 +5244,16 @@ app.post("/api/sessions/:sessionId/receipt", async (req, res) => {
             ok: true,
             receiptId,
             pdfPath: `/api/sessions/${sessionId}/receipt/download`,
-            emailQueued: !!customerData.email
+            emailQueued: Boolean(customerData.email && emailQueue)
         });
 
     } catch (err) {
         log.error("❌ Receipt generation error:", err.message);
         res.status(500).json({ ok: false, message: err.message || "Failed to generate receipt" });
     }
-});
+}
+app.post("/api/sessions/:sessionId/receipt", generateSessionReceipt);
+app.post("/api/receipts/generate", generateSessionReceipt);
 
 // ───────────────────────────────────────────────────────────────────────────
 // GET /api/sessions/:sessionId/receipt/download - Download receipt PDF
@@ -5883,143 +5904,7 @@ function startInventoryMonitoring() {
     log.info('✅ Inventory expiration monitoring started (checking every hour)');
 }
 
-app.post("/api/send-receipt", async (req, res) => {
-    try {
-        // DB Guard - prevent crash when DB is reconnecting
-        if (!dbConnected || !db) {
-            return res.status(503).json({ ok: false, message: "Database temporarily unavailable" });
-        }
-
-        const { patient, cart, totalPrice, needsReport } = req.body;
-        if (!patient || !patient.email) return res.status(400).json({ ok: false, message: "Missing patient email" });
-        if (!needsReport && (!cart || cart.length === 0 || !totalPrice)) return res.status(400).json({ ok: false, message: "Missing cart items for purchase" });
-
-        const kitsCollection = db.collection("kits");
-        const inventoryAlerts = []; // Track kits that need alerts
-
-        for (const item of cart || []) {
-            const kit = await kitsCollection.findOne({ id: parseInt(item.id) });
-
-            if (!kit) {
-                log.error(`❌ Kit not found in database: ID ${item.id}`);
-                return res.status(404).json({ ok: false, message: `Kit not found: ${item.name || item.id}` });
-            }
-
-            // Support both cartQuantity (new format) and quantity (old format)
-            const purchaseQty = item.cartQuantity || item.quantity;
-
-            if (!purchaseQty || purchaseQty <= 0) {
-                log.error(`❌ Invalid purchase quantity for kit ${item.id}: ${purchaseQty}`);
-                return res.status(400).json({ ok: false, message: `Invalid quantity for ${kit.name}` });
-            }
-
-            if (kit.quantity < purchaseQty) {
-                log.warn(`⚠️ Insufficient stock for kit ${kit.name}: requested ${purchaseQty}, available ${kit.quantity}`);
-                return res.status(400).json({
-                    ok: false,
-                    message: `Insufficient stock for ${kit.name}. Only ${kit.quantity} available, you requested ${purchaseQty}.`
-                });
-            }
-
-            // Atomic update with condition to prevent race conditions
-            const updateResult = await kitsCollection.updateOne(
-                { id: parseInt(item.id), quantity: { $gte: purchaseQty } }, // Only update if still enough stock
-                {
-                    $inc: {
-                        quantity: -purchaseQty,
-                        totalPurchases: purchaseQty  // Track total purchases for "Most Chosen" badge
-                    },
-                    $set: { updatedAt: new Date() }
-                }
-            );
-
-            // Check if update actually happened (prevents race condition)
-            if (updateResult.matchedCount === 0) {
-                log.error(`❌ Race condition detected for kit ${item.id} - stock changed during transaction`);
-                return res.status(409).json({
-                    ok: false,
-                    message: `Stock for ${kit.name} changed during checkout. Please refresh and try again.`
-                });
-            }
-
-            // Check for inventory alerts: expired, out of stock (0), or reaches 1
-            const updatedKit = await kitsCollection.findOne({ id: parseInt(item.id) });
-            if (updatedKit) {
-                const isExpired = new Date(updatedKit.expiryDate) < new Date();
-
-                // Check if expired
-                if (isExpired) {
-                    inventoryAlerts.push({
-                        name: updatedKit.name,
-                        currentQuantity: updatedKit.quantity,
-                        expiryDate: updatedKit.expiryDate,
-                        type: 'expired'
-                    });
-                }
-
-                // Check if out of stock (quantity = 0)
-                if (updatedKit.quantity === 0) {
-                    inventoryAlerts.push({
-                        name: updatedKit.name,
-                        currentQuantity: updatedKit.quantity,
-                        type: 'outofstock'
-                    });
-                }
-                // Check if quantity reaches 1
-                else if (updatedKit.quantity === 1) {
-                    inventoryAlerts.push({
-                        name: updatedKit.name,
-                        currentQuantity: updatedKit.quantity,
-                        type: 'lowstock'
-                    });
-                }
-            }
-        }
-
-        const localSession = sessionManager.createSession('RELIV-001', 'MEDICINE');
-        sessionManager.attachCustomer(localSession.session_id, patient);
-        sessionManager.selectService(localSession.session_id, 'MEDICINE');
-        const transaction = transactionManager.createTransaction(localSession.session_id, 'MEDICINE', cart.map(item => ({
-            kit_id: String(item.id || item.kit_id),
-            quantity: Number(item.cartQuantity || item.quantity || 1)
-        })));
-        transactionManager.verifyPayment(transaction.transaction_id, `legacy-${Date.now()}`, {
-            amount: transaction.amount,
-            status: 'captured'
-        });
-        sessionManager.markPaymentVerified(localSession.session_id, transaction.provider_payment_id || `legacy-${Date.now()}`);
-        const { pdfPath, pdfBuffer } = await pdfGenerator.generateReceipt(localSession.session_id, patient, transaction);
-        if (patient.email && emailQueue) {
-            emailQueue.queueEmail(localSession.session_id, 'EMAIL_RECEIPT', {
-                pdfPath,
-                pdfBuffer,
-                amount: transaction.amount / 100
-            });
-        }
-        console.log(`🧾 Receipt generated and queued for ${patient.email}`);
-
-        // Send inventory alerts if any issues detected
-        if (inventoryAlerts.length > 0) {
-            await sendInventoryAlert(inventoryAlerts);
-        }
-
-        res.json({ ok: true });
-    } catch (err) {
-        console.error("Error in /api/send-receipt:", err);
-
-        // Send critical alert to admin
-        await sendCriticalErrorAlert('Receipt Email', err, {
-            userEmail: req.body.patient?.email,
-            userName: req.body.patient?.name,
-            endpoint: '/api/send-receipt',
-            cartItems: req.body.cart?.length || 0,
-            totalPrice: req.body.totalPrice,
-            timestamp: new Date().toISOString()
-        }).catch(alertErr => log.error('Alert send failed:', alertErr));
-
-        res.status(500).json({ ok: false, message: "Failed to send receipt" });
-    }
-});
+app.post("/api/send-receipt", generateSessionReceipt);
 // BLE endpoints - Only work when running locally with Raspberry Pi
 // On Render these gracefully return "not available" without crashing
 // Note: IS_CLOUD_DEPLOYMENT and BLE_BACKEND_URL are defined at the top of the file
@@ -6223,40 +6108,8 @@ async function saveJsonSafe(filePath, obj) {
     const collection = filePath.includes('reset_tokens') ? 'admin_reset_tokens' : 'admin_credentials';
     return saveAdminData(collection, filePath, obj);
 }
-app.post("/api/save-report", async (req, res) => {
-    try {
-        const { healthData, bodyCompositionData, scanId } = req.body;
-        if (!healthData || !healthData.patient || !healthData.patient.email || !healthData.vitals) {
-            return res.status(400).json({ ok: false, message: "Missing data. Expected { healthData: { patient, vitals } }" });
-        }
-        const sessionId = req.body.sessionId || `offline-report-${Date.now()}`;
-        const session = sessionManager.getSession(sessionId) || sessionManager.createSession('RELIV-001', 'HEALTH_CHECKUP');
-        if (!session.customer_data) {
-            try {
-                sessionManager.attachCustomer(session.session_id, healthData.patient);
-            } catch { }
-        }
-        const report = await pdfGenerator.generateHealthReport(
-            session.session_id,
-            healthData.patient,
-            {
-                vitals: healthData.vitals,
-                bodyComposition: bodyCompositionData || healthData.bodyComposition || null
-            }
-        );
-        if (healthData.patient.email && emailQueue) {
-            emailQueue.queueEmail(session.session_id, 'EMAIL_REPORT', {
-                pdfPath: report.pdfPath,
-                pdfBuffer: report.pdfBuffer,
-                reportId: report.reportId
-            });
-        }
-        res.json({ ok: true, reportId: report.reportId });
-    } catch (err) {
-        console.error("❌ Error saving report:", err);
-        res.status(500).json({ ok: false, message: "Failed to save report" });
-    }
-});
+// Legacy clients must provide a paid session; body-supplied health data is not authoritative.
+app.post("/api/save-report", generateSessionReport);
 app.get("/api/reports/history/:email", async (req, res) => {
     try {
         // DB Guard - prevent crash when DB is reconnecting
@@ -6271,82 +6124,6 @@ app.get("/api/reports/history/:email", async (req, res) => {
     } catch (err) {
         console.error("Error fetching report history:", err);
         res.status(500).json({ error: "Failed to fetch report history" });
-    }
-});
-app.post("/api/send-reset-email", async (req, res) => {
-    try {
-        const { to } = req.body;
-        if (!to) return res.status(400).json({ ok: false, message: "Missing 'to' (admin email)" });
-        const token = Math.floor(100000 + Math.random() * 900000).toString();
-        const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-        const expiry = Date.now() + 15 * 60 * 1000;
-        const store = await loadJsonSafe(TOKEN_STORE_FILE);
-        store[to] = { tokenHash, expiry };
-        await saveJsonSafe(TOKEN_STORE_FILE, store);
-        if (emailQueue) {
-            const resetSession = sessionManager.createSession('RELIV-001', null);
-            sessionManager.attachCustomer(resetSession.session_id, { email: to, name: 'Admin' });
-            emailQueue.queueEmail(resetSession.session_id, 'EMAIL_REPORT', {
-                subject: "Admin password reset — your recovery code",
-                text: `Your recovery code is: ${token}\n\nThis code expires in 15 minutes.`,
-                html: `<p>Your recovery code is: <strong>${token}</strong></p><p>This code expires in 15 minutes.</p>`,
-                attachments: []
-            });
-            return res.json({ ok: true, message: "Recovery email queued" });
-        }
-        res.status(503).json({ ok: false, message: "Email queue not available" });
-    } catch (err) {
-        console.error("Error in /api/send-reset-email:", err);
-        res.status(500).json({ ok: false, message: "Failed to send reset email" });
-    }
-});
-app.post("/api/confirm-reset", async (req, res) => {
-    try {
-        const { email, token, newPassword } = req.body;
-        if (!email || !token || !newPassword) return res.status(400).json({ ok: false, message: "Missing parameters" });
-        const store = await loadJsonSafe(TOKEN_STORE_FILE);
-        const entry = store[email];
-        if (!entry || Date.now() > entry.expiry) {
-            return res.status(400).json({ ok: false, message: "Invalid or expired code" });
-        }
-        const inputHash = crypto.createHash("sha256").update(token).digest("hex");
-        if (inputHash !== entry.tokenHash) return res.status(400).json({ ok: false, message: "Invalid code" });
-        const salt = crypto.randomBytes(16).toString("hex");
-        const hash = crypto.pbkdf2Sync(newPassword, salt, 100000, 64, "sha512").toString("hex");
-        const credStore = await loadJsonSafe(CRED_STORE_FILE);
-        credStore[email] = { algorithm: "pbkdf2", salt, iterations: 100000, keyLen: 64, digest: "sha512", hash, updatedAt: Date.now() };
-        await saveJsonSafe(CRED_STORE_FILE, credStore);
-        delete store[email];
-        await saveJsonSafe(TOKEN_STORE_FILE, store);
-        res.json({ ok: true });
-    } catch (err) {
-        console.error("Error in /api/confirm-reset:", err);
-        res.status(500).json({ ok: false, message: "Failed" });
-    }
-});
-app.post("/api/check-login", async (req, res) => {
-    try {
-        const { email, password } = req.body;
-        if (!email || !password) return res.status(400).json({ ok: false, message: "Missing parameters" });
-        const cleanEmail = email.toLowerCase().trim();
-        const credStore = await loadJsonSafe(CRED_STORE_FILE);
-        const user = credStore[email] || credStore[cleanEmail];
-        if (user) {
-            const hash = crypto.pbkdf2Sync(password, user.salt, user.iterations || 100000, user.keyLen || 64, user.digest || 'sha512').toString("hex");
-            if (hash === user.hash) return res.json({ ok: true });
-        }
-
-        // Fallback for default admin123
-        const normalizedPass = String(password).trim().toLowerCase();
-        if (normalizedPass === "admin123" || normalizedPass === "admin 123") {
-            return res.json({ ok: true });
-        }
-
-        if (!user) return res.status(400).json({ ok: false, message: "No such admin" });
-        res.status(401).json({ ok: false, message: "Invalid credentials" });
-    } catch (err) {
-        console.error("Error in /api/check-login:", err);
-        res.status(500).json({ ok: false });
     }
 });
 // Google Drive image endpoints - gracefully handle missing credentials

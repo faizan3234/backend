@@ -47,6 +47,16 @@ class SettingsManager {
         return Number.isFinite(parsed) ? parsed : 27;
     }
 
+    setReportPrice(price) {
+        if (typeof price !== 'number' || !Number.isFinite(price) || price < 0 ||
+            !Number.isSafeInteger(Math.round(price * 100))) {
+            throw new Error('Invalid report price');
+        }
+        const rounded = Math.round(price * 100) / 100;
+        this.set('reportPrice', rounded);
+        return rounded;
+    }
+
     getTaxRate() {
         const rawValue = this.get('taxRate') ?? this.get('tax_rate') ?? this.get('gstRate') ?? this.get('gst_rate') ?? '12';
         const parsed = Number(String(rawValue).replace('%', '').trim());
@@ -85,4 +95,3 @@ class SettingsManager {
 }
 
 export default new SettingsManager();
-
