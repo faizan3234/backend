@@ -25,7 +25,7 @@ def compute_frame_rms(frame: bytes) -> float:
     """
     Computes root-mean-square (RMS) energy for a 16-bit signed PCM mono audio frame.
     """
-    if not frame:
+    if not frame or len(frame) % 2:
         return 0.0
     count = len(frame) // 2
     if count <= 0:
@@ -65,7 +65,7 @@ class VoiceActivityDetector:
     def update_context(self, expecting: str):
         """Dynamically adjusts endpointing silence duration based on expected response."""
         expecting = (expecting or "").strip().lower()
-        if expecting.startswith("confirm") or expecting in {"yes", "no", "wrong", "yes/no", "galat", "sahi", "nahi"}:
+        if expecting.startswith("confirm") or expecting in {"yes", "no", "wrong", "yes/no", "galat", "sahi", "nahi", "payment_confirmation"}:
             duration_ms = 220
         elif expecting == "language":
             duration_ms = 220
@@ -73,6 +73,8 @@ class VoiceActivityDetector:
             duration_ms = 220
         elif expecting == "service":
             duration_ms = 250
+        elif expecting == "help":
+            duration_ms = 350
         elif expecting == "name":
             duration_ms = 350
         else:

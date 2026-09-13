@@ -47,6 +47,65 @@ class TestCaptureRecovery(unittest.TestCase):
             self.assertEqual(list(capture.stream_frames(stop)), [valid])
             stream.close.assert_called_once()
 
+    def test_named_plug_is_preferred_over_raw_hardware(self):
+        import audio_capture
+        pa = MagicMock()
+        devices = [{"name": "PCM2902 hw:8,0", "maxInputChannels": 1},
+                   {"name": "reliv_mic", "maxInputChannels": 1}]
+        pa.get_device_count.return_value = len(devices)
+        pa.get_device_info_by_index.side_effect = devices.__getitem__
+        pa.get_default_input_device_info.return_value = {**devices[0], "index": 0}
+        self.assertEqual(audio_capture.find_pyaudio_input_device(pa), (1, "reliv_mic"))
+
+    def test_configured_default_keeps_alsa_conversion(self):
+        import audio_capture
+        pa = MagicMock()
+        pa.get_device_count.return_value = 0
+        pa.get_default_input_device_info.return_value = {"name": "default", "index": 7, "maxInputChannels": 1}
+        self.assertEqual(audio_capture.find_pyaudio_input_device(pa), (7, "default"))
+
+    def test_discovery_failure_retries_without_exiting_capture(self):
+        import threading
+        import audio_capture
+        stop = threading.Event()
+        capture = audio_capture.AudioCaptureStream()
+        with patch.object(audio_capture, "resolve_capture_device", side_effect=OSError("unplugged")), patch.object(stop, "wait", side_effect=lambda _: stop.set()):
+            self.assertEqual(list(capture.stream_frames(stop)), [])
+            capture.pa.open.assert_not_called()
+
+    def test_rate_fallback_keeps_selected_device(self):
+        import audio_capture
+        capture = audio_capture.AudioCaptureStream()
+        stream = MagicMock()
+        with patch.object(capture, "_open_stream", side_effect=[ValueError("Invalid sample rate"), stream]) as opened:
+            result, rate = capture._open_with_rate_fallback(3)
+        self.assertIs(result, stream)
+        self.assertEqual(rate, 48000)
+        self.assertEqual([call.args[0] for call in opened.call_args_list], [3, 3])
+
+    def test_resampling_preserves_nonzero_audio_and_frame_size(self):
+        import math
+        import struct
+        import audio_capture
+        for rate in (44100, 48000):
+            samples = [int(10000 * math.sin(2 * math.pi * 440 * n / rate)) for n in range(rate // 50)]
+            pcm = struct.pack('<' + 'h' * len(samples), *samples)
+            converted = audio_capture._make_resampler(rate, 16000)(pcm)
+            self.assertEqual(len(converted), config.BYTES_PER_FRAME)
+            self.assertGreater(compute_frame_rms(converted), 5000)
+            with patch.dict(sys.modules, {"numpy": None}):
+                fallback = audio_capture._make_resampler(rate, 16000)(pcm)
+            self.assertEqual(len(fallback), config.BYTES_PER_FRAME)
+            self.assertGreater(compute_frame_rms(fallback), 5000)
+
+    def test_help_and_payment_endpointing_and_partial_pcm(self):
+        detector = VoiceActivityDetector()
+        detector.update_context('payment_confirmation')
+        self.assertEqual(detector.silence_frames_to_end, 220 // config.FRAME_MS)
+        detector.update_context('help')
+        self.assertEqual(detector.silence_frames_to_end, 350 // config.FRAME_MS)
+        self.assertEqual(compute_frame_rms(b"\x01"), 0)
+
 
 class TestVAD(unittest.TestCase):
     def test_silence_rms(self):

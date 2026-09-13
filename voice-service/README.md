@@ -63,3 +63,40 @@ pip needs those headers and tools to build PyAudio on Linux.
 
 RELIV_ALLOW_BARGE_IN defaults to 0 until PipeWire echo cancellation is configured.
 Without AEC, the kiosk speaker can retrigger the microphone.
+
+## Help and payment guidance mode
+
+The kiosk uses touch for names, ages, gender, language, service choices, and codes.
+The mic only requests instructions (English/Hindi/Bengali) or answers the payment
+question while the payment QR is ready. A spoken yes opens code entry; only the
+existing payment API can authorize a transaction.
+
+The frontend sends `expecting=help` normally and `payment_confirmation` while
+accepting payment replies. Endpointing uses 350 ms and 220 ms of trailing silence,
+respectively; these are not promises of total Whisper processing latency. Audio
+capture stays open, while speaker gating discards frames during kiosk speech and
+its acoustic tail. Keep `RELIV_ALLOW_BARGE_IN=0` on this deployment.
+
+Capture prefers the configured `reliv_mic` PCM when PortAudio exposes it, then a
+valid default input, then a physical microphone. Monitor/loopback inputs are
+rejected. This preserves the Pi's configured ALSA conversion and supports native
+44.1/48 kHz inputs with software resampling when necessary. A device-discovery
+failure or unplug retries without terminating the capture thread.
+
+The code does not modify `/etc/asound.conf`, udev rules, ALSA mixer settings,
+PipeWire, Python packages, or `reliv-voice.service`. The global ALSA `pcm.!default`
+can affect playback as well as recording. ALSA `plug` converts formats/rates; it
+is not echo cancellation. See the [ALSA plug documentation](https://www.alsa-project.org/alsa-doc/alsa-lib/pcm_plugins.html).
+
+After deploying this branch, restart the existing service and inspect it:
+
+```bash
+sudo systemctl restart reliv-voice.service
+systemctl status reliv-voice.service --no-pager
+journalctl -u reliv-voice.service -n 40 --no-pager
+```
+
+Its `ExecStart` must use the voice-service virtual environment's Python. Do not
+run a second `python voice_service.py` process while the service is active.
+The unit tests mock audio hardware; perform the physical checks described in the
+frontend's `docs/VOICE_GUIDANCE.md` before marking a kiosk deployment verified.
