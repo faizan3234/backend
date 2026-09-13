@@ -17,13 +17,12 @@ Design notes
 from __future__ import annotations
 
 import logging
-import time
 from typing import Callable, Generator, Optional
 
 import pyaudio
 
 from audio_devices import resolve_capture_device
-from config import BYTES_PER_FRAME, SAMPLE_RATE, MIC_DEVICE_HINT
+from config import BYTES_PER_FRAME, SAMPLE_RATE, MIC_DEVICE_HINT, MIC_DEVICE_FALLBACK
 
 logger = logging.getLogger("reliv_voice.capture")
 
@@ -53,7 +52,6 @@ def _make_resampler(src_rate: int, dst_rate: int) -> Callable[[bytes], bytes]:
 
     # ---- Preferred: scipy.signal.resample_poly ----
     try:
-        import array
         import numpy as np
         from scipy.signal import resample_poly
         from math import gcd
@@ -64,10 +62,10 @@ def _make_resampler(src_rate: int, dst_rate: int) -> Callable[[bytes], bytes]:
         def _resample_scipy(pcm_bytes: bytes) -> bytes:
             if not pcm_bytes:
                 return pcm_bytes
-            x = np.frombuffer(pcm_bytes, dtype=np.int16)
+            x = np.frombuffer(pcm_bytes, dtype="<i2").astype(np.float32)
             y = resample_poly(x, up, down)
             # Clip to int16 range and convert back.
-            y = np.clip(y, -32768, 32767).astype(np.int16, copy=False)
+            y = np.clip(y, -32768, 32767).astype("<i2", copy=False)
             return y.tobytes()
 
         logger.info(
@@ -125,53 +123,41 @@ def _make_resampler(src_rate: int, dst_rate: int) -> Callable[[bytes], bytes]:
 # Device discovery
 # ---------------------------------------------------------------------------
 
+def is_microphone_input(info):
+    name = str(info.get("name", "")).lower()
+    return int(info.get("maxInputChannels", 0)) > 0 and not any(
+        marker in name for marker in ("monitor", "loopback", "stereo mix", "what u hear")
+    )
+
+
 def find_pyaudio_input_device(pa: pyaudio.PyAudio, hint: str = "PCM2902"):
-    """Pick the best input device by name hint, falling back to default."""
-    try:
-        count = pa.get_device_count()
-    except Exception:
-        return (None, "default")
-
-    hint_lower = (hint or "").lower()
-    candidates = [hint_lower, "pcm2902", "usb audio", "usb", "mic", "codec"]
-
-    for target in candidates:
-        if not target:
-            continue
-        for i in range(count):
-            try:
-                info = pa.get_device_info_by_index(i)
-                if int(info.get("maxInputChannels", 0)) > 0 and \
-                        target in str(info.get("name", "")).lower():
-                    name = str(info.get("name", ""))
-                    logger.info(
-                        "Matched PyAudio input device [%d]: %s (channels: %d)",
-                        i, name, int(info["maxInputChannels"]),
-                    )
-                    return (i, name)
-            except Exception:
-                continue
-
-    try:
-        info = pa.get_default_input_device_info()
-        idx = info.get("index")
-        name = str(info.get("name", "Default"))
-        logger.info("Using default PyAudio input device [%d]: %s", idx, name)
-        return (idx, name)
-    except Exception:
-        pass
-
-    for i in range(count):
+    """Prefer the configured ALSA plug PCM, without accepting output monitors."""
+    devices = []
+    for index in range(pa.get_device_count()):
         try:
-            info = pa.get_device_info_by_index(i)
-            if int(info.get("maxInputChannels", 0)) > 0:
-                name = str(info.get("name", ""))
-                logger.info("Using first available input device [%d]: %s", i, name)
-                return (i, name)
+            info = pa.get_device_info_by_index(index)
+            if is_microphone_input(info):
+                devices.append((index, str(info.get("name", ""))))
         except Exception:
             continue
-
-    return (None, "default")
+    # Preserve the Pi's reliv_mic plug conversion and stable RELIV_MIC routing.
+    for index, name in devices:
+        if name.lower() == MIC_DEVICE_FALLBACK.lower():
+            return index, name
+    try:
+        default = pa.get_default_input_device_info()
+        if isinstance(default, dict) and isinstance(default.get("index"), int) and is_microphone_input(default):
+            return default.get("index"), str(default.get("name", "default"))
+    except Exception:
+        pass
+    for target in ["reliv_mic", (hint or "").lower(), "pcm2902", "usb audio", "usb", "mic", "codec"]:
+        if target:
+            for index, name in devices:
+                if target in name.lower():
+                    return index, name
+    if devices:
+        return devices[0]
+    raise RuntimeError("No microphone input found; speaker loopback is not a microphone")
 
 
 # ---------------------------------------------------------------------------
@@ -256,25 +242,14 @@ class AudioCaptureStream:
         backoff_idx = 0
 
         while not stop_event.is_set():
-            self._device_id, self._device_name = resolve_capture_device()
-            dev_idx, dev_name = find_pyaudio_input_device(self.pa, MIC_DEVICE_HINT)
-            if dev_name and dev_name != "default":
-                self._device_name = dev_name
-
-            # Force ALSA 'default' (→ RELIV_MIC via /etc/asound.conf).
-            # Makes the service independent of card numbers.
-            dev_idx = None
-
-            logger.info(
-                "Starting capture on device: %s (%s), PyAudio idx=%s",
-                self._device_id, self._device_name, dev_idx,
-            )
-
             stream = None
             open_rate = SAMPLE_RATE
             resample: Callable[[bytes], bytes] = lambda b: b
 
             try:
+                self._device_id, self._device_name = resolve_capture_device()
+                dev_idx, self._device_name = find_pyaudio_input_device(self.pa, MIC_DEVICE_HINT)
+                logger.info("Starting capture: %s, PyAudio idx=%s", self._device_name, dev_idx)
                 stream, open_rate = self._open_with_rate_fallback(dev_idx)
                 resample = _make_resampler(open_rate, SAMPLE_RATE)
 
@@ -302,19 +277,24 @@ class AudioCaptureStream:
                         logger.warning("Audio stream returned empty frame; reopening.")
                         break
 
+                    # A partial PCM sample/frame is invalid input for VAD.
+                    if len(raw) != frames_to_read * 2:
+                        logger.debug("Skipping partial capture frame (%d bytes)", len(raw))
+                        continue
                     frame = resample(raw) if open_rate != SAMPLE_RATE else raw
-                    yield frame
+                    if len(frame) == BYTES_PER_FRAME:
+                        yield frame
 
             except Exception as exc:
                 logger.error("Audio capture failed: %s", exc)
                 self._notify_status(False, str(exc))
             finally:
                 if stream is not None:
-                    try:
-                        stream.stop_stream()
-                        stream.close()
-                    except Exception:
-                        logger.debug("Error closing stream", exc_info=True)
+                    for cleanup in (stream.stop_stream, stream.close):
+                        try:
+                            cleanup()
+                        except Exception:
+                            logger.debug("Error closing stream", exc_info=True)
 
             if stop_event.is_set():
                 break
@@ -324,10 +304,7 @@ class AudioCaptureStream:
             backoff_idx += 1
             self._notify_status(False, "Capture device disconnected; reconnecting...")
             logger.info("Reconnecting audio capture in %.1fs", delay)
-            # Sleep in small slices so stop_event is honored promptly.
-            deadline = time.monotonic() + delay
-            while not stop_event.is_set() and time.monotonic() < deadline:
-                time.sleep(0.1)
+            stop_event.wait(delay)
 
     # -- cleanup ------------------------------------------------------------
 

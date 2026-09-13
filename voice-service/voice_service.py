@@ -151,6 +151,8 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
             is_final=True,
             duration_ms=duration_ms,
         )
+        event["page"] = ctx["page"]
+        event["expecting"] = ctx["expecting"]
         broadcast_threadsafe(event, original_generation)
 
     except Exception as exc:
@@ -171,59 +173,62 @@ def capture_loop_worker():
     started_at = 0.0
     utterance_generation = session_state.get_generation()
 
-    for frame in stream.stream_frames(stop_event):
-        if stop_event.is_set():
-            break
+    try:
+        for frame in stream.stream_frames(stop_event):
+            if stop_event.is_set():
+                break
 
-        generation = session_state.get_generation()
-        if generation != utterance_generation:
-            vad.reset()
-            utterance_generation = generation
+            generation = session_state.get_generation()
+            if generation != utterance_generation:
+                vad.reset()
+                utterance_generation = generation
 
-        # 1. Check listening paused by frontend
-        if session_state.is_paused():
-            vad.reset()
-            continue
+            # 1. Check listening paused by frontend
+            if session_state.is_paused():
+                vad.reset()
+                continue
 
-        # 2. Check echo suppression (RELIV speaker active and barge-in disabled)
-        if echo_controller.should_suppress_mic():
-            echo_controller.record_suppression()
-            vad.reset()
-            continue
-            
-        # 3. Whisper is processing the previous answer
-        if transcription_busy.is_set():
-            vad.reset()
-            continue
+            # 2. Check echo suppression (RELIV speaker active and barge-in disabled)
+            if echo_controller.should_suppress_mic():
+                echo_controller.record_suppression()
+                vad.reset()
+                continue
 
-        # 4. Process frame through VAD
-        vad.update_context(session_state.get_snapshot()["expecting"])
-        event, level, completed_frames = vad.process_frame(frame)
+            # 3. Whisper is processing the previous answer
+            if transcription_busy.is_set():
+                vad.reset()
+                continue
 
-        if event == "SPEECH_STARTED":
-            started_at = time.monotonic()
-            logger.debug("Speech started (RMS: %.1f)", level)
-            broadcast_threadsafe(DialogueBridge.make_vad_event(speaking=True))
+            # 4. Process frame through VAD
+            vad.update_context(session_state.get_snapshot()["expecting"])
+            event, level, completed_frames = vad.process_frame(frame)
 
-        elif event == "SPEECH_ENDED":
-            logger.debug("Speech ended (%d frames)", len(completed_frames) if completed_frames else 0)
-            broadcast_threadsafe(DialogueBridge.make_vad_event(speaking=False))
+            if event == "SPEECH_STARTED":
+                started_at = time.monotonic()
+                logger.debug("Speech started (RMS: %.1f)", level)
+                broadcast_threadsafe(DialogueBridge.make_vad_event(speaking=True))
 
-            if completed_frames:
-                if transcription_busy.is_set():
-                    logger.info("Dropping utterance: transcription already in progress")
-                    continue
-                    
-                transcription_busy.set()
-                broadcast_threadsafe({"type": "processing", "active": True})
-                
-                # Dispatch transcription to background thread to avoid blocking capture
-                threading.Thread(
-                    target=async_transcribe_worker,
-                    args=(completed_frames, started_at, utterance_generation),
-                    daemon=True,
-                    name="WhisperTranscriptionWorker",
-                ).start()
+            elif event == "SPEECH_ENDED":
+                logger.debug("Speech ended (%d frames)", len(completed_frames) if completed_frames else 0)
+                broadcast_threadsafe(DialogueBridge.make_vad_event(speaking=False))
+
+                if completed_frames:
+                    if transcription_busy.is_set():
+                        logger.info("Dropping utterance: transcription already in progress")
+                        continue
+
+                    transcription_busy.set()
+                    broadcast_threadsafe({"type": "processing", "active": True})
+
+                    # Dispatch transcription to background thread to avoid blocking capture
+                    threading.Thread(
+                        target=async_transcribe_worker,
+                        args=(completed_frames, started_at, utterance_generation),
+                        daemon=True,
+                        name="WhisperTranscriptionWorker",
+                    ).start()
+    finally:
+        stream.close()
 
 
 async def ws_handler(websocket: ServerConnection):
@@ -231,7 +236,7 @@ async def ws_handler(websocket: ServerConnection):
     Handles incoming WebSocket connections and messages from React frontend.
     """
     global active_controller_ws, active_controller_id
-    
+
     logger.info("Client connected; awaiting CLIENT_HELLO handshake.")
     with clients_lock:
         clients.add(websocket)
@@ -265,7 +270,7 @@ async def ws_handler(websocket: ServerConnection):
                     active_controller_ws = websocket
                     active_controller_id = client_id
                     logger.info("Active controller registered: %s", client_id)
-                
+
                 if not already_active:
                     session_state.force_resume()
 
@@ -332,7 +337,7 @@ async def ws_handler(websocket: ServerConnection):
                 active_controller_id = None
                 # Clean up speaker state and retain the guard
                 echo_controller.remove_client(id(websocket))
-        
+
         # Fallback to remove client if not active
         echo_controller.remove_client(id(websocket))
 
