@@ -15,6 +15,7 @@ All business logic, state machines, payment validation, and screen actions
 remain in the React frontend and Node backend.
 """
 import asyncio
+import errno
 import json
 import logging
 import signal
@@ -55,6 +56,7 @@ vad = VoiceActivityDetector()
 stop_event = threading.Event()
 transcription_busy = threading.Event()
 event_loop: asyncio.AbstractEventLoop = None
+shutdown_requested: asyncio.Event = None
 
 def is_pathological_transcript(text: str) -> bool:
     text = (text or "").strip()
@@ -343,37 +345,72 @@ async def ws_handler(websocket: ServerConnection):
 
 
 async def main():
-    global event_loop
+    global event_loop, shutdown_requested
     event_loop = asyncio.get_running_loop()
+    shutdown_requested = asyncio.Event()
+    stop_event.clear()
+    capture_thread = None
 
-    # Launch audio capture in daemon thread
-    capture_thread = threading.Thread(target=capture_loop_worker, daemon=True, name="AudioCaptureWorker")
-    capture_thread.start()
-
-    logger.info("Starting RELIV voice service on ws://%s:%d", HOST, PORT)
-    async with serve(
-        ws_handler,
-        HOST,
-        PORT,
-        origins=ALLOWED_ORIGINS,
-        max_size=1_000_000,
-        ping_interval=10,
-        ping_timeout=30,
-        close_timeout=2,
-    ):
-        await asyncio.Future()  # run forever until shutdown
+    try:
+        # Bind before touching the microphone. A second process must not open
+        # PortAudio or contend with the running service's capture device.
+        async with serve(
+            ws_handler,
+            HOST,
+            PORT,
+            origins=ALLOWED_ORIGINS,
+            max_size=1_000_000,
+            ping_interval=10,
+            ping_timeout=30,
+            close_timeout=2,
+        ):
+            try:
+                capture_thread = threading.Thread(
+                    target=capture_loop_worker, daemon=True, name="AudioCaptureWorker"
+                )
+                capture_thread.start()
+                logger.info("RELIV voice service listening on ws://%s:%d", HOST, PORT)
+                await shutdown_requested.wait()
+            finally:
+                stop_event.set()
+        return 0
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE or capture_thread is not None:
+            raise
+        logger.error(
+            "Cannot start voice service: %s:%d is already in use. "
+            "Another voice process may be running. Check: "
+            "systemctl status reliv-voice.service --no-pager ; "
+            "sudo ss -ltnp 'sport = :%d' . "
+            "If reliv-voice.service owns the port, use "
+            "sudo systemctl restart reliv-voice.service instead of starting "
+            "another python voice_service.py process. The microphone was not opened.",
+            HOST, PORT, PORT,
+        )
+        return 1
+    finally:
+        stop_event.set()
+        if capture_thread is not None and capture_thread.is_alive():
+            # Let normal capture cleanup finish, but do not hang shutdown if a
+            # disconnected USB driver has blocked its read indefinitely.
+            await asyncio.to_thread(capture_thread.join, 2.0)
+            if capture_thread.is_alive():
+                logger.warning("Capture did not stop within two seconds; exiting daemon worker.")
+        shutdown_requested = None
+        event_loop = None
 
 
 def shutdown_signal_handler(*_):
     logger.info("Shutdown signal received, terminating voice service...")
     stop_event.set()
-    sys.exit(0)
+    if event_loop and not event_loop.is_closed() and shutdown_requested is not None:
+        event_loop.call_soon_threadsafe(shutdown_requested.set)
 
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, shutdown_signal_handler)
     signal.signal(signal.SIGINT, shutdown_signal_handler)
     try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
+        sys.exit(asyncio.run(main()))
+    except KeyboardInterrupt:
         pass
