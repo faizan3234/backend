@@ -362,6 +362,8 @@ class TestHallucinationFilter(unittest.TestCase):
 
     def test_normal_phrases_accepted(self):
         import voice_service
+        self.assertTrue(voice_service.is_pathological_transcript("यहू" + "जू" * 25))
+        self.assertFalse(voice_service.is_pathological_transcript("हाँ पेमेंट हो गया है"))
         self.assertFalse(voice_service.is_pathological_transcript("health checkup"))
         self.assertFalse(voice_service.is_pathological_transcript("Faizan Khan"))
         self.assertFalse(voice_service.is_pathological_transcript("43 years"))
@@ -431,6 +433,8 @@ class TestWhisperLocalOnly(unittest.TestCase):
                 self.assertEqual(language, "hi")
                 self.assertEqual(post.call_args.kwargs["data"]["language"], "auto")
                 self.assertIn("age", post.call_args.kwargs["data"]["prompt"])
+                self.assertEqual(post.call_args.kwargs["data"]["beam_size"], "1")
+                self.assertEqual(post.call_args.kwargs["data"]["best_of"], "1")
         finally:
             safe_delete_file(path)
 

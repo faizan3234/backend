@@ -28,7 +28,7 @@ class WhisperClient:
                 parts.append("Keywords: " + ", ".join(cleaned_hints))
 
         combined = " ".join(parts).strip()
-        return combined[:1200]
+        return combined[:600]
 
     def transcribe(
         self,
@@ -49,6 +49,8 @@ class WhisperClient:
             "response_format": "json",
             "token_timestamps": "false",
             "language": normalized_lang,
+            "beam_size": "1",
+            "best_of": "1",
         }
         if final_prompt:
             form_data["prompt"] = final_prompt

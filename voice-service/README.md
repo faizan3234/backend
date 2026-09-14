@@ -180,3 +180,35 @@ Run all voice tests, including duplicate-port and shutdown regression checks:
 cd ~/backend/voice-service
 .venv/bin/python -m unittest discover -p 'test_voice*.py'
 ```
+
+### Short command recognition and report narration
+
+The microphone now has three explicitly scoped uses: help on kiosk screens,
+payment yes/no on the waiting-for-payment screen, and narration language/replay/
+next controls on report screens. It does not fill names, ages, genders or codes.
+Screen language does not restrict the user's payment-answer language.
+
+The local Whisper request keeps language detection on `auto` and uses one decoding
+candidate (`beam_size=1`, `best_of=1`) for short commands. Excessive repeated text
+is discarded, including repeated Devanagari syllables within a single word.
+This reduces decoding work but is not a promise of instant transcription on a Pi;
+measure latency on the actual hardware and microphone in a quiet room.
+
+Run **one** voice process. With the installed services:
+
+```sh
+sudo systemctl restart reliv-whisper.service
+sudo systemctl restart reliv-voice.service
+systemctl show reliv-voice.service -p ActiveState -p MainPID -p NRestarts
+journalctl -u reliv-voice.service -n 30 -f
+```
+
+Do not also run `python voice_service.py` while systemd owns port 5100. Keep the
+working `reliv_mic` ALSA plug alias and `RELIV_MIC` card ID. Report audio is played
+by the frontend's offline female recordings, not by starting another Python
+process. Mic capture is gated throughout a whole narrated reading to avoid
+speaker echoes; use the screen's Stop button to interrupt narration. Speak the
+next command after the speaker finishes.
+
+For Gmail receipt failures, see `../payment-bridge-service/EMAIL_RECOVERY.md`.
+That credential is configured on the cloud payment bridge, not in this mic service.

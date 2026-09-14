@@ -247,6 +247,7 @@ export function createPaymentV2Router(paymentV2CloudService, {
             console.error('[PaymentV2Routes] ❌ Error sending email receipt:', err.message);
 
             const statusCode = (
+                err.code === 'EMAIL_AUTH_FAILED' ||
                 err.code === 'EMAIL_SERVICE_NOT_CONFIGURED' ||
                 err.code === 'PAYMENT_V2_NOT_CONFIGURED'
             ) ? 503 : (
@@ -302,6 +303,7 @@ export function createPaymentV2Router(paymentV2CloudService, {
             console.error('[PaymentV2Routes] âŒ Error sending health report:', err.message);
 
             const statusCode = (
+                err.code === 'EMAIL_AUTH_FAILED' ||
                 err.code === 'EMAIL_SERVICE_NOT_CONFIGURED' ||
                 err.code === 'PAYMENT_V2_NOT_CONFIGURED'
             ) ? 503 : (
