@@ -1381,6 +1381,17 @@ const v2CloudService = new PaymentV2CloudService({
 
     const failedRecord = db.prepare("SELECT * FROM payment_v2_receipts WHERE request_id = ? AND email = ? AND status = 'FAILED'").get(receiptRequestId, 'smtp-fail@test.com');
     assert(failedRecord && failedRecord.last_error.includes('SMTP connection timeout'), 'Failed attempt logs error in SQLite audit table');
+    let authFailure;
+    try {
+        await sendPaymentReceipt({db, order:receiptPaidOrder, email:'auth-failure@example.invalid',
+            transporter:{sendMail:async()=>{const error=new Error('Invalid login: 535-5.7.8 BadCredentials');error.code='EAUTH';throw error;}}});
+    } catch(error) {authFailure=error;}
+    assert(authFailure?.code==='EMAIL_AUTH_FAILED', 'Gmail 535 is classified as sender authentication failure');
+    assert(!authFailure?.message.includes('535'), 'Provider login details are hidden from customers');
+    assert(receiptPaidOrder.status==='PAID', 'Email authentication failure cannot change the paid order');
+    const recovered = await sendPaymentReceipt({db,order:receiptPaidOrder,email:'auth-failure@example.invalid',transporter:mockTransporter});
+    assert(recovered.sent===true, 'Receipt delivery can recover after credentials are fixed without another payment');
+
 
     // ══════════════════════════════════════════════════════════════════════════
     //  13. Authoritative Cloud PDF Receipt Generation & Security Integrity

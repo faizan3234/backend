@@ -64,6 +64,8 @@ def is_pathological_transcript(text: str) -> bool:
         return True
     if len(text) > 500:
         return True
+    if re.search(r"(.{1,12})\1{5,}", text, flags=re.UNICODE):
+        return True
     words = re.findall(r"\w+", text.lower(), flags=re.UNICODE)
     if not words:
         return True

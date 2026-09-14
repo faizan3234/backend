@@ -7,11 +7,12 @@
   "scripts": {
     "start": "node index.js",
     "check": "node --check index.js && node --check paymentV2Crypto.js && node --check paymentV2Service.js && node --check paymentV2Routes.js && node --check paymentV2Db.js && node --check generate-payment-v2-cloud-key.js && node --check services/receiptEmailService.js && node --check services/receiptPdfBuilder.js",
-    "test": "node test-payment-v2-cloud.js",
+    "test": "node --test test-email-failure.js && node test-payment-v2-cloud.js",
     "dev": "node --watch index.js",
     "generate-keys": "node generate-keys.js",
     "generate-v2-keys": "node generate-payment-v2-cloud-key.js",
-    "init-db": "node init-db.js"
+    "init-db": "node init-db.js",
+    "email:check": "node check-email.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

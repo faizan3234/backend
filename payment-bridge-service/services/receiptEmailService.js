@@ -1,3 +1,4 @@
+import { emailFailure } from './emailFailure.js';
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  * RELIV CLOUD PAYMENT BRIDGE - RECEIPT EMAIL SERVICE
@@ -33,8 +34,8 @@ export function createReceiptTransporter(configOverride = {}) {
     return nodemailer.createTransport({
         service: 'gmail',
         auth: {
-            user,
-            pass
+            user: String(user || "").trim(),
+            pass: String(pass || "").replace(/\s/g, "")
         },
         connectionTimeout: 10000,
         greetingTimeout: 10000,
@@ -538,9 +539,7 @@ export async function sendPaymentReceipt({ db, order, email, transporter = null,
             WHERE id = ?
         `).run(sendErr.message || 'Unknown send error', receiptLogId);
 
-        const err = new Error(`Failed to send email receipt: ${sendErr.message}`);
-        err.code = 'EMAIL_SEND_FAILED';
-        throw err;
+        throw emailFailure(sendErr);
     }
 }
 

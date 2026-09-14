@@ -1,3 +1,4 @@
+import { emailFailure } from './emailFailure.js';
 import crypto from 'crypto';
 import {
     createReceiptTransporter,
@@ -414,9 +415,7 @@ export async function sendHealthReportEmail({
                 WHERE request_id = ?
             `).run(e.message || 'Unknown email error', Date.now(), order.request_id);
 
-            const err = new Error(`Failed to email health report: ${e.message}`);
-            err.code = 'EMAIL_SEND_FAILED';
-            throw err;
+        throw emailFailure(e);
         }
     })();
 
