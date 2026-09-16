@@ -121,10 +121,11 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
 
         if session_state.get_generation() != original_generation or ctx["listening_paused"]:
             return
-        logger.info("Transcribing utterance (%d frames, UI language: %s, ASR: auto)", len(frames), ctx["language"])
+        asr_lang = ctx.get("language") or "auto"
+        logger.info("Transcribing utterance (%d frames, UI language: %s, ASR: %s)", len(frames), ctx["language"], asr_lang)
         text, confidence, used_lang = whisper_client.transcribe(
             wav_path=wav_path,
-            language="auto",
+            language=asr_lang,
             prompt=ctx["prompt"],
             vocabulary_hints=ctx["vocabulary_hints"],
         )
