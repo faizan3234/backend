@@ -24,7 +24,7 @@ class WhisperClient:
             "RELIV Kiosk: English, Hindi, Bengali. "
             "Keywords: doctor, medicine, consultation, test, report, payment, done, ho gaya, "
             "haan, nahi, yes, no, cancel, proceed, confirm, prescription, UPI, card, cash, "
-            "ডাক্তার, ওষুধ, পেমেন্ট, হ্যাঁ, না, डॉक्टर, दवाई, पेमेंट, हाँ, नहीं, हो गया"
+            "ডাক্তার, ওষুধ, পেমেন্ট, হ্যাঁ, না, কী করতে হবে, কী করব, টাকা, डॉक्टर, दवाई, पेमेंट, हाँ, नहीं, हो गया, क्या करना है"
         )
         parts = [kiosk_anchor]
         if base_prompt:
@@ -122,6 +122,8 @@ class WhisperClient:
                 (r"\b(hogia|hogya|ho\s*gya)\b", "ho gaya"),
                 (r"\b(ha|haa|haye)\b", "haan"),
                 (r"\b(kya\s*karna\s*h)\b", "kya karna hai"),
+                (r"\b(ki\s*korte\s*hobe|ki\s*korbo)\b", "কী করতে হবে"),
+                (r"\b(taka\s*deya\s*hoyeche|payment\s*hoyeche)\b", "পেমেন্ট হয়েছে"),
             ]
             for pattern, replacement in colloquial_map:
                 text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
