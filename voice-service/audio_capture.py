@@ -150,7 +150,19 @@ def find_pyaudio_input_device(pa: pyaudio.PyAudio, hint: str = "PCM2902"):
             return default.get("index"), str(default.get("name", "default"))
     except Exception:
         pass
-    for target in ["reliv_mic", (hint or "").lower(), "pcm2902", "usb audio", "usb", "mic", "codec"]:
+    for target in [
+        "reliv_mic",
+        (hint or "").lower(),
+        "usb pnp",
+        "pnp sound",
+        "pcm2902",
+        "usb audio",
+        "codec",
+        "usb",
+        "mic",
+        "device",
+        "pnp",
+    ]:
         if target:
             for index, name in devices:
                 if target in name.lower():
