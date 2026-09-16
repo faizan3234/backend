@@ -122,12 +122,13 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
         if session_state.get_generation() != original_generation or ctx["listening_paused"]:
             return
         # ASR is always auto: users can speak English, Hindi, or Bengali regardless of selected UI language
-        logger.info("Transcribing utterance (%d frames, UI language: %s, ASR: auto)", len(frames), ctx["language"])
+        logger.info("Transcribing utterance (%d frames, UI language: %s, page: %s, expecting: %s)", len(frames), ctx["language"], ctx["page"], ctx["expecting"])
         text, confidence, used_lang = whisper_client.transcribe(
             wav_path=wav_path,
             language="auto",
-            prompt=ctx.get("language") or ctx["prompt"],
+            prompt=ctx["prompt"] or ctx["page"] or "",
             vocabulary_hints=ctx["vocabulary_hints"],
+            expecting=ctx["expecting"],
         )
 
         duration_ms = int((time.monotonic() - started_at) * 1000)

@@ -54,12 +54,16 @@ class WhisperClient:
         language: str = "auto",
         prompt: str = "",
         vocabulary_hints: Optional[List[str]] = None,
+        expecting: Optional[str] = None,
     ) -> Tuple[str, float, str]:
         normalized_lang = str(language).lower().split("-")[0]
         if normalized_lang not in {"en", "hi", "bn"}:
             normalized_lang = "auto"
         used_lang = normalized_lang
-        final_prompt = self.build_prompt(prompt, vocabulary_hints, normalized_lang)
+        all_hints = list(vocabulary_hints or [])
+        if expecting and expecting not in all_hints:
+            all_hints.append(expecting)
+        final_prompt = self.build_prompt(prompt, all_hints, normalized_lang)
 
         form_data = {
             "temperature": "0.0",
@@ -118,7 +122,11 @@ class WhisperClient:
             text = re.sub(r"(.{2,15}?)(?:[,\s]*\1){3,}", r"\1", text, flags=re.UNICODE)
             text = text.strip()
 
-            # 3. Drop if text contains NO letters or numbers (pure symbols like "...", "---", "?!")
+            # 3. Strip any non-Latin / non-Indic / non-Bengali hallucinations (like Korean/Cyrillic e.g. "하, 보호")
+            text = re.sub(r"[^\w\s\.,!\?'-a-zA-Z0-9ऀ-ॿঀ-৿]", " ", text)
+            text = re.sub(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f\u0400-\u04ff]", "", text).strip()
+
+            # Drop if text contains NO letters or numbers (pure symbols like "...", "---", "?!")
             if not re.search(r"[a-zA-Z0-9ऀ-ॿঀ-৿]", text):
                 text = ""
 
@@ -134,12 +142,14 @@ class WhisperClient:
 
             # 5. Normalize common colloquial / accent variations for kiosk actions:
             colloquial_map = [
-                (r"\b(be\s*mean|pimin|bimin)\s*done\b", "payment done"),
-                (r"\b(hogia|hogya|ho\s*gya)\b", "ho gaya"),
+                (r"\b(pay\s*mint|be\s*mean|pimin|bimin)\s*(done|fogia|hogia|hogya|ho\s*gaya)?\b", "payment done"),
+                (r"\b(ap|ab)\s*(kya\s*karna\s*hai|kya\s*karna\s*h)\b", "ab kya karna hai"),
+                (r"\b(hogia|hogya|ho\s*gya|fogia)\b", "ho gaya"),
                 (r"\b(ha|haa|haye)\b", "haan"),
                 (r"\b(kya\s*karna\s*h)\b", "kya karna hai"),
                 (r"\b(ki\s*korte\s*hobe|ki\s*korbo)\b", "কী করতে হবে"),
                 (r"\b(taka\s*deya\s*hoyeche|payment\s*hoyeche)\b", "পেমেন্ট হয়েছে"),
+                (r"\b(what\s*to\s*do\s*now|what\s*to\s*do)\b", "what to do"),
             ]
             for pattern, replacement in colloquial_map:
                 text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
