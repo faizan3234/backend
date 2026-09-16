@@ -144,6 +144,10 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
             logger.info("Dropping transcript because RELIV speaker gate is active")
             return
 
+        # Collapse repetitive loops e.g. 'haa, haa, haa...' -> 'haan'
+        text = re.sub(r"(\b\w+\b)(?:[,\s]+\1\b){2,}", r"\1", text, flags=re.IGNORECASE | re.UNICODE)
+        text = re.sub(r"(.{2,15}?)(?:[,\s]*\1){3,}", r"\1", text, flags=re.UNICODE).strip()
+
         if is_pathological_transcript(text):
             logger.warning("Rejected pathological Whisper transcript: %r", text[:160])
             return

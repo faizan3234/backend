@@ -19,13 +19,20 @@ class WhisperClient:
         self.timeout_secs = timeout_secs
 
     def build_prompt(self, base_prompt: str, vocabulary_hints: Optional[List[str]]) -> str:
-        parts = []
+        # Core kiosk vocabulary anchor for Indian multilingual kiosk:
+        kiosk_anchor = (
+            "RELIV Kiosk: English, Hindi, Bengali. "
+            "Keywords: doctor, medicine, consultation, test, report, payment, done, ho gaya, "
+            "haan, nahi, yes, no, cancel, proceed, confirm, prescription, UPI, card, cash, "
+            "ডাক্তার, ওষুধ, পেমেন্ট, হ্যাঁ, না, डॉक्टर, दवाई, पेमेंट, हाँ, नहीं, हो गया"
+        )
+        parts = [kiosk_anchor]
         if base_prompt:
             parts.append(base_prompt.strip())
         if vocabulary_hints:
             cleaned_hints = [h.strip() for h in vocabulary_hints if h and isinstance(h, str)]
             if cleaned_hints:
-                parts.append("Keywords: " + ", ".join(cleaned_hints))
+                parts.append("Screen Hints: " + ", ".join(cleaned_hints))
 
         combined = " ".join(parts).strip()
         return combined[:600]
@@ -88,12 +95,18 @@ class WhisperClient:
             text = re.sub(r"\*.*?\*", "", text)
             text = re.sub(r"<.*?>", "", text)
             text = text.strip()
-            
-            # 2. Drop if text contains NO letters or numbers (pure symbols like "...", "---", "?!")
+
+            # 2. Collapse repetitive phrase / word loops (e.g. "haa, haa, haa..." -> "haa")
+            text = re.sub(r"(\b\w+\b)(?:[,\s]+\1\b){2,}", r"\1", text, flags=re.IGNORECASE | re.UNICODE)
+            # Collapse multi-character repeating sub-strings (e.g. "কাযে, কাযে, কাযে" -> "কাযে")
+            text = re.sub(r"(.{2,15}?)(?:[,\s]*\1){3,}", r"\1", text, flags=re.UNICODE)
+            text = text.strip()
+
+            # 3. Drop if text contains NO letters or numbers (pure symbols like "...", "---", "?!")
             if not re.search(r"[a-zA-Z0-9ऀ-ॿঀ-৿]", text):
                 text = ""
-            
-            # 3. Filter common Whisper hallucinations when there is background noise
+
+            # 4. Filter common Whisper hallucinations when there is background noise
             lower_clean = re.sub(r"[^a-z]", "", text.lower())
             hallucinations = [
                 "thankyou", "thanksforwatching", "subscribe", "subscribetomychannel", 
@@ -102,6 +115,16 @@ class WhisperClient:
             ]
             if lower_clean in hallucinations:
                 text = ""
+
+            # 5. Normalize common colloquial / accent variations for kiosk actions:
+            colloquial_map = [
+                (r"\b(be\s*mean|pimin|bimin)\s*done\b", "payment done"),
+                (r"\b(hogia|hogya|ho\s*gya)\b", "ho gaya"),
+                (r"\b(ha|haa|haye)\b", "haan"),
+                (r"\b(kya\s*karna\s*h)\b", "kya karna hai"),
+            ]
+            for pattern, replacement in colloquial_map:
+                text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
 
         if not text:
             confidence = 0.0
