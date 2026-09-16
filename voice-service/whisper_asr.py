@@ -18,24 +18,35 @@ class WhisperClient:
         self.endpoint_url = endpoint_url
         self.timeout_secs = timeout_secs
 
-    def build_prompt(self, base_prompt: str, vocabulary_hints: Optional[List[str]]) -> str:
-        # Core kiosk vocabulary anchor for Indian multilingual kiosk:
-        kiosk_anchor = (
-            "RELIV Kiosk: English, Hindi, Bengali. "
-            "Keywords: doctor, medicine, consultation, test, report, payment, done, ho gaya, "
-            "haan, nahi, yes, no, cancel, proceed, confirm, prescription, UPI, card, cash, "
-            "ডাক্তার, ওষুধ, পেমেন্ট, হ্যাঁ, না, কী করতে হবে, কী করব, টাকা, डॉक्टर, दवाई, पेमेंट, हाँ, नहीं, हो गया, क्या करना है"
-        )
+    def build_prompt(self, base_prompt: str, vocabulary_hints: Optional[List[str]], lang: str = "auto") -> str:
+        # Script-specific anchor so Whisper is never confused by competing alphabets:
+        norm = (lang or "auto").lower()
+        if norm.startswith("hi"):
+            kiosk_anchor = (
+                "डॉक्टर, दवाई, पर्चा, पेमेंट, हाँ, नहीं, हो गया, क्या करना है, सहायता, "
+                "doctor, medicine, payment, yes, no, done, cancel, help"
+            )
+        elif norm.startswith("bn"):
+            kiosk_anchor = (
+                "ডাক্তার, ওষুধ, প্রেসক্রিপশন, পেমেন্ট, হ্যাঁ, না, কী করতে হবে, কী করব, সাহায্য, "
+                "doctor, medicine, payment, yes, no, done, cancel, help"
+            )
+        else:
+            kiosk_anchor = (
+                "doctor, medicine, consultation, payment, done, yes, no, cancel, confirm, "
+                "kya karna hai, ho gaya, haan, nahi, ki korte hobe, ki korbo, help"
+            )
+
         parts = [kiosk_anchor]
         if base_prompt:
             parts.append(base_prompt.strip())
         if vocabulary_hints:
             cleaned_hints = [h.strip() for h in vocabulary_hints if h and isinstance(h, str)]
             if cleaned_hints:
-                parts.append("Screen Hints: " + ", ".join(cleaned_hints))
+                parts.append("Hints: " + ", ".join(cleaned_hints))
 
         combined = " ".join(parts).strip()
-        return combined[:600]
+        return combined[:400]
 
     def transcribe(
         self,
@@ -48,17 +59,22 @@ class WhisperClient:
         if normalized_lang not in {"en", "hi", "bn"}:
             normalized_lang = "auto"
         used_lang = normalized_lang
-        final_prompt = self.build_prompt(prompt, vocabulary_hints)
+        final_prompt = self.build_prompt(prompt, vocabulary_hints, normalized_lang)
 
         form_data = {
             "temperature": "0.0",
             "temperature_inc": "0.0",
             "response_format": "json",
             "token_timestamps": "false",
-            "language": normalized_lang,
             "beam_size": "1",
             "best_of": "1",
         }
+        # whisper.cpp: only pass language if explicit; if auto, leave empty or 'auto'
+        if normalized_lang != "auto":
+            form_data["language"] = normalized_lang
+        else:
+            form_data["language"] = "auto"
+
         if final_prompt:
             form_data["prompt"] = final_prompt
             form_data["carry_initial_prompt"] = "true"

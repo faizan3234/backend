@@ -126,7 +126,7 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
         text, confidence, used_lang = whisper_client.transcribe(
             wav_path=wav_path,
             language="auto",
-            prompt=ctx["prompt"],
+            prompt=ctx.get("language") or ctx["prompt"],
             vocabulary_hints=ctx["vocabulary_hints"],
         )
 
