@@ -55,6 +55,7 @@ class WhisperClient:
         prompt: str = "",
         vocabulary_hints: Optional[List[str]] = None,
         expecting: Optional[str] = None,
+        target_lang: str = "auto",
     ) -> Tuple[str, float, str]:
         normalized_lang = str(language).lower().split("-")[0]
         if normalized_lang not in {"en", "hi", "bn"}:
@@ -63,7 +64,7 @@ class WhisperClient:
         all_hints = list(vocabulary_hints or [])
         if expecting and expecting not in all_hints:
             all_hints.append(expecting)
-        final_prompt = self.build_prompt(prompt, all_hints, normalized_lang)
+        final_prompt = self.build_prompt(prompt, all_hints, target_lang)
 
         form_data = {
             "temperature": "0.0",
@@ -150,6 +151,9 @@ class WhisperClient:
                 (r"\b(ki\s*korte\s*hobe|ki\s*korbo)\b", "কী করতে হবে"),
                 (r"\b(taka\s*deya\s*hoyeche|payment\s*hoyeche)\b", "পেমেন্ট হয়েছে"),
                 (r"\b(what\s*to\s*do\s*now|what\s*to\s*do)\b", "what to do"),
+                # Devanagari mis-tokenizations from mumbled speech:
+                (r"पेभीन्त\s*पुटया|पेमेंट\s*पुटया|पेमेन्ट\s*होगया|पेमेन्ट\s*हो\s*गया", "पेमेंट हो गया"),
+                (r"चाओ\s*करना\s*है|अप\s*क्या\s*करना\s*है|अब\s*क्या\s*करना\s*है", "अब क्या करना है"),
             ]
             for pattern, replacement in colloquial_map:
                 text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)

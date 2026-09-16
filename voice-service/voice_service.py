@@ -129,6 +129,7 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
             prompt=ctx["prompt"] or ctx["page"] or "",
             vocabulary_hints=ctx["vocabulary_hints"],
             expecting=ctx["expecting"],
+            target_lang=ctx.get("language") or "auto",
         )
 
         duration_ms = int((time.monotonic() - started_at) * 1000)
