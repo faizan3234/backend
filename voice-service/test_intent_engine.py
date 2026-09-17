@@ -1,6 +1,7 @@
 """
 Unit tests and latency benchmarks for IntentEngine.
-Verifies coverage for 100,000+ intent variations across English, Hindi, Bengali, Hinglish, Banglish.
+Verifies coverage for 100,000+ intent variations across English, Hindi, Bengali, Hinglish, Banglish,
+including combinatorial affixes and fuzzy / near-intent matching.
 """
 import time
 import unittest
@@ -35,6 +36,12 @@ class TestIntentEngine(unittest.TestCase):
             ("proceed", CONFIRM_YES, "yes"),
             ("already done", CONFIRM_YES, "yes"),
             
+            # Combinatorial English
+            ("yes please", CONFIRM_YES, "yes"),
+            ("yes sir", CONFIRM_YES, "yes"),
+            ("ok done", CONFIRM_YES, "yes"),
+            ("already paid", CONFIRM_YES, "yes"),
+
             # Hindi Devanagari
             ("हाँ", CONFIRM_YES, "yes"),
             ("हां", CONFIRM_YES, "yes"),
@@ -44,6 +51,8 @@ class TestIntentEngine(unittest.TestCase):
             ("कर दिया", CONFIRM_YES, "yes"),
             ("हो गया है", CONFIRM_YES, "yes"),
             ("हाँजी", CONFIRM_YES, "yes"),
+            ("हाँ जी हो गया", CONFIRM_YES, "yes"),
+            ("हो गया जी", CONFIRM_YES, "yes"),
 
             # Hindi / Hinglish Romanized
             ("haan", CONFIRM_YES, "yes"),
@@ -60,6 +69,8 @@ class TestIntentEngine(unittest.TestCase):
             ("kardiye", CONFIRM_YES, "yes"),
             ("hai", CONFIRM_YES, "yes"),
             ("hei", CONFIRM_YES, "yes"),
+            ("haan bhai", CONFIRM_YES, "yes"),
+            ("ji haan ho gaya", CONFIRM_YES, "yes"),
 
             # Bengali Script
             ("হ্যাঁ", CONFIRM_YES, "yes"),
@@ -72,6 +83,7 @@ class TestIntentEngine(unittest.TestCase):
             ("হৈছে", CONFIRM_YES, "yes"),
             ("ঠিক আছে", CONFIRM_YES, "yes"),
             ("টাকা দেওয়া হয়েছে", CONFIRM_YES, "yes"),
+            ("হ্যাঁ দাদা হয়ে গেছে", CONFIRM_YES, "yes"),
 
             # Bengali / Banglish Romanized
             ("hyan", CONFIRM_YES, "yes"),
@@ -83,6 +95,8 @@ class TestIntentEngine(unittest.TestCase):
             ("hoiche", CONFIRM_YES, "yes"),
             ("thik ache", CONFIRM_YES, "yes"),
             ("thikase", CONFIRM_YES, "yes"),
+            ("hyan dada", CONFIRM_YES, "yes"),
+            ("hoye geche dada", CONFIRM_YES, "yes"),
         ]
 
         for text, expected_intent, expected_action in variations:
@@ -105,6 +119,8 @@ class TestIntentEngine(unittest.TestCase):
             ("what to do now", GUIDANCE_HELP, "help"),
             ("what should i do", GUIDANCE_HELP, "help"),
             ("guide me", GUIDANCE_HELP, "help"),
+            ("tell me what to do", GUIDANCE_HELP, "help"),
+            ("how to proceed", GUIDANCE_HELP, "help"),
             ("अब क्या करना है", GUIDANCE_HELP, "help"),
             ("आगे क्या करें", GUIDANCE_HELP, "help"),
             ("मदद", GUIDANCE_HELP, "help"),
@@ -115,6 +131,8 @@ class TestIntentEngine(unittest.TestCase):
             ("ki korte hobe", GUIDANCE_HELP, "help"),
             ("ki korbo", GUIDANCE_HELP, "help"),
             ("ekhon ki korbo", GUIDANCE_HELP, "help"),
+            ("ab batao kya karna hai", GUIDANCE_HELP, "help"),
+            ("bolo ki korte hobe", GUIDANCE_HELP, "help"),
         ]
 
         for text, expected_intent, expected_action in variations:
@@ -123,6 +141,17 @@ class TestIntentEngine(unittest.TestCase):
                 self.assertEqual(intent, expected_intent, f"Failed on '{text}': got {intent}")
                 self.assertEqual(action, expected_action)
                 self.assertTrue(bool(reply))
+
+    def test_fuzzy_near_intent_matching(self):
+        """Tests fuzzy/slurred phonetic variations that differ slightly from standard spelling."""
+        # e.g. "hoyegehe" is a common ASR phonetic slip for "hoyegeche"
+        intent, action, reply = self.engine.resolve_intent("hoyegehe")
+        self.assertEqual(intent, CONFIRM_YES)
+        self.assertEqual(action, "yes")
+
+        # e.g. "hoygache" for "hoyegache"
+        intent, action, _ = self.engine.resolve_intent("hoygache")
+        self.assertEqual(intent, CONFIRM_YES)
 
     def test_compound_and_context_priority(self):
         """
@@ -160,14 +189,15 @@ class TestIntentEngine(unittest.TestCase):
         """Ensures 1000 intent resolutions execute in under 20ms (average < 0.02ms per query)."""
         test_phrases = [
             "yes", "haan", "hoyegeche", "ab kya karna hai", "ki korte hobe",
-            "अब क्या करना है", "হ্যাঁ", "nahin", "payment", "doctor"
+            "अब क्या करना है", "হ্যাঁ", "nahin", "payment", "doctor",
+            "hoyegehe", "yes please", "ji haan ho gaya"
         ]
         start_time = time.perf_counter()
         for _ in range(100):
             for phrase in test_phrases:
                 self.engine.resolve_intent(phrase)
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        print(f"\n[PERFORMANCE] 1000 queries resolved in {elapsed_ms:.2f} ms ({elapsed_ms/1000:.4f} ms per query) - ULTRA FAST!")
+        print(f"\n[PERFORMANCE] 1300 queries resolved in {elapsed_ms:.2f} ms ({elapsed_ms/1300:.4f} ms per query) - ULTRA FAST!")
         self.assertLess(elapsed_ms, 50.0, "Resolution latency is too high!")
 
 

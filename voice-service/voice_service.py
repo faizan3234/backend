@@ -44,6 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger("reliv_voice.main")
 
 from intent_engine import IntentEngine
+from speaker_tts import SpeakerTTS
 
 # State & Services
 clients: Set[ServerConnection] = set()
@@ -55,6 +56,7 @@ session_state = SpeechSessionState()
 echo_controller = EchoController(allow_barge_in=ALLOW_BARGE_IN)
 whisper_client = WhisperClient()
 intent_engine = IntentEngine()
+speaker_tts = SpeakerTTS()
 vad = VoiceActivityDetector()
 stop_event = threading.Event()
 transcription_busy = threading.Event()
@@ -164,18 +166,24 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
             "Recognized: '%s' (lang: %s, conf: %.2f) -> Intent: %s, Action: %s, Reply: '%s'",
             text, used_lang, confidence, intent, action, reply or ""
         )
+
+        # Trigger localized kiosk speaker output:
+        if reply:
+            speaker_tts.speak_async(reply, language=used_lang, echo_controller=echo_controller)
+
         event = DialogueBridge.make_transcript_event(
             text=text,
             language=used_lang,
             confidence=confidence,
             is_final=True,
             duration_ms=duration_ms,
+            intent=intent,
+            action=action,
+            reply=reply,
         )
         event["page"] = ctx["page"]
         event["expecting"] = ctx["expecting"]
-        event["intent"] = intent
-        event["action"] = action
-        event["reply"] = reply
+        event["speak"] = bool(reply)
         broadcast_threadsafe(event, original_generation)
 
     except Exception as exc:
