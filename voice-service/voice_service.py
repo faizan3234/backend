@@ -43,6 +43,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("reliv_voice.main")
 
+from intent_engine import IntentEngine
+
 # State & Services
 clients: Set[ServerConnection] = set()
 clients_lock = threading.Lock()
@@ -52,6 +54,7 @@ active_controller_id: str = None
 session_state = SpeechSessionState()
 echo_controller = EchoController(allow_barge_in=ALLOW_BARGE_IN)
 whisper_client = WhisperClient()
+intent_engine = IntentEngine()
 vad = VoiceActivityDetector()
 stop_event = threading.Event()
 transcription_busy = threading.Event()
@@ -154,7 +157,13 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
             logger.warning("Rejected pathological Whisper transcript: %r", text[:160])
             return
 
-        logger.info("Recognized: '%s' (lang: %s, conf: %.2f)", text, used_lang, confidence)
+        intent, action, reply = intent_engine.resolve_intent(
+            text, expecting=ctx.get("expecting"), language=used_lang
+        )
+        logger.info(
+            "Recognized: '%s' (lang: %s, conf: %.2f) -> Intent: %s, Action: %s, Reply: '%s'",
+            text, used_lang, confidence, intent, action, reply or ""
+        )
         event = DialogueBridge.make_transcript_event(
             text=text,
             language=used_lang,
@@ -164,6 +173,9 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
         )
         event["page"] = ctx["page"]
         event["expecting"] = ctx["expecting"]
+        event["intent"] = intent
+        event["action"] = action
+        event["reply"] = reply
         broadcast_threadsafe(event, original_generation)
 
     except Exception as exc:

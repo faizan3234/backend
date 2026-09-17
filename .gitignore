@@ -54,3 +54,4 @@ voice-service/*.wav
 voice-service/models/
 *.gguf
 ggml-*.bin
+backend-main/

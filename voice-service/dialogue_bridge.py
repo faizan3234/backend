@@ -74,6 +74,9 @@ class DialogueBridge:
         confidence: float = 0.85,
         is_final: bool = True,
         duration_ms: Optional[int] = None,
+        intent: Optional[str] = None,
+        action: Optional[str] = None,
+        reply: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Constructs standardized transcript event."""
         payload = {
@@ -86,6 +89,12 @@ class DialogueBridge:
         }
         if duration_ms is not None:
             payload["durationMs"] = duration_ms
+        if intent is not None:
+            payload["intent"] = intent
+        if action is not None:
+            payload["action"] = action
+        if reply is not None:
+            payload["reply"] = reply
         return payload
 
     @staticmethod
