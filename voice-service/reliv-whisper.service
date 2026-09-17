@@ -1,0 +1,17 @@
+[Unit]
+Description=RELIV Local Whisper ASR Server
+After=network.target
+
+[Service]
+Type=simple
+User=reliv
+WorkingDirectory=/home/reliv
+ExecStart=/home/reliv/reliv-voice/whisper.cpp/build/bin/whisper-server -m /home/reliv/Downloads/ggml-base-q5_1.bin --host 127.0.0.1 --port 8081 -l auto -t 4 -fa -nf -bo 1
+Restart=always
+RestartSec=2
+KillMode=process
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

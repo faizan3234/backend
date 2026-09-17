@@ -1,0 +1,21 @@
+[Unit]
+Description=RELIV Automatic Microphone Voice Service
+After=sound.target network.target reliv-whisper.service
+Wants=reliv-whisper.service
+
+[Service]
+Type=simple
+User=reliv
+WorkingDirectory=/home/reliv/backend/voice-service
+Environment="RELIV_VAD_RMS=800"
+Environment="PYTHONUNBUFFERED=1"
+Environment="PATH=/home/reliv/backend/voice-service/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/reliv/backend/voice-service/.venv/bin/python voice_service.py
+Restart=always
+RestartSec=3
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

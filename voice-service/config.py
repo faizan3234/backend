@@ -19,7 +19,7 @@ SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS // 1000
 BYTES_PER_FRAME = SAMPLES_PER_FRAME * SAMPLE_WIDTH
 
 # Voice Activity Detection (VAD)
-VAD_RMS = int(os.getenv("RELIV_VAD_RMS", "150"))
+VAD_RMS = int(os.getenv("RELIV_VAD_RMS", "800"))
 VAD_START_FRAMES = int(os.getenv("RELIV_VAD_START_FRAMES", "3"))
 VAD_END_SILENCE_MS = int(os.getenv("RELIV_VAD_END_MS", "450"))
 VAD_MIN_SPEECH_MS = int(os.getenv("RELIV_VAD_MIN_MS", "150"))
