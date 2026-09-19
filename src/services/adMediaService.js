@@ -88,13 +88,13 @@ export async function probeMedia(filePath) {
 
 function normalizedFilter(meta) {
   if (meta.isTrue16x9) {
-    return `scale=${WIDTH}:${HEIGHT}:flags=lanczos`;
+    return `[0:v]scale=${WIDTH}:${HEIGHT}:flags=lanczos[outv]`;
   }
   return [
-    'split=2[bg][fg]',
+    '[0:v]split=2[bg][fg]',
     `[bg]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=increase,crop=${WIDTH}:${HEIGHT},gblur=sigma=40,eq=brightness=-0.10:saturation=0.85[bg2]`,
     `[fg]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease[fg2]`,
-    '[bg2][fg2]overlay=(W-w)/2:(H-h)/2'
+    '[bg2][fg2]overlay=(W-w)/2:(H-h)/2[outv]'
   ].join(';');
 }
 
@@ -117,16 +117,13 @@ export async function normalizeAdMedia({ inputPath, outputDir, mimeType }) {
       '-y','-i',inputPath,
       '-t',String(MAX_VIDEO_SECONDS),
       '-filter_complex',vf,
-      '-map','0:v:0',
-      '-map','0:a?',
+      '-map','[outv]',
+      ...(meta.hasAudio ? ['-map','0:a:0','-c:a','aac','-b:a','128k','-af','loudnorm=I=-24:LRA=7:TP=-2'] : ['-an']),
       '-c:v','libx264',
       '-pix_fmt','yuv420p',
       '-preset','fast',
       '-crf','23',
       '-r','30',
-      '-c:a','aac',
-      '-b:a','128k',
-      '-af','loudnorm=I=-24:LRA=7:TP=-2',
       '-movflags','+faststart',
       outputPath
     ];
@@ -135,6 +132,7 @@ export async function normalizeAdMedia({ inputPath, outputDir, mimeType }) {
     await run('ffmpeg', [
       '-y','-i',inputPath,
       '-filter_complex',vf,
+      '-map','[outv]',
       '-frames:v','1',
       '-c:v','libwebp',
       '-quality','90',
