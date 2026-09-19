@@ -59,19 +59,48 @@ function currentKolkataClock() {
 }
 function assertScheduleAvailable({ venueIds, startDate, endDate, startMinute, endMinute, excludeCampaignId = '' }) {
   for (const venueId of venueIds) {
-    const rows = db().prepare(`
-      SELECT campaign_id, daily_start_minute, daily_end_minute
-      FROM ad_campaign_venues
-      WHERE venue_id = ?
-        AND status IN ('SCHEDULED','ACTIVE','PENDING_APPROVAL')
-        AND campaign_id <> ?
-        AND NOT (end_date < ? OR start_date > ?)
-        AND NOT (daily_end_minute <= ? OR daily_start_minute >= ?)
-    `).all(venueId, excludeCampaignId, startDate, endDate, startMinute, endMinute);
-    if (rows.length >= MAX_CONCURRENT) {
-      const err = new Error('This time window is fully booked. Choose another time.');
-      err.code = 'AD_SLOT_FULL';
-      throw err;
+    for (let day = startDate; day <= endDate; day = addCalendarDays(day, 1)) {
+      const row = db().prepare(`
+        SELECT COUNT(*) AS count
+        FROM ad_campaign_venues
+        WHERE venue_id = ?
+          AND status IN ('SCHEDULED','ACTIVE','PENDING_APPROVAL')
+          AND campaign_id <> ?
+          AND start_date <= ? AND end_date >= ?
+          AND NOT (daily_end_minute <= ? OR daily_start_minute >= ?)
+      `).get(venueId, excludeCampaignId, day, day, startMinute, endMinute);
+      if (Number(row?.count || 0) >= MAX_CONCURRENT) {
+        const err = new Error('This time window is fully booked. Choose another time.');
+        err.code = 'AD_SLOT_FULL';
+        throw err;
+      }
+    }
+  }
+}
+
+async function cleanupAdStorage() {
+  const now = Date.now();
+  const expiredCutoff = now - 24 * 60 * 60 * 1000;
+  const abandonedCutoff = now - 2 * 60 * 60 * 1000;
+  const rows = db().prepare(`
+    SELECT campaign_id,status,expired_at,created_at
+    FROM ad_campaigns
+    WHERE (status='EXPIRED' AND expired_at IS NOT NULL AND expired_at < ?)
+       OR (status IN ('DRAFT','UPLOADING','PROCESSING','PENDING_PAYMENT') AND created_at < ?)
+  `).all(expiredCutoff, abandonedCutoff);
+
+  for (const row of rows) {
+    try {
+      await fs.promises.rm(campaignDir(row.campaign_id), { recursive:true, force:true });
+    } catch {}
+    db().prepare("UPDATE ad_campaigns SET original_path=NULL,prepared_path=NULL,updated_at=? WHERE campaign_id=?")
+      .run(now,row.campaign_id);
+    db().prepare("DELETE FROM ad_upload_chunks WHERE campaign_id=?").run(row.campaign_id);
+    if (row.status !== 'EXPIRED') {
+      db().prepare("UPDATE ad_campaigns SET status='CANCELLED',updated_at=? WHERE campaign_id=?")
+        .run(now,row.campaign_id);
+      db().prepare("UPDATE ad_payment_requests SET status='CANCELLED',cancelled_at=? WHERE campaign_id=? AND status='ACTIVE'")
+        .run(now,row.campaign_id);
     }
   }
 }
@@ -345,7 +374,8 @@ export function createAdRouter() {
     res.status(result.ok ? 200 : (result.code === 'LOCKED' ? 423 : 400)).json(result);
   });
 
-  router.get('/active-playlist', (_req, res) => {
+  router.get('/active-playlist', async (_req, res) => {
+    await cleanupAdStorage();
     const now = currentKolkataClock();
     db().prepare(`
       UPDATE ad_campaign_venues SET status='EXPIRED'
