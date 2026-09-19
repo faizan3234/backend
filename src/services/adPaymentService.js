@@ -28,7 +28,8 @@ export class AdPaymentService {
     cloudEncryptionPublicKeyPath = process.env.PAYMENT_V2_CLOUD_ENCRYPTION_PUBLIC_KEY_PATH || './config/payment-v2-cloud-encryption-public-key.pem',
     paymentUrlBase = 'https://reliv7.vercel.app/pay',
     ttlSeconds = Number(process.env.AD_PAYMENT_TTL_SECONDS || 900),
-    maxAttempts = Number(process.env.AD_PAYMENT_MAX_ATTEMPTS || 5)
+    maxAttempts = Number(process.env.AD_PAYMENT_MAX_ATTEMPTS || 5),
+    activationGraceMs = Number(process.env.AD_PAYMENT_ACTIVATION_GRACE_MS || 600000)
   } = {}) {
     this._db = db;
     this.pepper = String(pepper || '').trim();
@@ -38,6 +39,7 @@ export class AdPaymentService {
     this.paymentUrlBase = paymentUrlBase;
     this.ttlSeconds = ttlSeconds;
     this.maxAttempts = maxAttempts;
+    this.activationGraceMs = activationGraceMs;
     this._privateKey = null;
     this._cloudPublicKey = null;
   }
@@ -94,8 +96,8 @@ export class AdPaymentService {
     this.db.prepare(`
       UPDATE ad_payment_requests
       SET status = 'EXPIRED'
-      WHERE status = 'ACTIVE' AND expires_at <= ?
-    `).run(now);
+      WHERE status = 'ACTIVE' AND (expires_at + ?) <= ?
+    `).run(this.activationGraceMs, now);
   }
 
   createPaymentRequest(campaignId) {
@@ -257,9 +259,9 @@ export class AdPaymentService {
     if (!req || req.status !== 'ACTIVE') {
       return { ok: false, code: 'REQUEST_NOT_ACTIVE', message: 'This activation request is no longer active.' };
     }
-    if (req.expires_at <= Date.now()) {
+    if ((req.expires_at + this.activationGraceMs) <= Date.now()) {
       this.db.prepare("UPDATE ad_payment_requests SET status='EXPIRED' WHERE request_id=?").run(requestId);
-      return { ok: false, code: 'REQUEST_EXPIRED', message: 'This payment request expired. Start payment again.' };
+      return { ok: false, code: 'REQUEST_EXPIRED', message: 'This activation code expired. Start payment again.' };
     }
     if (req.attempt_count >= req.max_attempts) {
       this.db.prepare("UPDATE ad_payment_requests SET status='LOCKED' WHERE request_id=?").run(requestId);
