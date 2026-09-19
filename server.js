@@ -38,6 +38,7 @@ import { handlePaymentComplete } from "./src/routes/paymentComplete.js";
 import { buildValidatedRedirectUrl } from "./src/utils/redirectHelper.js";
 import paymentV2Service from "./src/services/paymentV2Service.js";
 import { createPaymentV2Router } from "./src/routes/paymentV2Routes.js";
+import { createAdRouter } from "./src/routes/adRoutes.js";
 import { createSpeechConfigHandler, validateSpeechConfig } from "./src/routes/speechConfig.js";
 import { createAdminAuth } from "./src/services/adminAuth.js";
 
@@ -3643,6 +3644,7 @@ app.post("/api/payment-complete", handlePaymentComplete);
 // POST /api/sessions/:sessionId/payment-v2/confirm-code
 // ───────────────────────────────────────────────────────────────────────────
 app.use("/api/sessions/:sessionId/payment-v2", createPaymentV2Router(paymentV2Service));
+app.use("/api/ads", createAdRouter());
 
 // ───────────────────────────────────────────────────────────────────────────
 // ENDPOINT: Resolve QR Path (Returns session token from scanned QR path)
