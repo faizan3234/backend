@@ -7,6 +7,10 @@
  */
 
 import crypto from 'crypto';
+import { deflateRawSync, inflateRawSync } from 'node:zlib';
+
+const MAX_INNER_BYTES = 64 * 1024;
+const COMPRESSED_AAD = Buffer.from('RELIV_PAYMENT_V2:DEF', 'utf8');
 
 /**
  * Encode Buffer or string to Base64URL (RFC 4648)
@@ -101,12 +105,18 @@ export function verifyPayloadSignature(canonicalPayload, signatureBase64Url, pub
  * @param {string|KeyObject} cloudPublicKeyPem - Oracle Cloud RSA Public Key PEM
  * @returns {string} Base64URL encoded package string
  */
-export function encryptPackage(innerEnvelope, cloudPublicKeyPem) {
+export function encryptPackage(innerEnvelope, cloudPublicKeyPem, { compress = false } = {}) {
     if (!cloudPublicKeyPem) {
         throw new Error('Cloud encryption public key is required');
     }
 
     const innerBytes = Buffer.from(JSON.stringify(innerEnvelope), 'utf8');
+    if (innerBytes.length > MAX_INNER_BYTES) throw new Error('Payment details exceed the supported package size');
+    // Compress BEFORE encryption. Ciphertext itself cannot be usefully
+    // compressed, and nested Base64 previously pushed ordinary carts past QR capacity.
+    const compressed = compress ? deflateRawSync(innerBytes) : null;
+    const useCompression = Boolean(compressed && compressed.length < innerBytes.length);
+    const plaintext = useCompression ? compressed : innerBytes;
 
     // 1. Generate random 32-byte AES key & 12-byte GCM IV
     const aesKey = crypto.randomBytes(32);
@@ -114,7 +124,8 @@ export function encryptPackage(innerEnvelope, cloudPublicKeyPem) {
 
     // 2. AES-256-GCM encrypt inner payload
     const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, iv);
-    const ciphertext = Buffer.concat([cipher.update(innerBytes), cipher.final()]);
+    if (useCompression) cipher.setAAD(COMPRESSED_AAD);
+    const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
     const tag = cipher.getAuthTag();
 
     // 3. RSA-OAEP SHA-256 encrypt AES key with Cloud Public Key
@@ -131,7 +142,8 @@ export function encryptPackage(innerEnvelope, cloudPublicKeyPem) {
         ek: base64UrlEncode(encryptedKey),
         iv: base64UrlEncode(iv),
         ct: base64UrlEncode(ciphertext),
-        tag: base64UrlEncode(tag)
+        tag: base64UrlEncode(tag),
+        ...(useCompression ? { zip: 'DEF' } : {})
     };
 
     return base64UrlEncode(Buffer.from(JSON.stringify(envelope), 'utf8'));
@@ -154,6 +166,7 @@ export function decryptPackage(packageString, cloudPrivateKeyPem) {
     if (envelope.v !== 2 || !envelope.ek || !envelope.iv || !envelope.ct || !envelope.tag) {
         throw new Error('Invalid payment V2 envelope structure');
     }
+    if (envelope.zip !== undefined && envelope.zip !== 'DEF') throw new Error('Unsupported payment package compression');
 
     // 1. RSA-OAEP SHA-256 decrypt AES key
     const encryptedKey = base64UrlDecode(envelope.ek);
@@ -169,10 +182,15 @@ export function decryptPackage(packageString, cloudPrivateKeyPem) {
     const tag = base64UrlDecode(envelope.tag);
 
     const decipher = crypto.createDecipheriv('aes-256-gcm', aesKey, iv);
+    if (envelope.zip === 'DEF') decipher.setAAD(COMPRESSED_AAD);
     decipher.setAuthTag(tag);
     const decryptedBytes = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 
-    return JSON.parse(decryptedBytes.toString('utf8'));
+    const innerBytes = envelope.zip === 'DEF'
+        ? inflateRawSync(decryptedBytes, { maxOutputLength: MAX_INNER_BYTES })
+        : decryptedBytes;
+    if (innerBytes.length > MAX_INNER_BYTES) throw new Error('Payment details exceed the supported package size');
+    return JSON.parse(innerBytes.toString('utf8'));
 }
 
 /**
