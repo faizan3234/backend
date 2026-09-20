@@ -600,7 +600,16 @@ export class PaymentV2Service {
         const encryptedPackage = encryptPackage({
             payload: canonicalPayload,
             signature
-        }, cloudPublicKey);
+        }, cloudPublicKey, { compress: true });
+
+        // Never persist an unusable QR or silently truncate the signed payload.
+        // Frontend selects M for smaller packages and L up to 2953 bytes.
+        const paymentUrl = `${this.paymentUrlBase}#p=${encryptedPackage}`;
+        if (Buffer.byteLength(paymentUrl, 'utf8') > 2953) {
+            const err = new Error('Payment details are too large for one QR. Reduce the cart or contact the kiosk operator.');
+            err.code = 'PAYMENT_QR_TOO_LARGE';
+            throw err;
+        }
 
         // Persist request in SQLite
         const insertStmt = this.db.prepare(`
@@ -637,7 +646,7 @@ export class PaymentV2Service {
             amount: authoritativeAmount,
             currency: 'INR',
             expiresAt,
-            paymentUrl: `${this.paymentUrlBase}#p=${encryptedPackage}`
+            paymentUrl
         };
     }
 
@@ -1050,4 +1059,3 @@ export const paymentV2Service = new Proxy({}, {
 });
 
 export default paymentV2Service;
-

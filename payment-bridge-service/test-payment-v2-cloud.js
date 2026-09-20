@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
+import { encryptPackage as encryptKioskPackage } from '../src/services/paymentV2Crypto.js';
 import {
     base64UrlEncode,
     base64UrlDecode,
@@ -407,6 +408,16 @@ const v2CloudService = new PaymentV2CloudService({
     assert(duplicateOrderRes.orderId === orderRes.orderId, 'Repeated package returns same orderId (idempotent)');
     assert(duplicateOrderRes.alreadyCreated === true, 'Response indicates alreadyCreated: true');
     assert(rzpOrderCreateCount === 1, 'Repeated submission does NOT create additional Razorpay orders (deduplicated)');
+
+    // The new transport keeps the identical signed payload/fingerprint. A
+    // compressed replay must recover the same order, never charge again.
+    const originalEnvelope = decryptPackage(package4096, cloudKeys4096.privateKey);
+    const compressedPackage = encryptKioskPackage({ payload: originalEnvelope.payload, signature: originalEnvelope.signature }, cloudKeys4096.publicKey, { compress: true });
+    const compressedOrder = await v2CloudService.createOrderFromPackage(compressedPackage);
+    assert(compressedOrder.orderId === orderRes.orderId, 'Compressed transport retains the original Razorpay order');
+    assert(compressedOrder.amount === orderRes.amount, 'Compressed transport retains authoritative amount');
+    assert(compressedOrder.confirmationCode === undefined, 'Compressed package does not reveal a code before verification');
+    assert(rzpOrderCreateCount === 1, 'Legacy-to-compressed retry does not create a duplicate charge');
 
     // PAYLOAD TAMPERING / FINGERPRINT MISMATCH: Same requestId with different amount
     let fingerprintMismatch = false;
