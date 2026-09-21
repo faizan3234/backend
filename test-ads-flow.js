@@ -57,6 +57,7 @@ test('phone booking, signed payment, code-only activation and persistent admin t
   const signed = decryptPackage(first.body.paymentUrl.split('#p=')[1],cloud.privateKey);
   assert.ok(verifyPayloadSignature(signed.payload,signed.signature,signer.publicKey));
   assert.equal(signed.payload.amount,calculateExpectedAdPricePaise(signed.payload.adCampaign));
+  assert.equal(first.body.amountPaise,signed.payload.amount);
   assert.equal(first.body.confirmationCode,undefined);
   await request('/api/ads/AD-TEST-NEWER/confirm-booking',{});
   const activation = await request('/api/ads/activate',{code:signed.payload.confirmationCode});
