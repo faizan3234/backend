@@ -19,6 +19,7 @@ import {
 } from './paymentV2Crypto.js';
 import { initPaymentV2Schema } from './paymentV2Db.js';
 import { sendPaymentReceipt } from './services/receiptEmailService.js';
+import { calculateExpectedAdPricePaise } from './adPricing.js';
 import {
     sendHealthReportEmail,
     generateHealthReportDownload
@@ -135,7 +136,9 @@ export class PaymentV2CloudService {
         const { payload, signature } = decrypted;
 
         // 2. Validate payload structure
-        if (!payload || payload.v !== 2 || payload.type !== 'RELIV_PAYMENT_REQUEST') {
+        const isAdPayment = payload?.type === 'RELIV_AD_PAYMENT_REQUEST';
+        const isStandardPayment = payload?.type === 'RELIV_PAYMENT_REQUEST';
+        if (!payload || payload.v !== 2 || (!isStandardPayment && !isAdPayment)) {
             const err = new Error('Invalid payment request type or version');
             err.code = 'INVALID_PAYLOAD_STRUCTURE';
             throw err;
@@ -217,10 +220,42 @@ export class PaymentV2CloudService {
 
         if (
             normalizedServiceType !== 'HEALTH_CHECKUP' &&
-            normalizedServiceType !== 'MEDICINE'
+            normalizedServiceType !== 'MEDICINE' &&
+            normalizedServiceType !== 'AD_CAMPAIGN'
         ) {
             const err = new Error('Unsupported service type');
             err.code = 'UNSUPPORTED_SERVICE_TYPE';
+            throw err;
+        }
+
+        if (isAdPayment) {
+            if (
+                payload.purpose !== 'RELIV_AD_CAMPAIGN' ||
+                normalizedServiceType !== 'AD_CAMPAIGN' ||
+                !payload.adCampaign ||
+                typeof payload.adCampaign !== 'object'
+            ) {
+                const err = new Error('Invalid advertising payment payload');
+                err.code = 'INVALID_AD_CAMPAIGN';
+                throw err;
+            }
+            const expectedAdAmount = calculateExpectedAdPricePaise(payload.adCampaign);
+            if (expectedAdAmount !== authoritativeAmount) {
+                const err = new Error('Advertising amount does not match authoritative pricing');
+                err.code = 'AMOUNT_MISMATCH';
+                throw err;
+            }
+            if (
+                !/^[a-f0-9]{64}$/i.test(String(payload.adCampaign.mediaSHA256 || '')) ||
+                String(payload.adCampaign.campaignId || '').length < 6
+            ) {
+                const err = new Error('Invalid advertising campaign binding');
+                err.code = 'INVALID_AD_CAMPAIGN';
+                throw err;
+            }
+        } else if (normalizedServiceType === 'AD_CAMPAIGN') {
+            const err = new Error('Advertising payment requires RELIV_AD_PAYMENT_REQUEST type');
+            err.code = 'INVALID_AD_CAMPAIGN';
             throw err;
         }
 

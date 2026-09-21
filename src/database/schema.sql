@@ -445,3 +445,97 @@ CREATE INDEX IF NOT EXISTS idx_payment_v2_expires ON payment_v2_requests(expires
 
 -- Initialize schema version
 INSERT OR IGNORE INTO schema_version (version) VALUES (1);
+
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- RELIV ADS V1 - Air-gapped DOOH advertising
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS ad_campaigns (
+    campaign_id TEXT PRIMARY KEY,
+    kiosk_id TEXT NOT NULL,
+    brand_name TEXT,
+    media_type TEXT,
+    mime_type TEXT,
+    original_name TEXT,
+    aspect_ratio TEXT,
+    is_true_16x9 INTEGER NOT NULL DEFAULT 0,
+    has_audio INTEGER NOT NULL DEFAULT 0,
+    original_path TEXT,
+    prepared_path TEXT,
+    media_sha256 TEXT,
+    duration_seconds REAL,
+    price_paise INTEGER NOT NULL DEFAULT 0,
+    pricing_version INTEGER NOT NULL DEFAULT 1,
+    duration_days INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'DRAFT',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    paid_at INTEGER,
+    activated_at INTEGER,
+    expired_at INTEGER,
+    CHECK (status IN ('DRAFT','UPLOADING','PROCESSING','PENDING_PAYMENT','SCHEDULED','ACTIVE','PENDING_APPROVAL','EXPIRED','CANCELLED'))
+);
+
+CREATE TABLE IF NOT EXISTS ad_campaign_venues (
+    campaign_id TEXT NOT NULL,
+    venue_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'SCHEDULED',
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    is_all_day INTEGER NOT NULL DEFAULT 1,
+    daily_start_minute INTEGER NOT NULL DEFAULT 0,
+    daily_end_minute INTEGER NOT NULL DEFAULT 1440,
+    PRIMARY KEY (campaign_id, venue_id),
+    FOREIGN KEY (campaign_id) REFERENCES ad_campaigns(campaign_id) ON DELETE CASCADE,
+    CHECK (status IN ('SCHEDULED','ACTIVE','PENDING_APPROVAL','EXPIRED','CANCELLED'))
+);
+CREATE INDEX IF NOT EXISTS idx_ad_campaign_status ON ad_campaigns(status);
+CREATE INDEX IF NOT EXISTS idx_ad_venue_schedule
+    ON ad_campaign_venues(venue_id,status,start_date,end_date,daily_start_minute,daily_end_minute);
+
+CREATE TABLE IF NOT EXISTS ad_upload_chunks (
+    campaign_id TEXT NOT NULL,
+    upload_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    total_chunks INTEGER NOT NULL,
+    chunk_path TEXT NOT NULL,
+    chunk_sha256 TEXT,
+    received_at INTEGER NOT NULL,
+    PRIMARY KEY (upload_id, chunk_index),
+    FOREIGN KEY (campaign_id) REFERENCES ad_campaigns(campaign_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ad_chunks_campaign ON ad_upload_chunks(campaign_id);
+
+CREATE TABLE IF NOT EXISTS ad_payment_requests (
+    request_id TEXT PRIMARY KEY,
+    request_nonce TEXT UNIQUE NOT NULL,
+    campaign_id TEXT NOT NULL,
+    kiosk_id TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    code_hmac TEXT NOT NULL,
+    encrypted_package TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 5,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    verified_at INTEGER,
+    cancelled_at INTEGER,
+    FOREIGN KEY (campaign_id) REFERENCES ad_campaigns(campaign_id) ON DELETE CASCADE,
+    CHECK (status IN ('ACTIVE','VERIFIED','EXPIRED','LOCKED','CANCELLED'))
+);
+CREATE INDEX IF NOT EXISTS idx_ad_payment_campaign ON ad_payment_requests(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_ad_payment_status ON ad_payment_requests(status);
+CREATE INDEX IF NOT EXISTS idx_ad_payment_expires ON ad_payment_requests(expires_at);
+
+CREATE TABLE IF NOT EXISTS ad_play_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id TEXT NOT NULL,
+    venue_id TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    completed INTEGER NOT NULL DEFAULT 0,
+    interrupted_by_user INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (campaign_id) REFERENCES ad_campaigns(campaign_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ad_play_campaign ON ad_play_events(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_ad_play_started ON ad_play_events(started_at);

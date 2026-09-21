@@ -67,7 +67,7 @@ export function createAdminAuth({ loadCredentials, saveCredentials, loadResets, 
         next();
     }
     function protectWrites(req, res, next) {
-        const protectedPath = /^\/api\/(kits(?:\/|$)|inventory(?:\/|$)|report-price\/?$|speech-config\/?$)/i.test(req.path);
+        const protectedPath = /^\/api\/(kits(?:\/|$)|inventory(?:\/|$)|report-price\/?$|speech-config\/?$|ads\/settings\/?$)/i.test(req.path);
         if (protectedPath && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return requireAdmin(req, res, next);
         next();
     }
