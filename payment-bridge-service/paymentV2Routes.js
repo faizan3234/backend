@@ -98,7 +98,9 @@ export function createPaymentV2Router(paymentV2CloudService, {
                 err.code === 'INVALID_SIGNATURE' ||
                 err.code === 'INVALID_PAYLOAD_STRUCTURE' ||
                 err.code === 'REPLAY_NONCE_DETECTED' ||
-                err.code === 'PAYLOAD_TAMPERING_OR_FINGERPRINT_MISMATCH'
+                err.code === 'PAYLOAD_TAMPERING_OR_FINGERPRINT_MISMATCH' ||
+                err.code === 'INVALID_AD_CAMPAIGN' ||
+                err.code === 'AMOUNT_MISMATCH'
             ) ? 400 : (err.code === 'REQUEST_EXPIRED' ? 410 : 500);
 
             return res.status(statusCode).json({
