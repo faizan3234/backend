@@ -366,7 +366,7 @@ export function createAdRouter() {
         excludeCampaignId:campaignId
       });
       const payment = adPaymentService.createPaymentRequest(campaignId);
-      res.json({ ok:true, campaignId, requestId:payment.requestId, expiresAt:payment.expiresAt, paymentUrl:payment.paymentUrl });
+      res.json({ ok:true, campaignId, requestId:payment.requestId, expiresAt:payment.expiresAt, paymentUrl:payment.paymentUrl, amountPaise:payment.amount });
     } catch (err) {
       res.status(err.code === 'AD_SLOT_FULL' ? 409 : 400).json({ ok:false, code:err.code || 'PAYMENT_PREP_FAILED', message:err.message });
     }

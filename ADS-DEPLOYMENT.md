@@ -17,6 +17,17 @@ The supplied QR contains `WIFI:T:WPA;S:RELIV-KIOSK;P:RELIVKIOSK2026;;`. It reque
 
 For phones that detect a captive portal, configure the Pi AP as follows, from a local console so reconnecting Wi-Fi does not strand your session:
 
+For an existing **NetworkManager shared-mode** `RELIV-KIOSK` AP, deploy both repositories, then run from the backend directory on the **Pi's local console**:
+
+```sh
+sudo bash deploy/install-ads-captive-portal.sh --apply --reconnect
+sudo bash deploy/install-ads-captive-portal.sh --check
+```
+
+The installer checks the existing AP, its dnsmasq include directory, local booking route and API before writing two narrowly scoped configuration files. It backs up those files and rolls them back if nginx validation/reload fails. It does not change the Wi-Fi password, replace the kiosk site, install a second DHCP server, or intercept HTTPS. `--reconnect` briefly disconnects Wi-Fi clients; omit it to install the files now and restart the AP later. `--check` is read-only. Merging the PR alone cannot install these operating-system settings. The original wall Wi-Fi QR remains valid.
+
+If your AP uses standalone hostapd/dnsmasq rather than NetworkManager shared mode, retain that setup and use these manual steps:
+
 1. Confirm the existing AP broadcasts `RELIV-KIOSK`, uses the supplied password, assigns addresses on `192.168.50.0/24`, and advertises `192.168.50.1` as DNS. Retain its current working DHCP/AP configuration.
 2. Add the contents of `deploy/ads-captive-dnsmasq.conf` to the AP's existing dnsmasq configuration. For NetworkManager shared mode, use `/etc/NetworkManager/dnsmasq-shared.d/reliv-ads.conf` **only after confirming your installed version's shared dnsmasq command loads that directory** (`ps -ef | grep '[d]nsmasq'`). For standalone dnsmasq, use its already-enabled conf directory. Do not start a second DNS/DHCP server.
 3. Add `deploy/ads-captive-nginx.conf` to nginx's enabled configuration. Check `sudo nginx -t`, then reload nginx. It targets connectivity-check hostnames only and leaves the normal kiosk site untouched. The optional `ads-local-site.example.conf` documents the SPA fallback if the local site is not yet configured; adjust its root to your deployed frontend directory.
@@ -26,7 +37,7 @@ Apple describes the join/sign-in prompts at https://support.apple.com/en-us/1025
 
 ## Phone payment and activation
 
-Open the local booking page in a normal phone browser before uploading if the captive sign-in window cannot retain tabs. Upload, review, confirm, then use **Open secure payment**. The phone must have Internet access: turn Wi-Fi off and use mobile data. The page cannot change phone network settings itself. The short-lived encrypted link is retained in the same tab's session storage; no plaintext activation code is saved there.
+Open the local booking page in a normal phone browser before uploading if the captive sign-in window cannot retain tabs. Upload, review, then **Confirm & Pay** prepares the signed payment request and shows **Advertisement saved**. Turn Wi-Fi off once and tap **Pay ₹…**. The already-loaded link opens `https://reliv7.vercel.app/pay#p=…` in the same tab, without another request to the offline Pi. The page cannot change phone network settings itself. The short-lived encrypted link and server-confirmed amount are retained in the same tab's session storage; no plaintext activation code is saved there. Payment retries use the existing saved media and payment request, never client-side success or a re-upload.
 
 After successful payment, enter the four-digit code using **Enter ad code** on the kiosk. The code is matched against its signed campaign/media/amount, not whichever customer booked last. Codes are unique among eligible active/recently verified requests. Repeating a verified code returns the original result. A kiosk-wide durable five-failure/15-minute budget prevents changing request IDs/IPs to evade limits; successful codes do not erase earlier failures. The default activation grace is 24 hours after payment-link expiry. Retain unresolved payment media for administrator recovery; do not delete it as an abandoned draft.
 
