@@ -407,4 +407,29 @@ export class AdPaymentService {
   }
 }
 
-export default new AdPaymentService();
+// Lazy singleton: server.js imports this module before dotenv.config() runs.
+// Construct the service only on first use so PAYMENT_V2_CODE_PEPPER and
+// payment key paths are read from the Pi runtime environment after .env loads.
+let _instance = null;
+
+function getAdPaymentServiceInstance() {
+  if (!_instance) {
+    _instance = new AdPaymentService();
+  }
+  return _instance;
+}
+
+export const adPaymentService = new Proxy({}, {
+  get(_target, prop) {
+    const instance = getAdPaymentServiceInstance();
+    const value = instance[prop];
+    return typeof value === 'function' ? value.bind(instance) : value;
+  },
+  set(_target, prop, value) {
+    const instance = getAdPaymentServiceInstance();
+    instance[prop] = value;
+    return true;
+  }
+});
+
+export default adPaymentService;
