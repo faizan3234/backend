@@ -323,7 +323,7 @@ export class AdPaymentService {
     }
     if (req.attempt_count >= req.max_attempts) {
       this.db.prepare("UPDATE ad_payment_requests SET status='LOCKED' WHERE request_id=?").run(requestId);
-      return { ok: false, code: 'LOCKED', message: 'Too many incorrect attempts. Start payment again.' };
+      return { ok: false, code: 'LOCKED', message: 'Too many incorrect attempts. Ask the kiosk administrator for help. Do not pay again.' };
     }
 
     const calculated = this.codeHmac({
@@ -346,25 +346,38 @@ export class AdPaymentService {
       return {
         ok: false,
         code: locked ? 'LOCKED' : 'INVALID_CODE',
-        message: locked ? 'Too many incorrect attempts. Start payment again.' : 'That code does not match. Check your phone and try again.',
+        message: locked ? 'Too many incorrect attempts. Ask the kiosk administrator for help. Do not pay again.' : 'That code does not match. Check your phone and try again.',
         attemptsLeft: Math.max(0, req.max_attempts - attempts)
       };
     }
 
     const now = Date.now();
     const currentVenue = process.env.RELIV_AD_CURRENT_VENUE || 'gurukul';
-    const today = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Kolkata', year:'numeric', month:'2-digit', day:'2-digit'
-    }).format(new Date());
+    const clock = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata', year:'numeric', month:'2-digit', day:'2-digit',
+      hour:'2-digit', minute:'2-digit', hourCycle:'h23'
+    }).formatToParts(new Date(now));
+    const part = type => clock.find(value => value.type === type).value;
+    const today = `${part('year')}-${part('month')}-${part('day')}`;
+    const minute = Number(part('hour')) * 60 + Number(part('minute'));
 
     const currentAssignment = this.db.prepare(`
       SELECT * FROM ad_campaign_venues WHERE campaign_id = ? AND venue_id = ?
     `).get(campaignId, currentVenue);
 
+    const lastWindowEnded = currentAssignment && currentAssignment.end_date === today &&
+      currentAssignment.is_all_day !== 1 && minute >= currentAssignment.daily_end_minute;
+    if (!currentAssignment || currentAssignment.end_date < today || lastWindowEnded) {
+      return { ok:false, code:'AD_SCHEDULE_UNAVAILABLE', message:'This campaign has no remaining schedule on this kiosk. Ask the kiosk administrator for help. Do not pay again.' };
+    }
+    const playingNow = currentAssignment.start_date <= today &&
+      (currentAssignment.is_all_day === 1 ||
+        (minute >= currentAssignment.daily_start_minute && minute < currentAssignment.daily_end_minute));
+
     const needsApproval = currentVenue === 'dps-megacity';
     const currentStatus = needsApproval
       ? 'PENDING_APPROVAL'
-      : (currentAssignment && currentAssignment.start_date <= today ? 'ACTIVE' : 'SCHEDULED');
+      : (playingNow ? 'ACTIVE' : 'SCHEDULED');
 
     const tx = this.db.transaction(() => {
       this.db.prepare(`

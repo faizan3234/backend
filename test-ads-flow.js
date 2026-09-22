@@ -90,4 +90,25 @@ test('phone booking, signed payment, code-only activation and persistent admin t
   assert.equal((await request('/api/ads/AD-CAPACITY-6/confirm-booking',{})).status,409);
   const codes = adPayments.activationCandidates().map(row => decryptPackage(row.encrypted_package,cloud.privateKey).payload.confirmationCode);
   assert.equal(new Set(codes).size,codes.length,'all eligible activation codes are unique');
+  // Activation feedback must match the playlist's date AND daily-hour filter.
+  campaign('AD-HOURS');
+  const nextEnd = new Date(Date.now()+2*86400000).toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});
+  db.prepare('UPDATE ad_campaigns SET duration_days=3,price_paise=11700 WHERE campaign_id=?').run('AD-HOURS');
+  db.prepare('UPDATE ad_campaign_venues SET end_date=? WHERE campaign_id=?').run(nextEnd,'AD-HOURS');
+  const clock = new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());
+  const minute = Number(clock.find(p=>p.type==='hour').value)*60 + Number(clock.find(p=>p.type==='minute').value);
+  db.prepare('UPDATE ad_campaign_venues SET is_all_day=0,daily_start_minute=?,daily_end_minute=? WHERE campaign_id=?')
+    .run(minute === 0 ? 1 : 0, minute === 0 ? 2 : minute, 'AD-HOURS');
+  const hoursPayment = adPayments.createPaymentRequest('AD-HOURS');
+  const hoursCode = decryptPackage(hoursPayment.paymentUrl.split('#p=')[1],cloud.privateKey).payload.confirmationCode;
+  assert.equal(adPayments.verifyCodeOnly(hoursCode).status,'SCHEDULED','outside booked hours must not promise the ad is already playing');
+  const expiredDay = new Date(Date.now()-86400000).toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});
+  campaign('AD-ENDED',expiredDay);
+  assert.equal((await request('/api/ads/AD-ENDED/confirm-booking',{})).body.code,'AD_SCHEDULE_ENDED','do not start a payment for an elapsed campaign');
+  const endedPayment = adPayments.createPaymentRequest('AD-ENDED');
+  const endedCode = decryptPackage(endedPayment.paymentUrl.split('#p=')[1],cloud.privateKey).payload.confirmationCode;
+  const ended = adPayments.verifyCodeOnly(endedCode);
+  assert.equal(ended.ok,false);
+  assert.match(ended.message,/Do not pay again/);
+  assert.equal(db.prepare('SELECT status FROM ad_payment_requests WHERE request_id=?').get(endedPayment.requestId).status,'ACTIVE','retain ended paid request for administrator recovery');
 });

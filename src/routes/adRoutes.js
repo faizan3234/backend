@@ -359,6 +359,11 @@ export function createAdRouter() {
         return res.status(409).json({ ok:false, code:'AD_NOT_READY', message:'Prepare the creative before payment.' });
       }
       const assignments = db().prepare('SELECT * FROM ad_campaign_venues WHERE campaign_id=?').all(campaignId);
+      const clock = currentKolkataClock();
+      if (!assignments.length || assignments.some(v => v.end_date < clock.date ||
+        (v.end_date === clock.date && v.is_all_day !== 1 && v.daily_end_minute <= clock.minute))) {
+        return res.status(409).json({ ok:false, code:'AD_SCHEDULE_ENDED', message:'The booked advertising time has ended. If you already paid, ask the kiosk administrator for help; do not pay again. Otherwise choose a later schedule.' });
+      }
       assertScheduleAvailable({
         venueIds:assignments.map(v=>v.venue_id),
         startDate:assignments[0].start_date,endDate:assignments[0].end_date,
