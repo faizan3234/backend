@@ -39,3 +39,23 @@ test('ad activation HMAC is campaign and media bound', () => {
   assert.notEqual(one, two);
   assert.notEqual(one, three);
 });
+
+test('default ad payment service reads pepper after environment initialization', async () => {
+  const savedPepper = process.env.PAYMENT_V2_CODE_PEPPER;
+  delete process.env.PAYMENT_V2_CODE_PEPPER;
+
+  try {
+    // Fresh module instance with no pepper present at import time.
+    const mod = await import(`./src/services/adPaymentService.js?lazy-env-test=${Date.now()}`);
+    process.env.PAYMENT_V2_CODE_PEPPER = 'late-loaded-ad-pepper';
+
+    assert.equal(
+      mod.default.pepper,
+      'late-loaded-ad-pepper',
+      'default singleton must read PAYMENT_V2_CODE_PEPPER on first use, not at module import'
+    );
+  } finally {
+    if (savedPepper === undefined) delete process.env.PAYMENT_V2_CODE_PEPPER;
+    else process.env.PAYMENT_V2_CODE_PEPPER = savedPepper;
+  }
+});
