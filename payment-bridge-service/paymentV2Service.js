@@ -184,7 +184,9 @@ export class PaymentV2CloudService {
         const now = Date.now();
         if (now > payload.expiresAt + this.ttlMarginMs) {
             console.warn(`[PaymentV2Cloud] ⚠️ Request expired: ${payload.requestId} (expired at ${payload.expiresAt}, current ${now})`);
-            const err = new Error('Payment request has expired. Please refresh the QR on the kiosk.');
+            const err = new Error(isAdPayment
+                ? 'This advertisement payment link has expired. If you already paid, use payment recovery or enter your code on the kiosk. Do not pay again; ask the kiosk administrator for help.'
+                : 'Payment request has expired. Please refresh the QR on the kiosk.');
             err.code = 'REQUEST_EXPIRED';
             throw err;
         }
