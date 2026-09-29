@@ -394,7 +394,24 @@ For queries, contact relivcustomercare.in@gmail.com
  * @param {Function} [params.pdfBuilderOverride] - Optional PDF builder override for testing
  * @returns {Promise<Object>}
  */
-export async function sendPaymentReceipt({ db, order, email, transporter = null, pdfBuilderOverride = null }) {
+// Collapse concurrent retries before PDF/SMTP awaits. Completed sends remain
+// idempotent through the existing durable SENT receipt audit record.
+const receiptInflight = new WeakMap();
+export async function sendPaymentReceipt(params) {
+    const { db, order, email } = params;
+    if (!db || !order) return deliverPaymentReceipt(params);
+    const normalizedEmail = normalizeEmail(email);
+    const key = JSON.stringify([order.request_id, normalizedEmail]);
+    let pending = receiptInflight.get(db);
+    if (!pending) { pending = new Map(); receiptInflight.set(db, pending); }
+    if (pending.has(key)) return pending.get(key);
+    const task = deliverPaymentReceipt({ ...params, email: normalizedEmail });
+    pending.set(key, task);
+    try { return await task; }
+    finally { pending.delete(key); }
+}
+
+async function deliverPaymentReceipt({ db, order, email, transporter = null, pdfBuilderOverride = null }) {
     if (!db) {
         throw new Error('Database connection is required to send receipt');
     }

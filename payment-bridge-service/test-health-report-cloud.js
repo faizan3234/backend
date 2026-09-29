@@ -109,13 +109,22 @@ console.log('\nâ•â•â•â•â•â•â•â•â•â
 console.log(' RELIV CLOUD HEALTH REPORT TEST');
 console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
 
-const r1 = await sendHealthReportEmail({
+const firstSend = sendHealthReportEmail({
     db,
     requestId: 'REQ-HR-1',
     email: ' Progressive.User@Example.com ',
     codeSecret: SECRET,
     transporter
 });
+
+const duplicateSend = sendHealthReportEmail({ db, requestId: 'REQ-HR-1', email: 'progressive.user@example.com', codeSecret: SECRET, transporter });
+let rejectedDifferentRecipient = false;
+try {
+    await sendHealthReportEmail({ db, requestId: 'REQ-HR-1', email: 'other@example.com', codeSecret: SECRET, transporter });
+} catch (error) { rejectedDifferentRecipient = error.code === 'REPORT_EMAIL_ALREADY_BOUND'; }
+assert(rejectedDifferentRecipient, 'Concurrent different recipient cannot receive the first recipient download token');
+const [r1, concurrentDuplicate] = await Promise.all([firstSend, duplicateSend]);
+assert(concurrentDuplicate.messageId === r1.messageId, 'Concurrent same-recipient retry shares one delivery');
 
 assert(r1.ok === true && r1.sent === true, 'Scan 1 report email succeeds');
 assert(r1.scanNumber === 1, 'First paid scan is Scan 1');

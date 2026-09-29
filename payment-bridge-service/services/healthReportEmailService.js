@@ -13,7 +13,7 @@ import {
 } from '../paymentV2Crypto.js';
 
 const DOWNLOAD_TOKEN_TTL_MS = 15 * 60 * 1000;
-const inflight = new Map();
+const inflightByDb = new WeakMap();
 
 const serviceType = (value) => String(value || '').trim().toUpperCase();
 
@@ -254,9 +254,18 @@ export async function sendHealthReportEmail({
     receiptPdfBuilderOverride = null
 }) {
     const key = String(requestId || '').trim();
+    const recipient = normalizeEmail(email);
+    let inflight = inflightByDb.get(db);
+    if (!inflight) { inflight = new Map(); inflightByDb.set(db, inflight); }
 
     if (inflight.has(key)) {
-        return await inflight.get(key);
+        const pending = inflight.get(key);
+        if (pending.recipient !== recipient) {
+            const err = new Error('This paid report is already linked to another email address.');
+            err.code = 'REPORT_EMAIL_ALREADY_BOUND';
+            throw err;
+        }
+        return await pending.task;
     }
 
     const task = (async () => {
@@ -419,7 +428,7 @@ export async function sendHealthReportEmail({
         }
     })();
 
-    inflight.set(key, task);
+    inflight.set(key, { task, recipient });
     try {
         return await task;
     } finally {

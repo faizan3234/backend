@@ -17,7 +17,7 @@ export async function hashAdminPassword(password) {
 // Opaque sessions are local to this backend process. Restarting the Pi requires
 // admin login again; customer payment/session state remains untouched.
 export function createAdminAuth({ loadCredentials, saveCredentials, loadResets, saveResets,
-    queueReset, now = Date.now, bootstrapEmail = '', bootstrapPassword = '' }) {
+    queueReset, now = Date.now, bootstrapEmail = '', bootstrapPassword = '', provision = null }) {
     const sessions = new Map();
     const rateLimits = new Map();
     let mutation = Promise.resolve();
@@ -29,7 +29,14 @@ export function createAdminAuth({ loadCredentials, saveCredentials, loadResets, 
     const configuredEmail = normalizeEmail(bootstrapEmail);
     let bootstrapRecord;
     async function account(email, store) {
-        const key = Object.keys(store).find((item) => normalizeEmail(item) === email);
+        let key = Object.keys(store).find((item) => normalizeEmail(item) === email);
+        if (provision && email === normalizeEmail(provision.email) &&
+            store[key]?.provisionVersion !== provision.version) {
+            key ||= email;
+            store[key] = { ...provision.record, provisionVersion: provision.version, updatedAt: now() };
+            await saveCredentials(store);
+            revoke(email);
+        }
         if (key) return { key, record: store[key] };
         if (validEmail(configuredEmail) && email === configuredEmail && bootstrapPassword.length >= 12) {
             bootstrapRecord ||= hashAdminPassword(bootstrapPassword);
@@ -139,7 +146,7 @@ export function createAdminAuth({ loadCredentials, saveCredentials, loadResets, 
             // not leave a reusable recovery code after a successful reset.
             delete store[email];
             await saveResets(store);
-            credentials[admin.key] = { ...await hashAdminPassword(newPassword), updatedAt: now() };
+            credentials[admin.key] = { ...credentials[admin.key], ...await hashAdminPassword(newPassword), updatedAt: now() };
             await saveCredentials(credentials);
             revoke(email);
             res.json({ ok: true });

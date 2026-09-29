@@ -82,7 +82,17 @@ install -m 644 "$source_dir/ads-captive-dnsmasq.conf" "$dns_target"
 install -m 644 "$source_dir/ads-captive-nginx.conf" "$web_target"
 nginx -t
 systemctl reload nginx
-check_redirect
+# A successful reload signals the master; new workers may not serve yet.
+# Give the reload a bounded grace period instead of rolling back valid files.
+redirect_ready=false
+for attempt in {1..10}; do
+  if check_redirect; then redirect_ready=true; break; fi
+  sleep 1
+done
+if [[ $redirect_ready != true ]]; then
+  echo "The HTTP probe did not redirect to $portal after nginx reload. Check enabled server blocks and nginx logs." >&2
+  false # ERR trap restores the previous configuration.
+fi
 trap - ERR
 echo "Portal rules installed. Previous files: $backup_dir"
 if [[ $reconnect == true ]]; then

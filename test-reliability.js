@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import express from 'express';
-import { createAdminAuth } from './src/services/adminAuth.js';
+import { createAdminAuth, hashAdminPassword } from './src/services/adminAuth.js';
+import { ownerAdminProvision } from './src/services/ownerAdminProvision.js';
 import PDFGenerator from './src/services/pdfGenerator.js';
 import EmailQueueService from './src/services/emailQueue.js';
 import settings from './src/services/settingsManager.js';
@@ -14,6 +15,41 @@ import { initializeDatabase, closeDatabase } from './src/database/db.js';
 import { createSpeechConfigHandler, validateSpeechConfig } from './src/routes/speechConfig.js';
 
 const schema = readFileSync(new URL('./src/database/schema.sql', import.meta.url), 'utf8');
+
+test('owner credential is provisioned once, survives restart, and does not undo later resets', async t => {
+  let store = { [ownerAdminProvision.email]: await hashAdminPassword('Previous-password') }, resets = {}, recovery;
+  const options = {
+    loadCredentials: async () => structuredClone(store),
+    saveCredentials: async value => { store = structuredClone(value); },
+    loadResets: async () => structuredClone(resets), saveResets: async value => { resets = structuredClone(value); },
+    queueReset: async (_email, code) => { recovery = code; }, provision: ownerAdminProvision,
+  };
+  async function start(overrides = {}) {
+    const auth = createAdminAuth({ ...options, ...overrides });
+    const app = express(); app.use(express.json()); auth.register(app);
+    const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    return async (path, body) => {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
+      });
+      return { status:response.status, data:await response.json() };
+    };
+  }
+  const request = await start();
+  const login = password => request('/api/check-login',{email:ownerAdminProvision.email,password});
+  assert.equal((await login('Previous-password')).status,401);
+  assert.equal((await login('Reliv-17')).status,200);
+  assert.equal(store[ownerAdminProvision.email].provisionVersion,ownerAdminProvision.version);
+  assert.equal(JSON.stringify(store).includes('Reliv-17'),false);
+  await request('/api/send-reset-email',{to:ownerAdminProvision.email});
+  assert.equal((await request('/api/confirm-reset',{email:ownerAdminProvision.email,token:recovery,newPassword:'Replacement-owner-password'})).status,200);
+  const restarted = await start();
+  assert.equal((await restarted('/api/check-login',{email:ownerAdminProvision.email,password:'Replacement-owner-password'})).status,200);
+  assert.equal((await restarted('/api/check-login',{email:ownerAdminProvision.email,password:'Reliv-17'})).status,401);
+  const failed = await start({loadCredentials:async()=>({}),saveCredentials:async()=>{throw Error('disk full');}});
+  assert.equal((await failed('/api/check-login',{email:ownerAdminProvision.email,password:'Reliv-17'})).status,503);
+});
 function fixture() {
   const db = new Database(':memory:'); db.exec(schema);
   db.prepare("INSERT INTO sessions(session_id,kiosk_id,customer_data,expires_at) VALUES('TEST','TEST',?,datetime('now','+1 hour'))")
