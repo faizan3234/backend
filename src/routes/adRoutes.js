@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { getDb } from '../database/db.js';
 import { calculateAdPrice, normalizeAdVenueIds, AD_VENUES } from '../services/adPricingService.js';
-import { assertAdUploadAllowed, normalizeAdMedia } from '../services/adMediaService.js';
+import { AD_DISPLAY, assertAdUploadAllowed, normalizeAdMedia } from '../services/adMediaService.js';
 import adPaymentService from '../services/adPaymentService.js';
 import { getAdInterval, setAdInterval } from '../services/adSettingsService.js';
 
@@ -123,9 +123,13 @@ function serializeCampaign(row) {
     isTrue16x9: row.is_true_16x9 === 1,
     hasAudio: row.has_audio === 1,
     durationSeconds: Number(row.duration_seconds || (row.media_type === 'video' ? 15 : 10)),
-    mediaUrl: `/api/ads/media/${encodeURIComponent(row.campaign_id)}`,
+    mediaUrl: adMediaUrl(row.campaign_id, row.media_sha256),
     brandName: row.brand_name || ''
   };
+}
+
+function adMediaUrl(campaignId, hash) {
+  return `/api/ads/media/${encodeURIComponent(campaignId)}?v=${encodeURIComponent(hash || '')}`;
 }
 
 export function createAdRouter() {
@@ -136,7 +140,7 @@ export function createAdRouter() {
       ok: true,
       splashIntervalSeconds: getAdInterval(),
       currentVenueId: CURRENT_VENUE,
-      display: { width: 1920, height: 1080, sizeInches: 11.6 },
+      display: AD_DISPLAY,
       maxConcurrentCampaigns: MAX_CONCURRENT,
       venues: [
         { id:'gurukul', name:'Gurukul', isCurrent: CURRENT_VENUE === 'gurukul', requiresApproval:false },
@@ -340,9 +344,10 @@ export function createAdRouter() {
         ok:true,campaignId,
         media:{
           mediaType,aspectRatio:normalized.aspectRatio,isTrue16x9:normalized.isTrue16x9,
+          isDisplayFit:normalized.isDisplayFit,
           hasAudio:normalized.hasAudio,durationSeconds:normalized.durationSeconds,
           width:normalized.preparedWidth,height:normalized.preparedHeight,
-          previewUrl:`/api/ads/media/${encodeURIComponent(campaignId)}`
+          previewUrl:adMediaUrl(campaignId, normalized.mediaSHA256)
         }
       });
     } catch (err) {
@@ -464,11 +469,15 @@ export function createAdRouter() {
   });
 
   router.get('/media/:campaignId', (req, res) => {
-    const row = db().prepare('SELECT prepared_path,media_type FROM ad_campaigns WHERE campaign_id=?').get(String(req.params.campaignId));
+    const row = db().prepare('SELECT prepared_path,media_type,media_sha256 FROM ad_campaigns WHERE campaign_id=?').get(String(req.params.campaignId));
     if (!row?.prepared_path || !fs.existsSync(row.prepared_path)) return res.sendStatus(404);
+    // Never serve new bytes under an old immutable URL.
+    if (req.query.v && req.query.v !== row.media_sha256) return res.sendStatus(404);
     res.type(row.media_type === 'video' ? 'video/mp4' : 'image/webp');
-    res.set('Cache-Control','no-store');
-    res.sendFile(path.resolve(row.prepared_path));
+    const versioned = /^[a-f0-9]{64}$/.test(row.media_sha256 || '') && req.query.v === row.media_sha256;
+    res.set('Cache-Control', versioned ? 'private, max-age=31536000, immutable' : 'private, max-age=0, must-revalidate');
+    if (/^[a-f0-9]{64}$/.test(row.media_sha256 || '')) res.set('ETag', `"${row.media_sha256}"`);
+    res.sendFile(path.resolve(row.prepared_path), { cacheControl: false });
   });
 
   router.post('/:campaignId/play-event', (req, res) => {

@@ -3,8 +3,8 @@ import crypto from 'crypto';
 import path from 'path';
 import { spawn } from 'child_process';
 
-const WIDTH = 1920;
-const HEIGHT = 1080;
+export const AD_DISPLAY = Object.freeze({ width: 1280, height: 800, sizeInches: 10.1 });
+const { width: WIDTH, height: HEIGHT } = AD_DISPLAY;
 const MAX_VIDEO_SECONDS = 15;
 const ALLOWED_IMAGE_MIME = new Set(['image/jpeg','image/png','image/webp']);
 const ALLOWED_VIDEO_MIME = new Set(['video/mp4','video/quicktime']);
@@ -83,19 +83,23 @@ export async function probeMedia(filePath) {
     ratio,
     category,
     isTrue16x9: category === '16:9',
+    isDisplayFit: Math.abs(ratio - WIDTH / HEIGHT) < 0.01,
     hasAudio: audio,
     durationSeconds: Number.isFinite(duration) ? duration : 0
   };
 }
 
-function normalizedFilter(meta) {
-  if (meta.isTrue16x9) {
-    return `[0:v]scale=${WIDTH}:${HEIGHT}:flags=lanczos[outv]`;
+function normalizedFilter(meta, mediaType) {
+  // Drop excess frames BEFORE scaling/blur (phone videos often use 60/120fps).
+  const frames = mediaType === 'video' ? 'fps=30,' : '';
+  if (meta.isDisplayFit) {
+    return `[0:v]${frames}scale=${WIDTH}:${HEIGHT}:flags=lanczos,setsar=1[outv]`;
   }
   return [
-    '[0:v]split=2[bg][fg]',
-    `[bg]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=increase,crop=${WIDTH}:${HEIGHT},gblur=sigma=40,eq=brightness=0.08:saturation=0.85[bg2]`,
-    `[fg]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease[fg2]`,
+    `[0:v]${frames}split=2[bg][fg]`,
+    // Only the decorative background is reduced. The foreground stays sharp.
+    `[bg]scale=160:100:force_original_aspect_ratio=increase,crop=160:100,gblur=sigma=5,eq=brightness=0.08:saturation=0.85,scale=${WIDTH}:${HEIGHT}:flags=bilinear,setsar=1[bg2]`,
+    `[fg]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease,setsar=1[fg2]`,
     '[bg2][fg2]overlay=(W-w)/2:(H-h)/2[outv]'
   ].join(';');
 }
@@ -111,7 +115,7 @@ export async function normalizeAdMedia(options) {
 async function prepareMedia({ inputPath, outputDir, mimeType }) {
   const { mediaType } = assertAdUploadAllowed({ mimeType, size: fs.statSync(inputPath).size });
   const meta = await probeMedia(inputPath);
-  if (meta.width > 8192 || meta.height > 8192 || meta.width * meta.height > 33554432) throw new Error('Media resolution is too large. Export at 1920 × 1080 and retry.');
+  if (meta.width > 8192 || meta.height > 8192 || meta.width * meta.height > 33554432) throw new Error('Media resolution is too large. Export at 1280 × 800 and retry.');
   await fs.promises.mkdir(outputDir, { recursive: true });
 
   if (mediaType === 'video' && meta.durationSeconds > 60 * 10) {
@@ -121,7 +125,7 @@ async function prepareMedia({ inputPath, outputDir, mimeType }) {
   }
 
   const outputPath = path.join(outputDir, mediaType === 'video' ? 'prepared.mp4' : 'prepared.webp');
-  const vf = normalizedFilter(meta);
+  const vf = normalizedFilter(meta, mediaType);
 
   if (mediaType === 'video') {
     const args = [
@@ -133,9 +137,10 @@ async function prepareMedia({ inputPath, outputDir, mimeType }) {
       '-c:v','libx264',
       '-threads','2',
       '-pix_fmt','yuv420p',
-      '-preset','fast',
+      '-preset','veryfast',
       '-crf','23',
-      '-r','30',
+      '-maxrate','4M','-bufsize','8M',
+      '-g','60',
       '-movflags','+faststart',
       outputPath
     ];
@@ -147,7 +152,7 @@ async function prepareMedia({ inputPath, outputDir, mimeType }) {
       '-map','[outv]',
       '-frames:v','1',
       '-c:v','libwebp',
-      '-quality','90',
+      '-quality','85','-compression_level','3',
       outputPath
     ]);
   }
@@ -161,6 +166,7 @@ async function prepareMedia({ inputPath, outputDir, mimeType }) {
     mediaType,
     aspectRatio: meta.category,
     isTrue16x9: meta.isTrue16x9,
+    isDisplayFit: meta.isDisplayFit,
     hasAudio: mediaType === 'video' && meta.hasAudio,
     originalWidth: meta.width,
     originalHeight: meta.height,
