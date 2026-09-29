@@ -1,10 +1,11 @@
+import { localHealth } from './src/services/localHealth.js';
 import express from "express";
 import cors from "cors";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import crypto from "crypto";
 import fs from "fs/promises";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import path from "path";
 import PDFDocument from "pdfkit";
 import { google } from "googleapis";
@@ -41,6 +42,7 @@ import { createPaymentV2Router } from "./src/routes/paymentV2Routes.js";
 import { createAdRouter } from "./src/routes/adRoutes.js";
 import { createSpeechConfigHandler, validateSpeechConfig } from "./src/routes/speechConfig.js";
 import { createAdminAuth } from "./src/services/adminAuth.js";
+import { ownerAdminProvision } from "./src/services/ownerAdminProvision.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 🔐 STAGE I: SECURE PAYMENT ARCHITECTURE (Post-Stage H Security Fix)
@@ -192,6 +194,7 @@ let componentTestResults = {};
 
 // Test MongoDB connection and operations
 async function testMongoDB() {
+    if (!mongoUrl) return { ok: true, message: 'Not configured; SQLite is the local database', skipped: true };
     try {
         if (!db || !dbConnected) return { ok: false, message: 'Database not connected' };
         await db.command({ ping: 1 });
@@ -229,7 +232,7 @@ function testMQTT() {
 async function testGoogleDrive() {
     try {
         // Check if credentials are configured
-        if (!SERVICE_ACCOUNT_KEY_PATH && !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+        if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && !existsSync(SERVICE_ACCOUNT_KEY_PATH) && !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
             return { ok: true, message: 'Not configured (optional)', skipped: true };
         }
 
@@ -266,6 +269,7 @@ async function testGoogleDrive() {
 
 // Test Nodemailer/Email service
 async function testNodemailer() {
+    if (!process.env.GMAIL_USER && !process.env.GMAIL_PASS) return { ok: true, message: 'Local email not configured; paid receipts are sent by the cloud bridge', skipped: true };
     try {
         if (!transporter) return { ok: false, message: 'Email transporter not configured' };
         if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
@@ -323,6 +327,7 @@ async function testReportAPI() {
 
 // Test Eco Tracker functionality
 async function testEcoTracker() {
+    if (!mongoUrl) return { ok: true, message: 'Optional cloud statistics not configured', skipped: true };
     try {
         const stats = await getEcoStats();
         if (stats && stats.total && typeof stats.total.paper === 'number') {
@@ -905,6 +910,7 @@ app.use('/api', rateLimitMiddleware
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ limit: "5mb", extended: true }));
 const adminAuth = createAdminAuth({
+    provision: ownerAdminProvision,
     loadCredentials: () => loadJsonSafe(CRED_STORE_FILE),
     saveCredentials: store => saveJsonSafe(CRED_STORE_FILE, store),
     loadResets: () => loadJsonSafe(TOKEN_STORE_FILE),
@@ -6133,7 +6139,7 @@ app.get("/api/gdrive-image/:fileId", async (req, res) => {
     const { fileId } = req.params;
 
     // Check if Google Drive is configured
-    if (!SERVICE_ACCOUNT_KEY_PATH && !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+    if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && !existsSync(SERVICE_ACCOUNT_KEY_PATH) && !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
         return res.status(503).json({
             message: "Google Drive not configured",
             imageUrl: null
@@ -6176,7 +6182,7 @@ app.get("/api/gdrive-folder-image/:folderId", async (req, res) => {
     const { folderId } = req.params;
 
     // Check if Google Drive is configured
-    if (!SERVICE_ACCOUNT_KEY_PATH && !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+    if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && !existsSync(SERVICE_ACCOUNT_KEY_PATH) && !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
         return res.status(503).json({
             message: "Google Drive not configured",
             imageUrl: null
@@ -6231,29 +6237,14 @@ app.get("/", (req, res) => {
     });
 });
 
-app.get("/health", async (req, res) => {
-    try {
-        // Check MongoDB connection
-        await db.command({ ping: 1 });
-
-        res.json({
-            status: "healthy",
-            timestamp: new Date().toISOString(),
-            services: {
-                mongodb: "connected",
-                mqtt: mqttClient.connected ? "connected" : "disconnected",
-                razorpay: "initialized"
-            },
-            uptime: process.uptime(),
-            memory: process.memoryUsage()
-        });
-    } catch (error) {
-        log.error('Health check failed:', error);
-        res.status(503).json({
-            status: "unhealthy",
-            error: error.message
-        });
-    }
+app.get("/health", (_req, res) => {
+    const health = localHealth({
+        checkSqlite: checkDatabaseHealth,
+        mqttConnected: Boolean(mqttClient?.connected),
+        mongoConfigured: Boolean(mongoUrl),
+        mongoConnected: Boolean(db && dbConnected)
+    });
+    res.status(health.status === 'healthy' ? 200 : 503).json(health);
 });
 
 // Global error handling middleware
