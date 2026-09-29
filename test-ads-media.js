@@ -15,8 +15,29 @@ test('real FFmpeg prepares portrait image and video with/without audio', async t
       ...(audio ? ['-f','lavfi','-i','sine=frequency=440:sample_rate=44100'] : []),
       ...(mime.startsWith('image') ? ['-frames:v','1','-threads','1'] : ['-t','1','-c:v','libx264','-threads','1','-pix_fmt','yuv420p', ...(audio ? ['-c:a','aac'] : ['-an'])]), inputPath],{timeout:20000});
     const result = await normalizeAdMedia({inputPath,outputDir:path.join(dir,name+'-output'),mimeType:mime});
-    assert.equal(result.preparedWidth,1920); assert.equal(result.preparedHeight,1080);
+    assert.equal(result.preparedWidth,1280); assert.equal(result.preparedHeight,800);
     assert.equal(result.hasAudio,audio); assert.equal(result.aspectRatio,'portrait');
+    assert.equal(result.isDisplayFit,false);
     assert.match(result.mediaSHA256,/^[a-f0-9]{64}$/); assert.ok(fs.statSync(result.outputPath).size > 0);
+    if (mime.startsWith('video')) {
+      const probe = JSON.parse(execFileSync('ffprobe',['-v','error','-show_streams','-of','json',result.outputPath]).toString());
+      const video = probe.streams.find(stream => stream.codec_type === 'video');
+      assert.equal(video.codec_name,'h264'); assert.equal(video.pix_fmt,'yuv420p');
+      assert.equal(video.avg_frame_rate,'30/1');
+      const bytes = fs.readFileSync(result.outputPath);
+      assert.ok(bytes.indexOf('moov') < bytes.indexOf('mdat'), 'MP4 metadata is at the front for fast playback');
+    }
+  }
+});
+
+test('native 16:10 artwork is an exact fit while 16:9 artwork is preserved with background fill', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(),'reliv-display-'));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  for (const [size,exact] of [['1280x800',true],['1280x720',false]]) {
+    const inputPath = path.join(dir,size+'.png');
+    execFileSync('ffmpeg',['-v','error','-y','-f','lavfi','-i','color=c=orange:s='+size,'-frames:v','1','-threads','1',inputPath]);
+    const result = await normalizeAdMedia({inputPath,outputDir:path.join(dir,size),mimeType:'image/png'});
+    assert.equal(result.isDisplayFit,exact);
+    assert.equal(result.preparedWidth,1280); assert.equal(result.preparedHeight,800);
   }
 });
