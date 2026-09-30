@@ -1,4 +1,5 @@
 import { localHealth } from './src/services/localHealth.js';
+import { resolveBackendMqttConfig } from './src/services/mqttConfig.js';
 import express from "express";
 import cors from "cors";
 import nodemailer from "nodemailer";
@@ -747,10 +748,7 @@ const requiredEnvVars = [
     'GMAIL_USER',
     'GMAIL_PASS',
     'RAZORPAY_KEY_ID',
-    'RAZORPAY_KEY_SECRET',
-    'MQTT_BROKER_URL',
-    'MQTT_USERNAME',
-    'MQTT_PASSWORD'
+    'RAZORPAY_KEY_SECRET'
 ];
 
 const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
@@ -2521,12 +2519,9 @@ async function getEcoStats() {
         return DEFAULT_ECO_STATS;
     }
 }
-const MQTT_BROKER_URL = process.env.MQTT_BROKER_URL || "mqtt://localhost:1883";
-const mqttClient = mqtt.connect(MQTT_BROKER_URL, {
-    reconnectPeriod: 5000,
-    connectTimeout: 5000,
-    keepalive: 60
-});
+const mqttConfig = resolveBackendMqttConfig(process.env);
+const MQTT_BROKER_URL = mqttConfig.brokerUrl;
+const mqttClient = mqtt.connect(MQTT_BROKER_URL, mqttConfig.options);
 
 mqttClient.on("connect", () => {
     log.info(`✅ MQTT connected to local broker: ${MQTT_BROKER_URL}`);
