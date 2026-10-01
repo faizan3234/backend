@@ -68,6 +68,33 @@ CREATE INDEX IF NOT EXISTS idx_sessions_pairing_token ON sessions(pairing_token)
 CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_synced ON sessions(synced_to_mongo);
 
+-- A profile is created only on the kiosk. Names need not be unique; the PIN
+-- distinguishes people with the same name. No PIN is stored in plain text.
+CREATE TABLE IF NOT EXISTS health_profiles (
+    profile_id TEXT PRIMARY KEY,
+    name_key TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    pin_salt TEXT NOT NULL,
+    pin_hash TEXT NOT NULL,
+    age INTEGER NOT NULL,
+    gender TEXT NOT NULL,
+    email TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_health_profiles_name ON health_profiles(name_key);
+CREATE TABLE IF NOT EXISTS health_profile_attempts (
+    name_key TEXT PRIMARY KEY,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    locked_until INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS health_profile_sessions (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    profile_id TEXT NOT NULL REFERENCES health_profiles(profile_id),
+    access_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_health_profile_sessions_profile ON health_profile_sessions(profile_id);
+
 -- ───────────────────────────────────────────────────────────────────────────
 -- TRANSACTIONS - Financial transaction tracking
 -- ───────────────────────────────────────────────────────────────────────────
