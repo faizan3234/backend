@@ -7,6 +7,13 @@ class SettingsManager {
 
     initialize() {
         this.db = getDb();
+        // One-time rollout: update existing kiosks as well as new databases.
+        this.db.transaction(() => {
+            if (!this.get('migration_report_price_17_v1')) {
+                for (const key of ['reportPrice', 'report_price', 'health_checkup_price', 'healthCheckupPrice']) this.set(key, 17);
+                this.set('migration_report_price_17_v1', 'done');
+            }
+        })();
         console.log('[SettingsManager] Initialized');
     }
 
@@ -42,13 +49,14 @@ class SettingsManager {
     }
 
     getReportPrice() {
-        const rawValue = this.get('reportPrice', '27');
+        const rawValue = this.get('reportPrice', '17');
         const parsed = Number(rawValue);
-        return Number.isFinite(parsed) ? parsed : 27;
+        if (!Number.isFinite(parsed) || parsed <= 0) throw new Error('Invalid report price');
+        return parsed;
     }
 
     setReportPrice(price) {
-        if (typeof price !== 'number' || !Number.isFinite(price) || price < 0 ||
+        if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0 ||
             !Number.isSafeInteger(Math.round(price * 100))) {
             throw new Error('Invalid report price');
         }
