@@ -560,7 +560,12 @@ section('11. ACK Validation (Strict Mandatory Fields & Matching)');
     const hardwareFail = await fulfillmentManager.markCompleted(jobId, { kitId: 'TEST-KIT-1', quantity: 1, status: 'FAILED' });
     assert(hardwareFail === false, 'ACK reporting hardware failure status is REJECTED');
     
-    // Correct ACK
+    assert(fulfillmentManager.getJobStatus(jobId).state === 'MANUAL_REVIEW_REQUIRED', 'Hardware failure freezes job for staff review');
+    // A subsequent unsolicited success cannot clear an uncertain hardware failure.
+    assert(await fulfillmentManager.markCompleted(jobId, { kitId: 'TEST-KIT-1', quantity: 1 }) === false, 'Late ACK cannot bypass staff review');
+    // Staff has inspected and confirmed that the item was delivered.
+    fulfillmentManager.resolveManualReview(jobId, 'COMPLETED');
+    // Correct duplicate ACK remains idempotent
     const correct = await fulfillmentManager.markCompleted(jobId, { kitId: 'TEST-KIT-1', quantity: 1 });
     assert(correct === true, 'ACK with complete, correct kit and quantity accepted');
     
@@ -841,6 +846,7 @@ section('21. Multi-Kit Cart Creation & Motor Resolution');
     let publishedTopic = null;
     let publishedPayload = null;
     fulfillmentManager.mqttClient = {
+        connected: true,
         publish: (topic, payload, opts, cb) => {
             publishedTopic = topic;
             publishedPayload = JSON.parse(payload);
