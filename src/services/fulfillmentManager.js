@@ -198,33 +198,35 @@ class FulfillmentManager {
       throw new Error('MQTT client not configured');
     }
 
+    if (!this.mqttClient.connected) throw new Error('Local MQTT is disconnected; job remains pending.');
+
+    // Persist the claim BEFORE the physical command leaves the Pi. A crash or
+    // an early ESP32 ACK must never leave the job looking safe to republish.
+    const claimed = this.db.prepare(`
+      UPDATE fulfillment_jobs SET state = 'IN_PROGRESS', mqtt_topic = ?,
+        mqtt_payload = ?, mqtt_published_at = datetime('now'),
+        started_at = COALESCE(started_at, datetime('now')), attempts = attempts + 1
+      WHERE job_id = ? AND state = 'PENDING'
+    `).run(topic, payload, jobId);
+    if (claimed.changes !== 1) return false;
+
     return new Promise((resolve, reject) => {
-      this.mqttClient.publish(topic, payload, { qos: 1 }, (error) => {
-        if (error) {
-          console.error(`❌ MQTT publish failed for ${jobId}:`, error.message);
-          reject(error);
-          return;
-        }
-
-        // Update job state
-        this.db.prepare(`
-          UPDATE fulfillment_jobs
-          SET state = 'IN_PROGRESS',
-              mqtt_topic = ?,
-              mqtt_payload = ?,
-              mqtt_published_at = datetime('now'),
-              started_at = COALESCE(started_at, datetime('now')),
-              attempts = attempts + 1
-          WHERE job_id = ?
-        `).run(topic, payload, jobId);
-
-        console.log(`✅ Dispense command published: ${jobId}`);
-        console.log(`   Topic: ${topic}`);
-        console.log(`   Kit: ${job.kit_id}, Motor: ${motorNumber}, Quantity: ${job.quantity}`);
-        console.log(`   Attempt: ${job.attempts + 1}/${job.max_attempts}`);
-        
-        resolve(true);
-      });
+      let settled = false;
+      const timer = setTimeout(() => failed(new Error('MQTT delivery confirmation timed out.')), 10000);
+      const failed = error => {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        this.db.prepare(`UPDATE fulfillment_jobs SET state = 'MANUAL_REVIEW_REQUIRED',
+          error_message = ? WHERE job_id = ? AND state = 'IN_PROGRESS'`)
+          .run('MQTT delivery uncertain; check the collection tray before any retry.', jobId);
+        reject(error);
+      };
+      try {
+        this.mqttClient.publish(topic, payload, { qos: 1, retain: false }, error => {
+          if (error) failed(error);
+          else if (!settled) { settled = true; clearTimeout(timer); resolve(true); } // Preserve early ACK.
+        });
+      } catch (error) { failed(error); }
     });
   }
 
@@ -238,6 +240,7 @@ class FulfillmentManager {
    * @returns {Promise<boolean>} - Success
    */
   async markCompleted(jobId, ackData = {}) {
+    if (!ackData || typeof ackData !== 'object' || Array.isArray(ackData)) return false;
     const job = this.db.prepare('SELECT * FROM fulfillment_jobs WHERE job_id = ?').get(jobId);
     
     if (!job) {
@@ -259,11 +262,13 @@ class FulfillmentManager {
 
     // STRICT ACK VALIDATION:
     // Mandatory fields: jobId (or topic jobId), kitId, and quantity must be present and match.
-    const ackJobId = ackData.jobId || jobId;
+    const ackJobId = ackData.jobId === undefined ? jobId : ackData.jobId;
     const ackKitId = ackData.kitId || ackData.kit_id;
     const ackQuantity = ackData.quantity !== undefined ? Number(ackData.quantity) : null;
     const rawAckMotor = ackData.motor !== undefined ? ackData.motor : (ackData.motor_id !== undefined ? ackData.motor_id : null);
     const ackMotor = rawAckMotor !== null && rawAckMotor !== undefined ? Number(rawAckMotor) : null;
+
+    if (ackJobId !== jobId) return false;
 
     if (!ackKitId) {
       console.error(`❌ ACK validation failed for job ${jobId}: kitId is missing in ESP32 ACK payload`);
@@ -286,7 +291,8 @@ class FulfillmentManager {
     }
 
     // Motor validation: if motor was specified in ACK and job has a stored motor_id, they must match
-    if (ackMotor !== null && !isNaN(ackMotor) && job.motor_id !== null && job.motor_id !== undefined) {
+    if (rawAckMotor !== null && !Number.isInteger(ackMotor)) return false;
+    if (ackMotor !== null && job.motor_id !== null && job.motor_id !== undefined) {
       if (ackMotor !== Number(job.motor_id)) {
         console.error(`❌ ACK motor mismatch for job ${jobId}: expected motor ${job.motor_id}, got ${ackMotor}`);
         return false;
@@ -294,10 +300,15 @@ class FulfillmentManager {
     }
 
     // Check if ESP32 reported a physical dispense failure
-    if (ackData.status === 'FAILED' || ackData.status === 'ERROR' || ackData.success === false) {
-      console.error(`❌ ACK reported physical hardware failure for job ${jobId}: ${ackData.error || ackData.status}`);
+    const ackStatus = typeof ackData.status === 'string' ? ackData.status.trim().toUpperCase() : ackData.status;
+    if (ackStatus === 'FAILED' || ackStatus === 'ERROR' || ackData.success === false) {
+      await this.markFailed(jobId, 'ESP32 reported a dispensing failure; physical verification required.');
       return false;
     }
+
+    // Legacy final ACKs may omit status. Explicit progress/unknown states are never delivery proof.
+    if (ackData.status !== undefined && !['SUCCESS', 'COMPLETED', 'DONE', 'OK'].includes(ackStatus)) return false;
+    if (ackData.success !== undefined && ackData.success !== true) return false;
 
     this.db.prepare(`
       UPDATE fulfillment_jobs
@@ -328,21 +339,13 @@ class FulfillmentManager {
       throw new Error(`Fulfillment job not found: ${jobId}`);
     }
 
-    // Check if can retry
-    if (job.attempts < job.max_attempts) {
-      console.warn(`⚠️ Dispensing failed for ${jobId} (attempt ${job.attempts}/${job.max_attempts})`);
-      console.warn(`   Error: ${errorMessage}`);
-      console.warn(`   Will retry on next recovery cycle`);
-      
-      this.db.prepare(`
-        UPDATE fulfillment_jobs
-        SET state = 'PENDING',
-            error_message = ?
-        WHERE job_id = ?
-      `).run(errorMessage, jobId);
-      
-      return false; // Will retry
+    if (job.state === 'IN_PROGRESS') {
+      this.db.prepare(`UPDATE fulfillment_jobs SET state = 'MANUAL_REVIEW_REQUIRED', error_message = ?
+        WHERE job_id = ? AND state = 'IN_PROGRESS'`).run(errorMessage, jobId);
+      return false;
     }
+    if (job.state !== 'PENDING') return false;
+    if (job.attempts < job.max_attempts) return false;
 
     // Max attempts exceeded
     this.db.prepare(`

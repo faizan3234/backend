@@ -1,3 +1,5 @@
+import { createLocalSpeechHandler } from './src/routes/localSpeech.js';
+import { dispensingSnapshot } from './src/services/dispensingSnapshot.js';
 import { getReportVisitSummary } from './src/services/reportVisits.js';
 import { attachHealthProfile, privateHealthJourney } from './src/services/healthProfiles.js';
 import { localHealth } from './src/services/localHealth.js';
@@ -3562,6 +3564,8 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000);
 
+app.post("/api/speech/audio", createLocalSpeechHandler());
+
 app.get("/api/speech-config", createSpeechConfigHandler({
     getDb: () => db,
     isConnected: () => dbConnected,
@@ -4508,37 +4512,8 @@ app.get("/api/sessions/:sessionId/status", async (req, res) => {
 
         const transaction = transactionManager.getTransactionBySession(sessionId);
         const sessionJobs = fulfillmentManager.getSessionJobs(sessionId);
-        const allJobsCompleted = sessionJobs.length > 0 && sessionJobs.every(j => j.state === 'COMPLETED');
-
-        let clientStatus = session.status;
-        if (session.service_type === 'MEDICINE') {
-            if (session.status === 'COMPLETED' || allJobsCompleted || (transaction && transaction.fulfilled === 1)) {
-                clientStatus = 'dispense_complete';
-            } else if (session.status === 'FULFILLMENT' || sessionJobs.some(j => j.state === 'IN_PROGRESS' || j.state === 'PENDING')) {
-                clientStatus = 'dispensing';
-            }
-        } else if (session.service_type === 'HEALTH_CHECKUP') {
-            if (session.report_status === 'FAILED') {
-                clientStatus = 'report_failed';
-            } else if (session.report_status === 'GENERATING') {
-                clientStatus = 'report_generating';
-            } else {
-                clientStatus = 'report_ready';
-            }
-        }
-
-        res.json({
-            ok: true,
-            sessionId: session.session_id,
-            status: clientStatus,
-            sessionStatus: session.status,
-            dispenseStatus: session.dispense_status || (allJobsCompleted ? 'COMPLETED' : 'IN_PROGRESS'),
-            reportStatus: session.report_status,
-            serviceType: session.service_type,
-            fulfilled: transaction ? transaction.fulfilled === 1 : false,
-            jobsCount: sessionJobs.length,
-            jobsCompleted: sessionJobs.filter(j => j.state === 'COMPLETED').length
-        });
+        res.set('Cache-Control', 'private, no-store');
+        res.json(dispensingSnapshot(session, transaction, sessionJobs));
     } catch (err) {
         log.error("❌ Error fetching session status:", err.message);
         res.status(500).json({ error: err.message || "Failed to fetch session status" });

@@ -167,9 +167,8 @@ def async_transcribe_worker(frames: list, started_at: float, original_generation
             text, used_lang, confidence, intent, action, reply or ""
         )
 
-        # Trigger localized kiosk speaker output:
-        if reply:
-            speaker_tts.speak_async(reply, language=used_lang, echo_controller=echo_controller)
+        # The frontend owns all playback and echo gating. Sending a transcript
+        # must not independently speak over report narration or UI guidance.
 
         event = DialogueBridge.make_transcript_event(
             text=text,

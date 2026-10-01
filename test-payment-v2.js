@@ -277,7 +277,7 @@ db.prepare(`
     const reqHealth = await v2Service.createPaymentRequest(sessionHealth.session_id);
 
     assert(reqHealth.ok === true, 'Health checkup payment request created successfully');
-    assert(reqHealth.amount === 10000, 'Health checkup amount is authoritative ₹100.00 (10000 paise)');
+    assert(reqHealth.amount === 1700, 'Health checkup uses the current authoritative ₹17 default (1700 paise)');
     assert(reqHealth.paymentUrl.startsWith('https://reliv7.vercel.app/pay#p='), 'Payment URL begins with https://reliv7.vercel.app/pay#p=');
     assert(!reqHealth.paymentUrl.includes('confirmationCode'), 'Plain confirmation code NOT in payment URL');
     assert(!reqHealth.paymentUrl.includes('4821'), 'No plain code leak in payment URL');
