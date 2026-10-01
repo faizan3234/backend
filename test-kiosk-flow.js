@@ -66,6 +66,20 @@ test("real offline API: session -> customer -> health/medicine, retries and fail
     });
     return { status: res.status, body: await res.json() };
   }
+  const profileStart = (await post('/api/create-qr-session', {})).body;
+  const profileUrl = `/api/sessions/${profileStart.sessionId}/health-profile`;
+  const firstProfile = { mode:'new', name:'Rahul Kumar', pin:'123456', age:27, gender:'male', pairingToken:profileStart.pairingToken };
+  assert.equal((await post(profileUrl, { ...firstProfile, pairingToken:'wrong' })).status, 403);
+  const joined = await post(profileUrl, firstProfile);
+  assert.equal(joined.status, 200, JSON.stringify(joined.body));
+  assert.equal(joined.body.customerData.name, 'Rahul Kumar');
+  assert.match(joined.body.accessToken, /^[a-f0-9]{64}$/);
+  assert.equal((await post(profileUrl, firstProfile)).status, 409);
+  const nextProfileStart = (await post('/api/create-qr-session', {})).body;
+  const returned = await post(`/api/sessions/${nextProfileStart.sessionId}/health-profile`, { mode:'returning', name:'Rahul Kumar', pin:'123456', pairingToken:nextProfileStart.pairingToken });
+  assert.equal(returned.status, 200, JSON.stringify(returned.body));
+  assert.equal(returned.body.customerData.age, 27);
+  assert.notEqual(returned.body.accessToken, joined.body.accessToken);
   for (const serviceType of ["HEALTH_CHECKUP", "MEDICINE"]) {
     const created = await post("/api/create-qr-session", {});
     assert.equal(created.status, 200, JSON.stringify(created.body));
@@ -115,4 +129,3 @@ test("real offline API: session -> customer -> health/medicine, retries and fail
   assert.equal((await (await fetch(base + '/api/speech-config')).json())['two-options'].en, 'Audit prompt');
   console.log("Verified both service paths, duplicate requests, token rejection and expiration.");
 });
-

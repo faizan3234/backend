@@ -1,4 +1,5 @@
 import { getReportVisitSummary } from './src/services/reportVisits.js';
+import { attachHealthProfile, privateHealthJourney } from './src/services/healthProfiles.js';
 import { localHealth } from './src/services/localHealth.js';
 import { resolveBackendMqttConfig } from './src/services/mqttConfig.js';
 import express from "express";
@@ -831,7 +832,7 @@ app.use(
         },
         credentials: true,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'X-Requested-With', 'Accept', 'Origin']
+        allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'X-Requested-With', 'Accept', 'Origin', 'X-Reliv-Profile-Token']
     })
 );
 
@@ -3841,6 +3842,26 @@ async function saveCustomerDataHandler(req, res) {
     }
 }
 
+// Kiosk-only identity step. The paired session, not a name, binds a private
+// profile to this visit. Keep PINs and the access token out of customer_data.
+app.post('/api/sessions/:sessionId/health-profile', (req, res) => {
+    try {
+        res.set('Cache-Control', 'private, no-store');
+        const { sessionId } = req.params;
+        const { pairingToken, ...input } = req.body || {};
+        if (!pairingToken) return res.status(403).json({ ok: false, error: 'Kiosk session token required' });
+        sessionManager.verifyPairingToken(sessionId, pairingToken);
+        const session = sessionManager.getSession(sessionId);
+        if (!session || new Date(session.expires_at) < new Date()) {
+            return res.status(410).json({ ok: false, error: 'Session expired. Please start again.' });
+        }
+        const result = attachHealthProfile(getDb(), sessionManager, sessionId, input);
+        return res.json({ ok: true, sessionId, ...result });
+    } catch (error) {
+        return res.status(error.status || 403).json({ ok: false, error: error.status ? error.message : 'Profile verification failed.' });
+    }
+});
+
 // ───────────────────────────────────────────────────────────────────────────
 // ENDPOINT: Save Customer Data
 // GOLDEN RULE: Stores customer data ONCE - attached to the ONE session
@@ -5115,6 +5136,7 @@ app.get("/api/sessions/:sessionId/report/download", async (req, res) => {
 
 app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
     try {
+        res.set('Cache-Control', 'private, no-store');
         const { sessionId } = req.params;
 
         if (!pdfGenerator) {
@@ -5135,6 +5157,14 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
             session,
             healthData
         } = auth;
+
+        // A paid session ID may appear in a payment URL. Require this
+        // visit's private credential before returning a named patient's data.
+        const hasProfile = Boolean(getDb().prepare('SELECT 1 FROM health_profile_sessions WHERE session_id = ?').get(sessionId));
+        const journey = hasProfile ? privateHealthJourney(getDb(), sessionId, req.get('X-Reliv-Profile-Token')) : null;
+        if (hasProfile && !journey) {
+            return res.status(403).json({ ok: false, message: 'This private report needs the PIN verified on this kiosk.' });
+        }
 
         // Payment alone is not enough.
         // The report must have actually completed.
@@ -5171,12 +5201,12 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
 
             customerData,
 
-            // Sensor values remain the immutable paid snapshot. Visit metadata
-            // comes from local paid sessions; never expose another visit's vitals.
+            // Older measurements are included only with this session's private
+            // kiosk access token. The QR/payment session ID alone is insufficient.
             healthData: {
                 ...healthData,
                 history: [],
-                ...getReportVisitSummary(getDb(), sessionId, customerData)
+                ...(journey || getReportVisitSummary(getDb(), sessionId, customerData))
             }
 
         });
