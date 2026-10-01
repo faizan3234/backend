@@ -1,3 +1,4 @@
+import { getReportVisitSummary } from './src/services/reportVisits.js';
 import { localHealth } from './src/services/localHealth.js';
 import { resolveBackendMqttConfig } from './src/services/mqttConfig.js';
 import express from "express";
@@ -133,7 +134,7 @@ process.on('uncaughtException', (error) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // PRICING CONFIGURATION - Admin-adjustable, persisted in SQLite
 // ═══════════════════════════════════════════════════════════════════════════
-let reportPrice = 27; // Default fallback; actual value loaded from SQLite on startup
+let reportPrice = 17; // Default fallback; actual value loaded from SQLite on startup
 
 // ============================================================
 // RELIV KIOSK NETWORK CONFIGURATION
@@ -3777,9 +3778,13 @@ async function saveCustomerDataHandler(req, res) {
             name: rawCustomer.name || '',
             age: rawCustomer.age || null,
             gender: rawCustomer.gender || '',
-            email: rawCustomer.email || '',
+            email: typeof rawCustomer.email === 'string' ? rawCustomer.email.trim().toLowerCase() : '',
             phone: rawCustomer.phone || ''
         };
+
+        if (customerData.email && (customerData.email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerData.email))) {
+            return res.status(400).json({ error: 'Enter a valid email address or leave it empty.' });
+        }
 
         if (!sessionId) {
             return res.status(400).json({ error: "Session ID is required" });
@@ -5166,8 +5171,14 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
 
             customerData,
 
-            // ONLY the immutable pre-payment snapshot.
-            healthData
+            // Sensor values remain the immutable paid snapshot. Visit metadata
+            // comes from local paid sessions; never expose another visit's vitals.
+            healthData: {
+                ...healthData,
+                history: [],
+                ...getReportVisitSummary(getDb(), sessionId, customerData)
+            }
+
         });
 
     } catch (err) {

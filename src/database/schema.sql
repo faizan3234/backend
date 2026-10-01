@@ -264,7 +264,7 @@ CREATE TABLE IF NOT EXISTS settings (
     updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
-INSERT OR IGNORE INTO settings (key, value) VALUES ('reportPrice', '27');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('reportPrice', '17');
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- PAYMENT_NONCES - Replay attack prevention for payment authorizations
@@ -407,7 +407,7 @@ CREATE TABLE IF NOT EXISTS system_config (
 -- Initialize default config
 INSERT OR IGNORE INTO system_config (key, value) VALUES 
     ('kiosk_id', 'RELIV-001'),
-    ('report_price', '27'),
+    ('report_price', '17'),
     ('session_ttl_minutes', '10'),
     ('db_initialized_at', datetime('now'));
 

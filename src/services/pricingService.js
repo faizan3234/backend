@@ -230,11 +230,11 @@ export class PricingService {
      */
     calculateAuthoritativePrice({ serviceType, cart = [], taxRate = null, platformFee = null } = {}) {
         if (serviceType === 'HEALTH_CHECKUP') {
-            const configuredPrice = this.settingsManager ? (this.settingsManager.get('health_checkup_price') ?? this.settingsManager.get('healthCheckupPrice')) : null;
-            let priceInRupees = configuredPrice !== null ? Number(configuredPrice) : null;
+            const priceInRupees = this.settingsManager?.getReportPrice
+                ? this.settingsManager.getReportPrice()
+                : Number(this.settingsManager?.get('reportPrice') ?? 17);
             if (!Number.isFinite(priceInRupees) || priceInRupees <= 0) {
-                // Default health checkup service is ₹100.00 (10000 paise)
-                priceInRupees = 100;
+                throw new Error('Invalid report price');
             }
             const totalPaise = Math.round(priceInRupees * 100);
             return {
