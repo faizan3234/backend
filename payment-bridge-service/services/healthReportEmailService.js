@@ -1,3 +1,4 @@
+import { validateStoryCard, generateCheckinCardPdf } from './checkinCard.js';
 import { emailFailure } from './emailFailure.js';
 import crypto from 'crypto';
 import {
@@ -120,7 +121,9 @@ function issueDownloadToken(db, scanRow) {
 }
 
 function bindScanToEmail({ db, order, normalizedEmail, secret }) {
-    const key = emailKey(normalizedEmail, secret);
+    const snapshot = parseSnapshot(order.encrypted_health_snapshot, secret);
+    const identity = snapshot.profileKey || `unlinked:${order.request_id}`;
+    const key = emailKey(`${normalizedEmail}|${identity}`, secret);
 
     const tx = db.transaction(() => {
         const existing = db.prepare(`
@@ -129,7 +132,7 @@ function bindScanToEmail({ db, order, normalizedEmail, secret }) {
         `).get(order.request_id);
 
         if (existing) {
-            if (existing.email_key !== key) {
+            if (decryptConfirmationCodeAtRest(existing.encrypted_email, secret) !== normalizedEmail) {
                 const err = new Error(
                     'This paid health scan is already bound to a different delivery email'
                 );
@@ -183,7 +186,7 @@ function bindScanToEmail({ db, order, normalizedEmail, secret }) {
     return tx();
 }
 
-function loadHistory(db, key, secret) {
+function loadHistory(db, key, secret, requestId) {
     const rows = db.prepare(`
         SELECT *
         FROM payment_v2_health_scans
@@ -191,13 +194,18 @@ function loadHistory(db, key, secret) {
         ORDER BY scan_number ASC
     `).all(key);
 
-    return rows.map(row => ({
+    const history = rows.map(row => ({
         scanNumber: Number(row.scan_number),
         requestId: row.request_id,
         orderId: row.order_id,
         createdAt: Number(row.created_at),
         snapshot: parseSnapshot(row.encrypted_snapshot, secret)
     }));
+    const current = history.find(scan => scan.requestId === requestId);
+    // Existing email-only history must never expose a different person's scans.
+    return history.filter(scan => current?.snapshot?.profileKey
+        ? scan.snapshot.profileKey === current.snapshot.profileKey
+        : scan.requestId === requestId);
 }
 
 function reportEmailContent({ scanNumber, totalScans, patientName }) {
@@ -249,10 +257,12 @@ export async function sendHealthReportEmail({
     requestId,
     email,
     codeSecret,
+    storyCard = null,
     transporter = null,
     reportPdfBuilderOverride = null,
     receiptPdfBuilderOverride = null
 }) {
+    const requestedCard = validateStoryCard(storyCard);
     const key = String(requestId || '').trim();
     const recipient = normalizeEmail(email);
     let inflight = inflightByDb.get(db);
@@ -271,7 +281,7 @@ export async function sendHealthReportEmail({
     const task = (async () => {
         const order = requirePaidHealthOrder(db, requestId);
         const normalizedEmail = normalizeEmail(email);
-        const keyForEmail = emailKey(normalizedEmail, codeSecret);
+
 
         let scanRow = bindScanToEmail({
             db,
@@ -295,7 +305,7 @@ export async function sendHealthReportEmail({
             };
         }
 
-        const history = loadHistory(db, keyForEmail, codeSecret);
+        const history = loadHistory(db, scanRow.email_key, codeSecret, order.request_id);
         const current = history.find(s => s.requestId === order.request_id);
 
         if (!current) {
@@ -363,6 +373,8 @@ export async function sendHealthReportEmail({
             content: healthPdf,
             contentType: 'application/pdf'
         }];
+
+        if (requestedCard) attachments.push({ filename: 'Reliv-Together-Story-Card.pdf', content: await generateCheckinCardPdf(requestedCard), contentType: 'application/pdf' });
 
         if (receiptPdf) {
             attachments.push({
@@ -482,7 +494,7 @@ export async function generateHealthReportDownload({
         throw err;
     }
 
-    const history = loadHistory(db, row.email_key, codeSecret);
+    const history = loadHistory(db, row.email_key, codeSecret, row.request_id);
     const normalizedEmail = decryptConfirmationCodeAtRest(row.encrypted_email, codeSecret);
 
     const pdf = await generateCloudHealthReportPdfBuffer({

@@ -7,6 +7,7 @@
  */
 
 import fs from 'fs';
+import crypto from 'node:crypto';
 import path from 'path';
 import { getDb, transaction as dbTransaction } from '../database/db.js';
 import sessionManagerInstance from './sessionManager.js';
@@ -503,8 +504,12 @@ export class PaymentV2Service {
                     ? frozenHealthData.vitals
                     : {};
 
+            const profileTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'health_profile_sessions'").get();
+            const linked = profileTable ? this.db.prepare('SELECT profile_id FROM health_profile_sessions WHERE session_id = ?').get(sessionId) : null;
             healthReportSnapshot = {
                 version: 1,
+                // Opaque, kiosk-signed identity; an email address is not a patient ID.
+                ...(linked ? { profileKey: crypto.createHmac('sha256', this.pepper).update(`report-profile:${this.kioskId}:${linked.profile_id}`).digest('hex') } : {}),
 
                 patient: {
                     name:

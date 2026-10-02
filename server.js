@@ -5180,6 +5180,11 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
             // kiosk access token. The QR/payment session ID alone is insufficient.
             healthData: {
                 ...healthData,
+                // Reopen the SAME captured order on a phone with internet. No Pi network required.
+                reportPaymentUrl: (() => {
+                    const paid = getDb().prepare("SELECT encrypted_package FROM payment_v2_requests WHERE session_id = ? AND status = 'VERIFIED' ORDER BY created_at DESC LIMIT 1").get(sessionId);
+                    return paid?.encrypted_package ? `https://reliv7.vercel.app/pay#p=${paid.encrypted_package}` : null;
+                })(),
                 history: [],
                 ...(journey || getReportVisitSummary(getDb(), sessionId, customerData))
             }

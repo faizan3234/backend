@@ -180,17 +180,6 @@ export class PaymentV2CloudService {
             throw err;
         }
 
-        // 5. Expiration Check
-        const now = Date.now();
-        if (now > payload.expiresAt + this.ttlMarginMs) {
-            console.warn(`[PaymentV2Cloud] ⚠️ Request expired: ${payload.requestId} (expired at ${payload.expiresAt}, current ${now})`);
-            const err = new Error(isAdPayment
-                ? 'This advertisement payment link has expired. If you already paid, use payment recovery or enter your code on the kiosk. Do not pay again; ask the kiosk administrator for help.'
-                : 'Payment request has expired. Please refresh the QR on the kiosk.');
-            err.code = 'REQUEST_EXPIRED';
-            throw err;
-        }
-
         // 6. Validate Amount and Currency
         const authoritativeAmount = Number(payload.amount);
         if (!Number.isInteger(authoritativeAmount) || authoritativeAmount <= 0) {
@@ -417,8 +406,12 @@ export class PaymentV2CloudService {
                 throw err;
             }
 
+            if (snapshot.profileKey !== undefined && (typeof snapshot.profileKey !== 'string' || !/^[a-f0-9]{64}$/.test(snapshot.profileKey))) {
+                const err = new Error('Invalid private report identity'); err.code = 'INVALID_HEALTH_SNAPSHOT'; throw err;
+            }
             const sanitizedHealthSnapshot = {
                 version: 1,
+                ...(snapshot.profileKey ? { profileKey: snapshot.profileKey } : {}),
 
                 patient: {
                     name,
@@ -448,6 +441,21 @@ export class PaymentV2CloudService {
 
         // 7. Compute Payload Fingerprint (SHA-256)
         const payloadFingerprint = computePayloadFingerprint(payload);
+
+        // Expiry prevents new payments, but must not hide a previously captured
+        // payment/report. Signature and full payload fingerprint still have to match.
+        const knownPaid = this.db.prepare("SELECT status, payload_fingerprint FROM payment_v2_orders WHERE request_id = ?").get(payload.requestId);
+        const exactPaid = knownPaid?.status === 'PAID' && knownPaid.payload_fingerprint === payloadFingerprint;
+        // 5. Expiration Check
+        const now = Date.now();
+        if (!exactPaid && now > Number(payload.expiresAt) + this.ttlMarginMs) {
+            console.warn(`[PaymentV2Cloud] ⚠️ Request expired: ${payload.requestId} (expired at ${payload.expiresAt}, current ${now})`);
+            const err = new Error(isAdPayment
+                ? 'This advertisement payment link has expired. If you already paid, use payment recovery or enter your code on the kiosk. Do not pay again; ask the kiosk administrator for help.'
+                : 'Payment request has expired. Please refresh the QR on the kiosk.');
+            err.code = 'REQUEST_EXPIRED';
+            throw err;
+        }
 
         // 8. Deduplicate concurrent requests for the exact same requestId
         if (this._inflightOrders.has(payload.requestId)) {
@@ -1039,6 +1047,7 @@ export class PaymentV2CloudService {
     async sendEmailHealthReport({
         requestId,
         email,
+        storyCard,
         transporterOverride = null,
         reportPdfBuilderOverride = null,
         receiptPdfBuilderOverride = null
@@ -1047,6 +1056,7 @@ export class PaymentV2CloudService {
             db: this.db,
             requestId,
             email,
+            storyCard,
             codeSecret: this.codeSecret,
             transporter: transporterOverride,
             reportPdfBuilderOverride,
