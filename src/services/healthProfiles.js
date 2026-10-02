@@ -75,12 +75,12 @@ export function privateHealthJourney(db, sessionId, accessToken) {
     if (!access || !crypto.timingSafeEqual(Buffer.from(digest(accessToken), 'hex'), Buffer.from(access.access_hash, 'hex'))) return null;
     const current = db.prepare('SELECT rowid AS sequence FROM sessions WHERE session_id = ?').get(sessionId);
     if (!current) return null;
-    const scans = db.prepare(`SELECT s.session_id, s.created_at, s.health_data FROM sessions s
+    const scans = db.prepare(`SELECT s.session_id, s.created_at, s.health_data, COUNT(*) OVER() AS scan_count FROM sessions s
         JOIN health_profile_sessions p ON p.session_id = s.session_id
         WHERE p.profile_id = ? AND s.rowid <= ? AND s.service_type = 'HEALTH_CHECKUP'
           AND s.payment_status = 'VERIFIED' AND s.report_status IN ('READY','EMAILED')
-          AND s.health_data IS NOT NULL ORDER BY s.rowid ASC LIMIT 100`).all(access.profile_id, current.sequence);
-    const history = scans.map(row => {
+          AND s.health_data IS NOT NULL ORDER BY s.rowid DESC LIMIT 100`).all(access.profile_id, current.sequence);
+    const history = [...scans].reverse().map(row => {
         let vitals;
         try { vitals = JSON.parse(row.health_data)?.vitals || {}; } catch { vitals = {}; }
         const point = { createdAt: row.created_at };
@@ -90,5 +90,5 @@ export function privateHealthJourney(db, sessionId, accessToken) {
         }
         return point;
     });
-    return { scanCount: history.length, identityLinked: true, history };
+    return { scanCount: scans[0]?.scan_count || 0, identityLinked: true, history };
 }
