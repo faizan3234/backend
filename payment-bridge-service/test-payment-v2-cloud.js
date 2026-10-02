@@ -1003,6 +1003,17 @@ const v2CloudService = new PaymentV2CloudService({
     assert(paidOrder.razorpay_payment_id === testPaymentId, 'razorpay_payment_id saved in SQLite');
     assert(paidOrder.verified_at > 0, 'verified_at timestamp saved in SQLite');
 
+    // Expiry must block new charges, but not access to the exact paid QR.
+    const clock = Date.now;
+    Date.now = () => verifyPayload.expiresAt + v2CloudService.ttlMarginMs + 1000;
+    try {
+        const reopened = await v2CloudService.createOrderFromPackage(verifyPkg);
+        assert(reopened.paid === true && reopened.orderId === testOrderId, 'Expired exact paid QR reopens its original order without a new charge');
+        const changed = createPiHybridPackage({...verifyPayload,amount:verifyPayload.amount+100},kioskKeys.privateKey,cloudKeys4096.publicKey);
+        let rejected=false;try{await v2CloudService.createOrderFromPackage(changed);}catch{rejected=true;}
+        assert(rejected,'Expired changed payload cannot use paid-order expiry exemption');
+    } finally { Date.now = clock; }
+
     // Idempotent re-reveal
     const repeatVerify = await v2CloudService.verifyPaymentAndRevealCode({
         orderId: testOrderId,

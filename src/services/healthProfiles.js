@@ -75,15 +75,20 @@ export function privateHealthJourney(db, sessionId, accessToken) {
     if (!access || !crypto.timingSafeEqual(Buffer.from(digest(accessToken), 'hex'), Buffer.from(access.access_hash, 'hex'))) return null;
     const current = db.prepare('SELECT rowid AS sequence FROM sessions WHERE session_id = ?').get(sessionId);
     if (!current) return null;
-    const scans = db.prepare(`SELECT s.session_id, s.created_at, s.health_data, COUNT(*) OVER() AS scan_count FROM sessions s
+    const scans = db.prepare(`SELECT s.session_id, s.created_at, s.health_data, s.customer_data, COUNT(*) OVER() AS scan_count FROM sessions s
         JOIN health_profile_sessions p ON p.session_id = s.session_id
         WHERE p.profile_id = ? AND s.rowid <= ? AND s.service_type = 'HEALTH_CHECKUP'
           AND s.payment_status = 'VERIFIED' AND s.report_status IN ('READY','EMAILED')
           AND s.health_data IS NOT NULL ORDER BY s.rowid DESC LIMIT 100`).all(access.profile_id, current.sequence);
     const history = [...scans].reverse().map(row => {
-        let vitals;
-        try { vitals = JSON.parse(row.health_data)?.vitals || {}; } catch { vitals = {}; }
-        const point = { createdAt: row.created_at };
+        let snapshot = {}, customer = {};
+        try { snapshot = JSON.parse(row.health_data) || {}; } catch { /* preserve a gap */ }
+        try { customer = JSON.parse(row.customer_data) || {}; } catch { /* older snapshot */ }
+        const vitals = snapshot.vitals || {};
+        // Historical estimates must use demographics recorded at that visit.
+        // Only age/gender are needed; never expose another name, email or PIN.
+        const patient = snapshot.patient || customer;
+        const point = { createdAt: row.created_at, patient: { age: patient.age, gender: patient.gender } };
         for (const key of METRICS) {
             const value = Number(vitals[key]);
             if (vitals[key] !== null && vitals[key] !== undefined && vitals[key] !== '' && Number.isFinite(value) && value > 0) point[key] = value;

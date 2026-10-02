@@ -26,6 +26,8 @@ test('private trends contain only paid scans for the PIN verified profile', () =
   assert.equal(journey.scanCount, 2);
   assert.deepEqual(journey.history.map(x => x.systolic), [120,124]);
   assert.equal('impedance' in journey.history[0], false);
+  assert.deepEqual(journey.history[0].patient,{age:26,gender:'male'});
+  assert.equal(journey.history[0].patient.name,undefined);
   assert.equal(privateHealthJourney(db, someoneElse.sessionId, someoneElse.token).scanCount, 1);
   assert.equal(db.prepare('SELECT count(*) AS total FROM health_profiles').get().total, 2);
   assert.equal(db.prepare('SELECT count(*) AS total FROM health_profiles WHERE pin_hash IN (?, ?)').get('123456','654321').total, 0);

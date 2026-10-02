@@ -257,6 +257,7 @@ export function createPaymentV2Router(paymentV2CloudService, {
             ) ? 404 : (
                 err.code === 'ORDER_NOT_PAID' ||
                 err.code === 'INVALID_EMAIL' ||
+                err.code === 'INVALID_STORY_CARD' ||
                 err.code === 'MISSING_EMAIL' ||
                 err.code === 'MISSING_REQUEST_ID'
             ) ? 400 : 500;
@@ -277,7 +278,7 @@ export function createPaymentV2Router(paymentV2CloudService, {
      */
     router.post('/email-health-report', emailReceiptLimiter, async (req, res) => {
         try {
-            const { requestId, email } = req.body || {};
+            const { requestId, email, storyCard } = req.body || {};
 
             if (!requestId || typeof requestId !== 'string') {
                 return res.status(400).json({
@@ -297,7 +298,8 @@ export function createPaymentV2Router(paymentV2CloudService, {
 
             const result = await paymentV2CloudService.sendEmailHealthReport({
                 requestId,
-                email
+                email,
+                storyCard
             });
 
             return res.json(result);
@@ -320,6 +322,7 @@ export function createPaymentV2Router(paymentV2CloudService, {
                 err.code === 'NOT_HEALTH_CHECKUP' ||
                 err.code === 'HEALTH_SNAPSHOT_MISSING' ||
                 err.code === 'INVALID_EMAIL' ||
+                err.code === 'INVALID_STORY_CARD' ||
                 err.code === 'MISSING_EMAIL' ||
                 err.code === 'MISSING_REQUEST_ID' ||
                 err.code === 'REPORT_EMAIL_ALREADY_BOUND'

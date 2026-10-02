@@ -31,6 +31,7 @@ const SECRET = 'health_report_test_secret_1234567890';
 
 const snapshot1 = {
     version: 1,
+    profileKey: "a".repeat(64),
     patient: { name: 'Progressive Test', age: 30, gender: 'male' },
     vitals: {
         systolic: 120,
@@ -48,6 +49,7 @@ const snapshot1 = {
 
 const snapshot2 = {
     version: 1,
+    profileKey: "a".repeat(64),
     patient: { name: 'Progressive Test', age: 30, gender: 'male' },
     vitals: {
         systolic: 118,
@@ -113,6 +115,7 @@ const firstSend = sendHealthReportEmail({
     db,
     requestId: 'REQ-HR-1',
     email: ' Progressive.User@Example.com ',
+    storyCard: { alias: 'Alex', partner: 'Sam', relationship: 'friends', consent: true },
     codeSecret: SECRET,
     transporter
 });
@@ -129,6 +132,7 @@ assert(concurrentDuplicate.messageId === r1.messageId, 'Concurrent same-recipien
 assert(r1.ok === true && r1.sent === true, 'Scan 1 report email succeeds');
 assert(r1.scanNumber === 1, 'First paid scan is Scan 1');
 assert(sent.length === 1, 'One email sent');
+assert(sent[0].attachments.some(a=>a.filename==='Reliv-Together-Story-Card.pdf'),'opt-in card attached to the single paid report email');
 assert(
     sent[0].attachments.some(a => a.filename.includes('Health-Report-Scan-1')),
     'Health report PDF attached'
@@ -196,6 +200,11 @@ const rows = db.prepare(`
 `).all();
 
 assert(rows.length === 2 && rows[0].scan_number === 1 && rows[1].scan_number === 2, 'Progressive scan numbering persists in SQLite');
+
+insertPaidHealth({requestId:'REQ-HR-OTHER',orderId:'order_hr_other',txnId:'TXN-HR-OTHER',paymentId:'pay_hr_other',snapshot:{...snapshot1,profileKey:'b'.repeat(64),patient:{...snapshot1.patient,name:'Other person'}}});
+let otherHistory;
+const other = await sendHealthReportEmail({db,requestId:'REQ-HR-OTHER',email:'progressive.user@example.com',codeSecret:SECRET,transporter,reportPdfBuilderOverride:async ({scans})=>{otherHistory=scans;return Buffer.alloc(600);}});
+assert(other.scanNumber===1 && otherHistory.length===1 && otherHistory[0].snapshot.patient.name==='Other person','shared email cannot merge two private health profiles');
 
 const model = buildHealthReportModel({
     scans: [

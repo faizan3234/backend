@@ -1,3 +1,4 @@
+import { bodyEstimates } from './bodyEstimates.js';
 import PDFDocument from 'pdfkit';
 import fs from 'fs';
 import path from 'path';
@@ -66,6 +67,7 @@ const hasValue = (v) =>
     String(v).trim() !== '';
 
 const numberOrNull = (v) => {
+    if (!hasValue(v)) return null;
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
 };
@@ -108,7 +110,11 @@ export function buildHealthReportModel({ scans, currentScanNumber, recipientEmai
         throw new Error('At least one authoritative health scan is required');
     }
 
-    const ordered = [...scans].sort((a, b) => a.scanNumber - b.scanNumber);
+    const ordered = [...scans].sort((a, b) => a.scanNumber - b.scanNumber).map(scan => {
+        const snapshot = scan.snapshot || {}, source = snapshot.vitals || {};
+        const measured = Object.fromEntries(['height','weight','systolic','diastolic','bpm','oxygen','temperature','leftEye','rightEye'].filter(k => source[k] !== null && source[k] !== undefined && source[k] !== '').map(k => [k,source[k]]));
+        return { ...scan, snapshot: { ...snapshot, vitals: { ...measured, ...bodyEstimates(measured, snapshot.patient) } } };
+    });
     const latest = ordered.find(s => s.scanNumber === currentScanNumber) || ordered[ordered.length - 1];
 
     if (!latest?.snapshot?.patient || !latest?.snapshot?.vitals) {
@@ -256,13 +262,14 @@ export async function generateCloudHealthReportPdfBuffer({
             };
 
             const title = (text, subtitle = '') => {
-                ensure(subtitle ? 48 : 32);
+                const subtitleHeight = subtitle ? doc.font(fontR).fontSize(8.5).heightOfString(subtitle, {width:CONTENT_W,lineGap:2}) + 8 : 0;
+                ensure(28 + subtitleHeight);
                 doc.font(fontB).fontSize(13).fillColor(C.navy).text(text, M, y, { width: CONTENT_W });
                 y += 20;
                 if (subtitle) {
                     doc.font(fontR).fontSize(8.5).fillColor(C.secondary)
                         .text(subtitle, M, y, { width: CONTENT_W, lineGap: 2 });
-                    y += 20;
+                    y += subtitleHeight;
                 }
             };
 
@@ -355,19 +362,19 @@ export async function generateCloudHealthReportPdfBuffer({
             ]);
 
             const bodyMetrics = [
-                { label: 'Body Fat', value: v.bodyFat, unit: '%' },
-                { label: 'Muscle Mass', value: v.muscleMass, unit: 'kg' },
-                { label: 'Bone Mass', value: v.boneMass, unit: 'kg' },
-                { label: 'Body Water', value: v.bodyWater, unit: '%' },
-                { label: 'Skeletal Muscle', value: v.skeletalMuscle, unit: '%' },
-                { label: 'FFMI', value: v.ffmi, unit: '' },
-                { label: 'BMR', value: v.bmr, unit: 'kcal/day' },
-                { label: 'Metabolic Age', value: v.metabolicAge, unit: 'years' },
-                { label: 'Impedance', value: v.impedance, unit: 'ohm' }
+                { label: 'BMI (calculated)', value: v.bmi, unit: 'kg/m2' },
+                { label: 'Surface area (calculated)', value: v.bsa, unit: 'm2' },
+                { label: 'Body fat (estimate)', value: v.bodyFat, unit: '%' },
+                { label: 'Fat mass (estimate)', value: v.fatMass, unit: 'kg' },
+                { label: 'Fat-free mass (estimate)', value: v.fatFreeMass, unit: 'kg' },
+                { label: 'Water (estimate)', value: v.bodyWaterLitres, unit: 'L' },
+                { label: 'Water share (estimate)', value: v.bodyWater, unit: '%' },
+                { label: 'FFMI (estimate)', value: v.ffmi, unit: 'kg/m2' },
+                { label: 'Resting energy (estimate)', value: v.restingEnergy, unit: 'kcal/day' }
             ].filter(m => hasValue(m.value));
-
             if (bodyMetrics.length) {
-                title('Body Composition');
+                ensure(Math.ceil(bodyMetrics.length / 3) * 72 + 100);
+                title('Body estimates', 'Adult population formulas use height, weight, age and recorded male/female sex. These are not sensor measurements, nutrition targets or a dehydration test. Pregnancy, illness, fluid changes and athletic build can reduce accuracy. Metabolic age and visceral fat cannot be reliably derived by this kiosk.');
                 drawMetricGrid(bodyMetrics);
             }
 
