@@ -34,3 +34,22 @@ test('private trends contain only paid scans for the PIN verified profile', () =
   for (let attempt = 0; attempt < 5; attempt++) assert.throws(() => attachHealthProfile(db, sessionManager, failed.session_id, { mode:'returning', name:'Rahul Kumar', pin:'999999' }), /Name or PIN/);
   assert.throws(() => attachHealthProfile(db, sessionManager, failed.session_id, { mode:'returning', name:'Rahul Kumar', pin:'123456' }), /Too many attempts/);
 });
+
+
+test('long health journeys retain the latest scan and the full paid scan count', () => {
+  const db = initializeDatabase(':memory:'); sessionManager.initialize();
+  const first=sessionManager.createSession();
+  const result=attachHealthProfile(db,sessionManager,first.session_id,{mode:'new',name:'Long Journey',pin:'928341',age:30,gender:'female'});
+  const access=db.prepare('SELECT * FROM health_profile_sessions WHERE session_id=?').get(first.session_id);
+  let last;
+  for(let i=0;i<105;i++) {
+    last=sessionManager.createSession();
+    db.prepare('INSERT INTO health_profile_sessions(session_id,profile_id,access_hash) VALUES(?,?,?)').run(last.session_id,access.profile_id,access.access_hash);
+    db.prepare("UPDATE sessions SET service_type='HEALTH_CHECKUP',payment_status='VERIFIED',report_status='READY',health_data=? WHERE session_id=?").run(JSON.stringify({vitals:{systolic:100+i}}),last.session_id);
+  }
+  const journey=privateHealthJourney(db,last.session_id,result.accessToken);
+  assert.equal(journey.scanCount,105);
+  assert.equal(journey.history.length,100);
+  assert.equal(journey.history[0].systolic,105);
+  assert.equal(journey.history.at(-1).systolic,204);
+});
