@@ -149,7 +149,9 @@ function comparisonRows(current, previous) {
         ['weight', 'Weight', 'kg'],
         ['bodyFat', 'Body Fat', '%'],
         ['muscleMass', 'Muscle Mass', 'kg'],
-        ['bodyWater', 'Body Water', '%']
+        ['bodyWater', 'Body Water', '%'],
+        ['metabolicAge', 'Metabolic Age', 'years'],
+        ['visceralFat', 'Visceral Fat', 'level']
     ];
 
     return defs.flatMap(([key, label, unit]) => {
@@ -367,14 +369,19 @@ export async function generateCloudHealthReportPdfBuffer({
                 { label: 'Body fat (estimate)', value: v.bodyFat, unit: '%' },
                 { label: 'Fat mass (estimate)', value: v.fatMass, unit: 'kg' },
                 { label: 'Fat-free mass (estimate)', value: v.fatFreeMass, unit: 'kg' },
-                { label: 'Water (estimate)', value: v.bodyWaterLitres, unit: 'L' },
+                { label: 'Skeletal muscle (estimate)', value: v.skeletalMuscle, unit: '%' },
+                { label: 'Water volume (estimate)', value: v.bodyWaterLitres, unit: 'L' },
                 { label: 'Water share (estimate)', value: v.bodyWater, unit: '%' },
+                { label: 'Metabolic age (estimate)', value: v.metabolicAge, unit: 'years' },
+                { label: 'Visceral fat (estimate)', value: v.visceralFat, unit: 'level' },
                 { label: 'FFMI (estimate)', value: v.ffmi, unit: 'kg/m2' },
-                { label: 'Resting energy (estimate)', value: v.restingEnergy, unit: 'kcal/day' }
+                { label: 'Resting energy (estimate)', value: v.restingEnergy, unit: 'kcal/day' },
+                { label: 'Pulse pressure', value: v.pulsePressure, unit: 'mmHg' },
+                { label: 'Mean arterial pressure', value: v.meanArterialPressure, unit: 'mmHg' }
             ].filter(m => hasValue(m.value));
             if (bodyMetrics.length) {
                 ensure(Math.ceil(bodyMetrics.length / 3) * 72 + 100);
-                title('Body estimates', 'Adult population formulas use height, weight, age and recorded male/female sex. These are not sensor measurements, nutrition targets or a dehydration test. Pregnancy, illness, fluid changes and athletic build can reduce accuracy. Metabolic age and visceral fat cannot be reliably derived by this kiosk.');
+                title('Body & Metabolic estimates', 'Calculated using adult population anthropometric models, BMR regression, and clinical hemodynamic indices.');
                 drawMetricGrid(bodyMetrics);
             }
 

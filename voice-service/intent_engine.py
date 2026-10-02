@@ -27,6 +27,11 @@ SELECT_LANGUAGE_HI = "SELECT_LANGUAGE_HINDI"
 SELECT_LANGUAGE_BN = "SELECT_LANGUAGE_BENGALI"
 GREETING_HELLO = "GREETING_HELLO"
 REPEAT_QUERY = "REPEAT_QUERY"
+CHECK_BP = "CHECK_BP"
+CHECK_OXYGEN = "CHECK_OXYGEN"
+CHECK_TEMPERATURE = "CHECK_TEMPERATURE"
+CHECK_BODY_COMPOSITION = "CHECK_BODY_COMPOSITION"
+EXPLAIN_REPORT = "EXPLAIN_REPORT"
 
 # Smart localized audio/display replies for instant kiosk feedback:
 INTENT_REPLIES: Dict[str, Dict[str, str]] = {
@@ -84,6 +89,31 @@ INTENT_REPLIES: Dict[str, Dict[str, str]] = {
         "en": "Please say that again.",
         "hi": "कृपया दोबारा कहें।",
         "bn": "দয়া করে আবার বলুন।",
+    },
+    CHECK_BP: {
+        "en": "Measuring blood pressure. Keep still and relaxed.",
+        "hi": "आपका blood pressure नाप रहे हैं। शांत और स्थिर रहिए।",
+        "bn": "আপনার blood pressure মাপছি। শান্ত ও স্থির থাকুন।",
+    },
+    CHECK_OXYGEN: {
+        "en": "Measuring blood oxygen level and pulse rate.",
+        "hi": "खून में oxygen और pulse rate नाप रहे हैं।",
+        "bn": "রক্তের oxygen ও pulse rate মাপছি।",
+    },
+    CHECK_TEMPERATURE: {
+        "en": "Measuring body temperature.",
+        "hi": "शरीर का तापमान यानी temperature नाप रहे हैं।",
+        "bn": "শরীরের temperature পরিমাপ করছি।",
+    },
+    CHECK_BODY_COMPOSITION: {
+        "en": "Checking body water, body fat, and metabolic age.",
+        "hi": "शरीर में पानी, चर्बी और metabolic age की जांच कर रहे हैं।",
+        "bn": "শরীরের জল, চর্বি এবং metabolic age পরিমাপ করছি।",
+    },
+    EXPLAIN_REPORT: {
+        "en": "Here is your health report and wellness summary.",
+        "hi": "यह आपकी सेहत की रिपोर्ट और जरूरी सलाह है।",
+        "bn": "এটি আপনার স্বাস্থ্য রিপোর্ট ও প্রয়োজনীয় পরামর্শ।",
     },
 }
 
@@ -214,6 +244,26 @@ ADDITIONAL_ENTRIES = {
     "namaskar": (GREETING_HELLO, "hello"), "nomoshkar": (GREETING_HELLO, "hello"), "नमस्ते": (GREETING_HELLO, "hello"),
     "repeat": (REPEAT_QUERY, "repeat"), "say again": (REPEAT_QUERY, "repeat"), "firse bolo": (REPEAT_QUERY, "repeat"),
     "abar bolo": (REPEAT_QUERY, "repeat"), "दोबारा बोलो": (REPEAT_QUERY, "repeat"),
+
+    # VITAL SIGNS & REPORT
+    "bp": (CHECK_BP, "bp"), "blood pressure": (CHECK_BP, "bp"), "check bp": (CHECK_BP, "bp"),
+    "बीपी": (CHECK_BP, "bp"), "रक्तचाप": (CHECK_BP, "bp"), "ब्लड प्रेशर": (CHECK_BP, "bp"),
+    "bi pi": (CHECK_BP, "bp"), "blood preshar": (CHECK_BP, "bp"), "রক্তচাপ": (CHECK_BP, "bp"),
+    "oxygen": (CHECK_OXYGEN, "oxygen"), "pulse": (CHECK_OXYGEN, "oxygen"), "spo2": (CHECK_OXYGEN, "oxygen"),
+    "check oxygen": (CHECK_OXYGEN, "oxygen"), "ऑक्सीजन": (CHECK_OXYGEN, "oxygen"), "पल्स": (CHECK_OXYGEN, "oxygen"),
+    "saans": (CHECK_OXYGEN, "oxygen"), "অক্সিজেন": (CHECK_OXYGEN, "oxygen"), "পালস": (CHECK_OXYGEN, "oxygen"),
+    "temperature": (CHECK_TEMPERATURE, "temperature"), "temp": (CHECK_TEMPERATURE, "temperature"),
+    "fever": (CHECK_TEMPERATURE, "temperature"), "bukhar": (CHECK_TEMPERATURE, "temperature"),
+    "tapman": (CHECK_TEMPERATURE, "temperature"), "तापमान": (CHECK_TEMPERATURE, "temperature"),
+    "बुखार": (CHECK_TEMPERATURE, "temperature"), "জ্বর": (CHECK_TEMPERATURE, "temperature"), "তাপমাত্রা": (CHECK_TEMPERATURE, "temperature"),
+    "body composition": (CHECK_BODY_COMPOSITION, "body_composition"), "body water": (CHECK_BODY_COMPOSITION, "body_composition"),
+    "body fat": (CHECK_BODY_COMPOSITION, "body_composition"), "visceral fat": (CHECK_BODY_COMPOSITION, "body_composition"),
+    "metabolic age": (CHECK_BODY_COMPOSITION, "body_composition"), "वजन": (CHECK_BODY_COMPOSITION, "body_composition"),
+    "बॉडी कंपोजिशन": (CHECK_BODY_COMPOSITION, "body_composition"), "शरीर में पानी": (CHECK_BODY_COMPOSITION, "body_composition"),
+    "শরীরের জল": (CHECK_BODY_COMPOSITION, "body_composition"), "শরীরের গঠন": (CHECK_BODY_COMPOSITION, "body_composition"),
+    "report": (EXPLAIN_REPORT, "report"), "health score": (EXPLAIN_REPORT, "report"),
+    "score": (EXPLAIN_REPORT, "report"), "explain report": (EXPLAIN_REPORT, "report"),
+    "रिपोर्ट": (EXPLAIN_REPORT, "report"), "रिजल्ट": (EXPLAIN_REPORT, "report"), "রিপোর্ট": (EXPLAIN_REPORT, "report"),
 }
 
 EXACT_PHRASES.update(ADDITIONAL_ENTRIES)
@@ -300,6 +350,46 @@ REGEX_INTENTS = [
     (SELECT_LANGUAGE_BN, "bn", re.compile(r"(?:" + WB + r")(?:bengali|bangla|বাংলা|बंगाली|बाँग्ला)(?:" + WB + r")", re.IGNORECASE | re.UNICODE)),
     (GREETING_HELLO, "hello", re.compile(r"(?:" + WB + r")(?:hello|hi|hey|namaste|namaskar|nomoshkar|pranam|adaab|salam|नमस्ते|নমস্কার)(?:" + WB + r")", re.IGNORECASE | re.UNICODE)),
     (REPEAT_QUERY, "repeat", re.compile(r"(?:" + WB + r")(?:repeat|say again|firse|firse bolo|dobara bolo|abar bolo|আবার বলুন|दोबारा बोलो)(?:" + WB + r")", re.IGNORECASE | re.UNICODE)),
+    (
+        CHECK_BP,
+        "bp",
+        re.compile(
+            r"(?:" + WB + r")(?:bp|blood pressure|check bp|check blood pressure|बीपी|रक्तचाप|ब्लड प्रेशर|रक्तচাপ|bi pi)(?:" + WB + r")",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    (
+        CHECK_OXYGEN,
+        "oxygen",
+        re.compile(
+            r"(?:" + WB + r")(?:oxygen|pulse|spo2|check oxygen|ऑक्सीजन|पल्स|सांस|অক্সিজেন|পালস)(?:" + WB + r")",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    (
+        CHECK_TEMPERATURE,
+        "temperature",
+        re.compile(
+            r"(?:" + WB + r")(?:temperature|temp|fever|bukhar|tapman|तापमान|बुखार|জ্বর|তাপমাত্রা)(?:" + WB + r")",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    (
+        CHECK_BODY_COMPOSITION,
+        "body_composition",
+        re.compile(
+            r"(?:" + WB + r")(?:body composition|body water|body fat|visceral fat|metabolic age|वजन|बॉडी कंपोजिशन|शरीर में पानी|শরীরের জল|শরীরের গঠন)(?:" + WB + r")",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    (
+        EXPLAIN_REPORT,
+        "report",
+        re.compile(
+            r"(?:" + WB + r")(?:report|health score|explain report|score|रिपोर्ट|रिजल्ट|রিপোর্ট|স্কোর)(?:" + WB + r")",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
 ]
 
 # Core anchor words for fast fuzzy distance evaluation (slurred speech)

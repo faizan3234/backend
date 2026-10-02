@@ -16,6 +16,11 @@ from intent_engine import (
     SELECT_LANGUAGE_EN,
     SELECT_LANGUAGE_HI,
     SELECT_LANGUAGE_BN,
+    CHECK_BP,
+    CHECK_OXYGEN,
+    CHECK_TEMPERATURE,
+    CHECK_BODY_COMPOSITION,
+    EXPLAIN_REPORT,
 )
 
 
@@ -184,6 +189,33 @@ class TestIntentEngine(unittest.TestCase):
 
         intent, action, _ = self.engine.resolve_intent("haaaan")
         self.assertEqual(intent, CONFIRM_YES)
+
+    def test_vital_signs_and_report_intents(self):
+        """Verifies BP, Oxygen, Temperature, Body Composition and Report intents."""
+        cases = [
+            ("bp", CHECK_BP),
+            ("check blood pressure", CHECK_BP),
+            ("बीपी", CHECK_BP),
+            ("রক্তচাপ", CHECK_BP),
+            ("oxygen", CHECK_OXYGEN),
+            ("pulse", CHECK_OXYGEN),
+            ("ऑक्सीजन", CHECK_OXYGEN),
+            ("অক্সিজেন", CHECK_OXYGEN),
+            ("temperature", CHECK_TEMPERATURE),
+            ("bukhar", CHECK_TEMPERATURE),
+            ("बुखार", CHECK_TEMPERATURE),
+            ("body water", CHECK_BODY_COMPOSITION),
+            ("metabolic age", CHECK_BODY_COMPOSITION),
+            ("body fat", CHECK_BODY_COMPOSITION),
+            ("बॉडी कंपोजिशन", CHECK_BODY_COMPOSITION),
+            ("report", EXPLAIN_REPORT),
+            ("health score", EXPLAIN_REPORT),
+            ("रिपोर्ट", EXPLAIN_REPORT),
+        ]
+        for phrase, expected_intent in cases:
+            intent, action, reply = self.engine.resolve_intent(phrase)
+            self.assertEqual(intent, expected_intent, f"Failed for phrase: '{phrase}', got intent: {intent}")
+            self.assertIsNotNone(reply, f"Expected non-empty reply for phrase: '{phrase}'")
 
     def test_latency_benchmark(self):
         """Ensures 1000 intent resolutions execute in under 20ms (average < 0.02ms per query)."""

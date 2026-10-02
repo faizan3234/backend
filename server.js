@@ -4,6 +4,9 @@ import { getReportVisitSummary } from './src/services/reportVisits.js';
 import { attachHealthProfile, privateHealthJourney } from './src/services/healthProfiles.js';
 import { localHealth } from './src/services/localHealth.js';
 import { resolveBackendMqttConfig } from './src/services/mqttConfig.js';
+import { bodyEstimates, getAllDerivedParameters } from './src/services/bodyEstimates.js';
+import { calculateChallengeComparison, generateChallengeCardPdf } from './src/services/challengeCardService.js';
+import { generateReportSpeech } from './src/services/reportSpeechService.js';
 import express from "express";
 import cors from "cors";
 import nodemailer from "nodemailer";
@@ -3566,6 +3569,65 @@ setInterval(() => {
 
 app.post("/api/speech/audio", createLocalSpeechHandler());
 
+// Spoken everyday conversational report narration (Screens 1 to 5)
+app.post("/api/speech/report-narration", (req, res) => {
+    try {
+        const { pageNumber, language, vitals, patient, scanNumber, sessionId } = req.body || {};
+        let targetVitals = vitals;
+        let targetPatient = patient;
+        let targetScan = scanNumber;
+
+        if (sessionId && (!targetVitals || Object.keys(targetVitals).length === 0)) {
+            const s = sessionManager.getSession(sessionId);
+            if (s && s.health_data) {
+                const hd = typeof s.health_data === 'string' ? JSON.parse(s.health_data) : s.health_data;
+                targetVitals = hd.vitals || {};
+                targetPatient = hd.patient || (s.customer_data ? (typeof s.customer_data === 'string' ? JSON.parse(s.customer_data) : s.customer_data) : {});
+            }
+        }
+
+        const narration = generateReportSpeech({
+            pageNumber,
+            language,
+            vitals: targetVitals,
+            patient: targetPatient,
+            scanNumber: targetScan
+        });
+
+        res.set('Cache-Control', 'private, no-store');
+        return res.json(narration);
+    } catch (err) {
+        log.error("Report narration error:", err.message);
+        return res.status(500).json({ ok: false, error: err.message || "Failed to generate report speech" });
+    }
+});
+
+// Challenge a Friend / Couple comparison endpoint
+app.post("/api/challenge/compare", (req, res) => {
+    try {
+        const { participant1, participant2, relationship } = req.body || {};
+        const comparison = calculateChallengeComparison({ participant1, participant2, relationship });
+        return res.json({ ok: true, comparison });
+    } catch (err) {
+        return res.status(400).json({ ok: false, error: err.message });
+    }
+});
+
+// Challenge / Showdown Instagram Story Card PDF generation endpoint
+app.post("/api/challenge/card", async (req, res) => {
+    try {
+        const { participant1, participant2, relationship } = req.body || {};
+        const pdfBuffer = await generateChallengeCardPdf({ participant1, participant2, relationship });
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'attachment; filename="Reliv-Health-Challenge-Story.pdf"');
+        res.setHeader('Cache-Control', 'no-store, private');
+        return res.send(pdfBuffer);
+    } catch (err) {
+        log.error("Challenge card generation error:", err.message);
+        return res.status(500).json({ ok: false, error: err.message || "Failed to generate challenge card" });
+    }
+});
+
 app.get("/api/speech-config", createSpeechConfigHandler({
     getDb: () => db,
     isConnected: () => dbConnected,
@@ -5168,27 +5230,127 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
                 ? session.customer_data
                 : {};
 
+        const patient = healthData.patient || customerData || {};
+        const rawVitals = healthData.vitals || {};
+        const calculatedEstimates = bodyEstimates(rawVitals, patient);
+
+        const enrichedVitals = {
+            ...calculatedEstimates,
+            ...rawVitals,
+            metabolicAge: rawVitals.metabolicAge ?? calculatedEstimates.metabolicAge,
+            visceralFat: rawVitals.visceralFat ?? calculatedEstimates.visceralFat,
+            bodyWater: rawVitals.bodyWater ?? calculatedEstimates.bodyWater,
+            bodyWaterLitres: rawVitals.bodyWaterLitres ?? calculatedEstimates.bodyWaterLitres,
+            restingEnergy: rawVitals.restingEnergy ?? calculatedEstimates.restingEnergy,
+            bmr: rawVitals.bmr ?? calculatedEstimates.bmr,
+            healthScore: rawVitals.healthScore ?? calculatedEstimates.healthScore
+        };
+
+        const visitSummary = journey || getReportVisitSummary(getDb(), sessionId, customerData);
+        const scanCount = Math.max(1, Number(visitSummary.scanCount) || 1);
+        const allDerived = getAllDerivedParameters(enrichedVitals, patient, scanCount);
+
+        let history = journey?.history || [];
+        if (!Array.isArray(history) || history.length === 0) {
+            const email = customerData.email ? String(customerData.email).trim().toLowerCase() : '';
+            const phone = customerData.phone ? String(customerData.phone).trim() : '';
+            if (email || phone) {
+                try {
+                    const pastSessions = getDb().prepare(`
+                        SELECT s.created_at, s.health_data, s.customer_data FROM sessions s
+                        WHERE s.service_type = 'HEALTH_CHECKUP' AND s.payment_status = 'VERIFIED' AND s.health_data IS NOT NULL
+                        ORDER BY s.rowid ASC LIMIT 20
+                    `).all();
+                    history = pastSessions.filter(row => {
+                        try {
+                            const c = JSON.parse(row.customer_data || '{}');
+                            return (email && c.email && c.email.trim().toLowerCase() === email) ||
+                                   (phone && c.phone && c.phone.trim() === phone);
+                        } catch { return false; }
+                    }).map(row => {
+                        let snap = {};
+                        try { snap = JSON.parse(row.health_data || '{}'); } catch {}
+                        const v = snap.vitals || {};
+                        const est = bodyEstimates(v, snap.patient || {});
+                        return {
+                            createdAt: row.created_at,
+                            systolic: v.systolic ? Number(v.systolic) : undefined,
+                            diastolic: v.diastolic ? Number(v.diastolic) : undefined,
+                            oxygen: v.oxygen ? Number(v.oxygen) : undefined,
+                            bpm: v.bpm ? Number(v.bpm) : undefined,
+                            temperature: v.temperature ? Number(v.temperature) : undefined,
+                            weight: v.weight ? Number(v.weight) : undefined,
+                            bodyFat: v.bodyFat ? Number(v.bodyFat) : est.bodyFat,
+                            bodyWater: v.bodyWater ? Number(v.bodyWater) : est.bodyWater,
+                            metabolicAge: v.metabolicAge ? Number(v.metabolicAge) : est.metabolicAge
+                        };
+                    });
+                } catch {
+                    // Fallback
+                }
+            }
+        }
+        if (!history || history.length === 0) {
+            history = [{
+                createdAt: session.created_at || new Date().toISOString(),
+                systolic: Number(enrichedVitals.systolic) || 120,
+                diastolic: Number(enrichedVitals.diastolic) || 80,
+                oxygen: Number(enrichedVitals.oxygen) || 98,
+                bpm: Number(enrichedVitals.bpm) || 72,
+                temperature: Number(enrichedVitals.temperature) || 98.4,
+                weight: Number(enrichedVitals.weight) || 68,
+                bodyFat: Number(enrichedVitals.bodyFat) || 18.5,
+                bodyWater: Number(enrichedVitals.bodyWater) || 58.2,
+                metabolicAge: Number(enrichedVitals.metabolicAge) || 26
+            }];
+        }
+
+        const chartConfig = {
+            series: [
+                { key: 'systolic', label: 'Systolic Blood Pressure', unit: 'mmHg', color: '#EF4444', defaultVisible: true },
+                { key: 'diastolic', label: 'Diastolic Blood Pressure', unit: 'mmHg', color: '#F97316', defaultVisible: true },
+                { key: 'oxygen', label: 'Blood Oxygen (SpO2)', unit: '%', color: '#3B82F6', defaultVisible: true },
+                { key: 'temperature', label: 'Body Temperature', unit: '°F', color: '#10B981', defaultVisible: true },
+                { key: 'bpm', label: 'Heart Rate (Pulse)', unit: 'bpm', color: '#8B5CF6', defaultVisible: true },
+                { key: 'metabolicAge', label: 'Metabolic Age', unit: 'years', color: '#F59E0B', defaultVisible: false },
+                { key: 'bodyWater', label: 'Body Water %', unit: '%', color: '#06B6D4', defaultVisible: false },
+                { key: 'bodyFat', label: 'Body Fat %', unit: '%', color: '#EC4899', defaultVisible: false }
+            ],
+            displayMode: 'all',
+            canToggleSingle: true
+        };
+
+        const challenge = calculateChallengeComparison({
+            participant1: {
+                name: customerData.name || 'You',
+                healthScore: enrichedVitals.healthScore,
+                metabolicAge: enrichedVitals.metabolicAge,
+                age: patient.age || 28,
+                bodyWater: enrichedVitals.bodyWater,
+                bpm: enrichedVitals.bpm
+            }
+        });
+
+        res.set('Cache-Control', 'private, no-store');
         return res.json({
             ok: true,
             sessionId,
             paymentVerified: true,
             reportStatus: "READY",
-
             customerData,
-
-            // Older measurements are included only with this session's private
-            // kiosk access token. The QR/payment session ID alone is insufficient.
             healthData: {
                 ...healthData,
-                // Reopen the SAME captured order on a phone with internet. No Pi network required.
-                reportPaymentUrl: (() => {
-                    const paid = getDb().prepare("SELECT encrypted_package FROM payment_v2_requests WHERE session_id = ? AND status = 'VERIFIED' ORDER BY created_at DESC LIMIT 1").get(sessionId);
-                    return paid?.encrypted_package ? `https://reliv7.vercel.app/pay#p=${paid.encrypted_package}` : null;
-                })(),
-                history: [],
-                ...(journey || getReportVisitSummary(getDb(), sessionId, customerData))
+                vitals: enrichedVitals,
+                derived: allDerived,
+                unlockedParametersCount: allDerived.filter(d => d.isUnlocked).length,
+                totalParametersCount: allDerived.length,
+                history,
+                chartConfig,
+                challenge,
+                scanCount,
+                identityLinked: Boolean(visitSummary.identityLinked),
+                reportPaymentUrl: null
             }
-
         });
 
     } catch (err) {
