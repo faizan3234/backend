@@ -132,7 +132,9 @@ assert(concurrentDuplicate.messageId === r1.messageId, 'Concurrent same-recipien
 assert(r1.ok === true && r1.sent === true, 'Scan 1 report email succeeds');
 assert(r1.scanNumber === 1, 'First paid scan is Scan 1');
 assert(sent.length === 1, 'One email sent');
-assert(sent[0].attachments.some(a=>a.filename==='Reliv-Together-Story-Card.pdf'),'opt-in card attached to the single paid report email');
+assert(sent[0].attachments.some(a=>a.filename==='Reliv-Together-Story-Card.png'),'opt-in card attached to the single paid report email');
+const storyImage=sent[0].attachments.find(a=>a.filename==='Reliv-Together-Story-Card.png');
+assert(storyImage.contentType==='image/png' && storyImage.content.subarray(1,4).toString()==='PNG','story attachment is a real PNG, not a renamed PDF');
 assert(
     sent[0].attachments.some(a => a.filename.includes('Health-Report-Scan-1')),
     'Health report PDF attached'
@@ -304,3 +306,4 @@ console.log('â•â•â•â•â•â•â•â•â•â�
 db.close();
 
 if (failed > 0) process.exit(1);
+

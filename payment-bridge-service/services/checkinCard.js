@@ -1,5 +1,5 @@
-import PDFDocument from 'pdfkit';
-import { setupPdfFonts } from './receiptPdfBuilder.js';
+import sharp from 'sharp';
+import { fileURLToPath } from 'node:url';
 export function validateStoryCard(value) {
  if(value===null||value===undefined)return null;
  const invalid=()=>{const e=new Error('Both people must agree to the story card and provide nicknames of 1–20 characters.');e.code='INVALID_STORY_CARD';throw e;};
@@ -8,22 +8,28 @@ export function validateStoryCard(value) {
  if(names.some(name=>!name||[...name].length>20||/[\u0000-\u001f\u007f<>]/u.test(name)))return invalid();
  return {alias:names[0],partner:names[1],relationship:value.relationship,consent:true};
 }
-export function generateCheckinCardPdf(value) {
+const xml = value => String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[ch]));
+// 9:16 social image, generated locally on the bridge. No external render service.
+export async function generateCheckinCardPng(value) {
  const card=validateStoryCard(value);
  if(!card)throw new Error('Story card required');
- return new Promise((resolve,reject)=>{
-  const doc=new PDFDocument({size:[540,960],margin:45}),parts=[];
-  doc.on('data',c=>parts.push(c));doc.on('end',()=>resolve(Buffer.concat(parts)));doc.on('error',reject);
-  const fonts=setupPdfFonts(doc),normal=fonts?.fontR||'Helvetica',bold=fonts?.fontB||'Helvetica-Bold';
-  doc.rect(0,0,540,960).fill('#172033');doc.circle(520,40,170).fill('#FF641A');
-  doc.font(bold).fontSize(30).fillColor('#FDBA74').text('RELIV',45,65);
-  doc.fillColor('white').fontSize(39).text('BETTER HABITS.\nTOGETHER.',45,180,{lineGap:12});
-  doc.fontSize(18).fillColor('#FDE68A').text(card.relationship==='couple'?'OUR COUPLE CHECK-IN':'OUR FRIEND CHECK-IN',45,325);
-  doc.roundedRect(40,385,460,255,16).fill('#34375B');
-  doc.font(bold).fontSize(28).fillColor('white').text(card.alias,60,420,{width:420}).text('&',60,465).text(card.partner,60,510,{width:420});
-  doc.font(normal).fontSize(17).fillColor('#FED7AA').text('We are making time for our health.',60,590,{width:420});
-  doc.font(bold).fontSize(25).fillColor('white').text('THE WIN: SHOWING UP.',45,730);
-  doc.font(normal).fontSize(15).text('A shared intention. No medical rankings.\nChoose a habit. Encourage each other.',45,782,{lineGap:10});
-  doc.font(bold).fontSize(20).fillColor('#FDBA74').text('#RelivTogether',45,860);doc.end();
- });
+ const logo=await sharp(fileURLToPath(new URL('../assets/reliv.png',import.meta.url))).trim({threshold:20}).resize(330,130,{fit:'contain',background:'#ffffff'}).png().toBuffer();
+ const nameSize = name => [...name].length>14?42:54;
+ const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920">
+ <defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#172033"/><stop offset="1" stop-color="#34375b"/></linearGradient></defs>
+ <rect width="1080" height="1920" fill="url(#bg)"/><circle cx="1050" cy="60" r="300" fill="#ff641a"/>
+ <g font-family="DejaVu Sans, sans-serif" fill="white">
+ <text x="90" y="405" font-size="78" font-weight="bold">BETTER HABITS.</text><text x="90" y="505" font-size="78" font-weight="bold">TOGETHER.</text>
+ <text x="90" y="650" font-size="32" fill="#fde68a">${card.relationship==='couple'?'OUR COUPLE CHECK-IN':'OUR FRIEND CHECK-IN'}</text>
+ <rect x="80" y="740" width="920" height="490" rx="36" fill="#414567"/>
+ <text x="120" y="845" font-size="${nameSize(card.alias)}" font-weight="bold">${xml(card.alias)}</text>
+ <text x="120" y="925" font-size="46" fill="#fdba74">&amp;</text>
+ <text x="120" y="1015" font-size="${nameSize(card.partner)}" font-weight="bold">${xml(card.partner)}</text>
+ <text x="120" y="1140" font-size="30" fill="#fed7aa">We are making time for our health.</text>
+ <text x="90" y="1440" font-size="48" font-weight="bold">THE WIN: SHOWING UP.</text>
+ <text x="90" y="1545" font-size="29">A shared intention. No medical rankings.</text>
+ <text x="90" y="1600" font-size="29">Choose a habit. Encourage each other.</text>
+ <text x="90" y="1750" font-size="36" fill="#fdba74">#RelivTogether · @reliv_care</text>
+ </g></svg>`;
+ return sharp(Buffer.from(svg)).composite([{input:logo,left:90,top:110}]).png().toBuffer();
 }

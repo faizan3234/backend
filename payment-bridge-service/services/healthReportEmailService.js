@@ -1,4 +1,4 @@
-import { validateStoryCard, generateCheckinCardPdf } from './checkinCard.js';
+import { validateStoryCard, generateCheckinCardPng } from './checkinCard.js';
 import { emailFailure } from './emailFailure.js';
 import crypto from 'crypto';
 import {
@@ -378,7 +378,7 @@ export async function sendHealthReportEmail({
             contentType: 'application/pdf'
         }];
 
-        if (requestedCard) attachments.push({ filename: 'Reliv-Together-Story-Card.pdf', content: await generateCheckinCardPdf(requestedCard), contentType: 'application/pdf' });
+        if (requestedCard) attachments.push({ filename: 'Reliv-Together-Story-Card.png', content: await generateCheckinCardPng(requestedCard), contentType: 'image/png' });
 
         if (receiptPdf) {
             attachments.push({
@@ -519,4 +519,5 @@ export default {
     sendHealthReportEmail,
     generateHealthReportDownload
 };
+
 

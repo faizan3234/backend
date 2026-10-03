@@ -21,7 +21,8 @@
     "express": "^4.18.2",
     "nodemailer": "^9.0.5",
     "pdfkit": "^0.17.2",
-    "razorpay": "^2.9.2"
+    "razorpay": "^2.9.2",
+    "sharp": "^0.34.5"
   },
   "engines": {
     "node": ">=18.0.0"
