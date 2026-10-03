@@ -54,4 +54,5 @@ voice-service/*.wav
 voice-service/models/
 *.gguf
 ggml-*.bin
-backend-main/
+backend-main/
+data/wifi_state.json

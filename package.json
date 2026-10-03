@@ -8,7 +8,8 @@
         "dev": "nodemon server.js",
         "test:kiosk": "node --test test-speech-config.js test-kiosk-flow.js test-reliability.js test-local-health.js test-mqtt-config.js test-report-visits-price.js test-health-profiles.js test-offline-guidance.js",
         "test": "node test-phase1-security.js && node test-payment-v2.js && node test-pricing-authoritative.js && node test-payment-v2-cart-lifecycle.js && node --test test-payment-qr-capacity.js",
-        "test:ads": "node --test test-ads-v1.js test-ads-flow.js test-ads-media.js"
+        "test:ads": "node --test test-ads-v1.js test-ads-flow.js test-ads-media.js",
+        "test:wifi": "node --test test-wifi-manager.js"
     },
     "dependencies": {
         "better-sqlite3": "^13.0.3",
