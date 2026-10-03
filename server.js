@@ -5205,7 +5205,7 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
 
         // Payment alone is not enough.
         // The report must have actually completed.
-        if (session.report_status !== "READY") {
+        if (!['READY', 'EMAILED'].includes(session.report_status)) {
             return res.status(409).json({
                 ok: false,
                 code: "REPORT_NOT_READY",
@@ -5348,6 +5348,7 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
                 chartConfig,
                 challenge,
                 scanCount,
+                visitSummary: { scanCount, scansRemaining: Math.max(0, 7 - scanCount), identityLinked: Boolean(visitSummary.identityLinked) },
                 identityLinked: Boolean(visitSummary.identityLinked),
                 reportPaymentUrl: paymentV2Service.getVerifiedReportPaymentUrl(sessionId)
             }

@@ -55,3 +55,23 @@ test('long health journeys retain the latest scan and the full paid scan count',
   assert.equal(journey.history[0].systolic,105);
   assert.equal(journey.history.at(-1).systolic,204);
 });
+
+
+test('fourth and seventh private visits keep their number after email and repeated reads', () => {
+  const db=initializeDatabase(':memory:'); sessionManager.initialize();
+  const visits=[];
+  for(let n=1;n<=7;n++) {
+    const session=sessionManager.createSession();
+    const identity=attachHealthProfile(db,sessionManager,session.session_id,{mode:n===1?'new':'returning',name:'Visit Counter',pin:'672931',age:35,gender:'male'});
+    db.prepare("UPDATE sessions SET service_type='HEALTH_CHECKUP',payment_status='VERIFIED',report_status=?,health_data=? WHERE session_id=?").run(n%2?'EMAILED':'READY',JSON.stringify({vitals:{systolic:138,diastolic:77,weight:65}}),session.session_id);
+    visits.push({id:session.session_id,token:identity.accessToken});
+  }
+  for(const n of [4,7]) {
+    const visit=visits[n-1];
+    for(let repeat=0;repeat<3;repeat++) {
+      const journey=privateHealthJourney(db,visit.id,visit.token);
+      assert.equal(journey.scanCount,n);
+      assert.deepEqual(journey.history.map(row=>row.scanNumber),Array.from({length:n},(_,i)=>i+1));
+    }
+  }
+});
