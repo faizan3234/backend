@@ -80,7 +80,7 @@ export function privateHealthJourney(db, sessionId, accessToken) {
         WHERE p.profile_id = ? AND s.rowid <= ? AND s.service_type = 'HEALTH_CHECKUP'
           AND s.payment_status = 'VERIFIED' AND s.report_status IN ('READY','EMAILED')
           AND s.health_data IS NOT NULL ORDER BY s.rowid DESC LIMIT 100`).all(access.profile_id, current.sequence);
-    const history = [...scans].reverse().map(row => {
+    const history = [...scans].reverse().map((row, index) => {
         let snapshot = {}, customer = {};
         try { snapshot = JSON.parse(row.health_data) || {}; } catch { /* preserve a gap */ }
         try { customer = JSON.parse(row.customer_data) || {}; } catch { /* older snapshot */ }
@@ -88,7 +88,7 @@ export function privateHealthJourney(db, sessionId, accessToken) {
         // Historical estimates must use demographics recorded at that visit.
         // Only age/gender are needed; never expose another name, email or PIN.
         const patient = snapshot.patient || customer;
-        const point = { createdAt: row.created_at, patient: { age: patient.age, gender: patient.gender } };
+        const point = { scanNumber: scans[0].scan_count - scans.length + index + 1, createdAt: row.created_at, patient: { age: patient.age, gender: patient.gender } };
         for (const key of METRICS) {
             const value = Number(vitals[key]);
             if (vitals[key] !== null && vitals[key] !== undefined && vitals[key] !== '' && Number.isFinite(value) && value > 0) point[key] = value;
