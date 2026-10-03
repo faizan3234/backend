@@ -71,11 +71,15 @@ test('health report snapshot, Unicode customer data and signature survive compre
     .run(JSON.stringify(health), session.session_id);
   const request = await service.createPaymentRequest(session.session_id, { serviceType: 'HEALTH_CHECKUP' });
   const decoded = decryptPackage(request.paymentUrl.split('#p=')[1], cloud.privateKey);
-  assert.deepEqual(decoded.payload.healthReportSnapshot, { version: 1, ...health });
+  assert.deepEqual(decoded.payload.healthReportSnapshot, { version: 1, scanNumber: 1, ...health });
   assert.ok(verifyKioskSignature(decoded.payload, decoded.signature, kiosk.publicKey));
   assert.ok(request.paymentUrl.length <= 2953);
   assert.doesNotThrow(() => QRCode.create(request.paymentUrl, { errorCorrectionLevel: request.paymentUrl.length <= 2331 ? 'M' : 'L' }));
   console.log(`QR capacity: full health snapshot ${request.paymentUrl.length} bytes`);
+  assert.equal(service.getVerifiedReportPaymentUrl(session.session_id), null);
+  db.prepare("UPDATE payment_v2_requests SET status = 'VERIFIED' WHERE request_id = ?").run(request.requestId);
+  assert.equal(service.getVerifiedReportPaymentUrl(session.session_id), request.paymentUrl,
+    'report reuses the exact signed payment URL after verification');
 });
 
 test('legacy and compressed envelopes round-trip through both decoders', () => {
@@ -88,6 +92,29 @@ test('legacy and compressed envelopes round-trip through both decoders', () => {
     assert.deepEqual(result.payload, payload);
     assert.ok(verifyKioskSignature(result.payload, result.signature, kiosk.publicKey));
   }
+});
+
+test('fourth private kiosk visit is signed as scan four even without emailed reports', async () => {
+  const { attachHealthProfile } = await import('./src/services/healthProfiles.js');
+  let current;
+  for (let index = 0; index < 4; index++) {
+    current = sessions.createSession('RELIV-001', 'HEALTH_CHECKUP');
+    attachHealthProfile(db, sessions, current.session_id, {
+      mode: index === 0 ? 'new' : 'returning', name: 'Visit count test',
+      pin: '482193', age: 30, gender: 'female'
+    });
+    const health = { patient: { age:30, gender:'female' }, vitals: { weight:64, height:170 } };
+    db.prepare("UPDATE sessions SET status='MEASUREMENTS_COMPLETE', health_data=? WHERE session_id=?")
+      .run(JSON.stringify(health), current.session_id);
+    if (index < 3) db.prepare("UPDATE sessions SET payment_status='VERIFIED', report_status='READY' WHERE session_id=?").run(current.session_id);
+  }
+  const request = await service.createPaymentRequest(current.session_id, { serviceType:'HEALTH_CHECKUP' });
+  const decoded = decryptPackage(request.paymentUrl.split('#p=')[1], cloud.privateKey);
+  assert.equal(decoded.payload.healthReportSnapshot.scanNumber, 4);
+  assert.ok(decoded.payload.healthReportSnapshot.profileKey);
+  assert.ok(verifyKioskSignature(decoded.payload, decoded.signature, kiosk.publicKey));
+  const retry = await service.createPaymentRequest(current.session_id, { serviceType:'HEALTH_CHECKUP' });
+  assert.equal(retry.paymentUrl, request.paymentUrl);
 });
 
 test('unencodable details never persist an active QR and can recover after correction', async () => {

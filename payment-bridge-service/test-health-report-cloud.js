@@ -281,6 +281,20 @@ try {
 }
 assert(unpaidRejected, 'Unpaid order cannot generate or email report');
 
+// The fourth local visit can be the first emailed visit. Email and PDF must
+// retain the kiosk-signed count rather than starting another scan history at 1.
+insertPaidHealth({ requestId:'REQ-SCAN-4', orderId:'order_scan4', txnId:'TXN-SCAN-4',
+    paymentId:'pay_scan4', snapshot:{...snapshot1, profileKey:'c'.repeat(64), scanNumber:4} });
+const fourth = await sendHealthReportEmail({db,requestId:'REQ-SCAN-4',email:'new-inbox@example.com',codeSecret:SECRET,transporter});
+assert(fourth.scanNumber===4,'first emailed report retains actual fourth kiosk scan');
+assert(sent.at(-1).subject.includes('Scan 4'),'email subject uses actual scan number');
+assert(sent.at(-1).attachments.some(a=>a.filename==='Reliv-Health-Report-Scan-4.pdf'),'PDF filename uses actual scan number');
+const mailCount=sent.length;
+const fourthRetry=await sendHealthReportEmail({db,requestId:'REQ-SCAN-4',email:'new-inbox@example.com',codeSecret:SECRET,transporter});
+assert(fourthRetry.scanNumber===4 && sent.length===mailCount,'email retry does not advance count or resend');
+
+
+
 console.log('\nâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
 console.log(` Passed: ${passed}`);
 console.log(` Failed: ${failed}`);
