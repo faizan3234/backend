@@ -409,9 +409,16 @@ export class PaymentV2CloudService {
             if (snapshot.profileKey !== undefined && (typeof snapshot.profileKey !== 'string' || !/^[a-f0-9]{64}$/.test(snapshot.profileKey))) {
                 const err = new Error('Invalid private report identity'); err.code = 'INVALID_HEALTH_SNAPSHOT'; throw err;
             }
+            if (snapshot.scanNumber !== undefined &&
+                (!Number.isSafeInteger(snapshot.scanNumber) || snapshot.scanNumber < 1)) {
+                const err = new Error('Invalid health scan number');
+                err.code = 'INVALID_HEALTH_SNAPSHOT';
+                throw err;
+            }
             const sanitizedHealthSnapshot = {
                 version: 1,
                 ...(snapshot.profileKey ? { profileKey: snapshot.profileKey } : {}),
+                ...(snapshot.scanNumber !== undefined ? { scanNumber: snapshot.scanNumber } : {}),
 
                 patient: {
                     name,
@@ -1125,3 +1132,4 @@ export class PaymentV2CloudService {
 }
 
 export default PaymentV2CloudService;
+

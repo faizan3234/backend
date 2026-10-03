@@ -5349,7 +5349,7 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
                 challenge,
                 scanCount,
                 identityLinked: Boolean(visitSummary.identityLinked),
-                reportPaymentUrl: null
+                reportPaymentUrl: paymentV2Service.getVerifiedReportPaymentUrl(sessionId)
             }
         });
 
@@ -6870,3 +6870,4 @@ start()
         // Still start health monitoring even in degraded mode
         startComprehensiveHealthMonitoring();
     });
+

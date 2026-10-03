@@ -510,6 +510,14 @@ export class PaymentV2Service {
                 version: 1,
                 // Opaque, kiosk-signed identity; an email address is not a patient ID.
                 ...(linked ? { profileKey: crypto.createHmac('sha256', this.pepper).update(`report-profile:${this.kioskId}:${linked.profile_id}`).digest('hex') } : {}),
+                // Count completed earlier visits, not how often a report was emailed.
+                scanNumber: linked ? 1 + this.db.prepare(`
+                    SELECT COUNT(*) AS total FROM sessions s
+                    JOIN health_profile_sessions p ON p.session_id = s.session_id
+                    WHERE p.profile_id = ? AND s.rowid < (SELECT rowid FROM sessions WHERE session_id = ?)
+                      AND s.service_type = 'HEALTH_CHECKUP' AND s.payment_status = 'VERIFIED'
+                      AND s.report_status IN ('READY', 'EMAILED') AND s.health_data IS NOT NULL
+                `).get(linked.profile_id, sessionId).total : 1,
 
                 patient: {
                     name:
@@ -660,6 +668,16 @@ export class PaymentV2Service {
      * @param {string} sessionId
      * @returns {Object}
      */
+    getVerifiedReportPaymentUrl(sessionId) {
+        const request = this.db.prepare(`
+            SELECT encrypted_package FROM payment_v2_requests
+            WHERE session_id = ? AND status = 'VERIFIED'
+            ORDER BY created_at DESC, rowid DESC LIMIT 1
+        `).get(sessionId);
+        return request?.encrypted_package
+            ? `${this.paymentUrlBase}#p=${request.encrypted_package}` : null;
+    }
+
     getPaymentStatus(sessionId) {
         if (!sessionId) {
             throw new Error('sessionId is required');
@@ -1064,3 +1082,4 @@ export const paymentV2Service = new Proxy({}, {
 });
 
 export default paymentV2Service;
+

@@ -148,7 +148,11 @@ function bindScanToEmail({ db, order, normalizedEmail, secret }) {
             WHERE email_key = ?
         `).get(key);
 
-        const scanNumber = Number(maxRow?.max_scan || 0) + 1;
+        // The kiosk-signed snapshot carries the real visit number, including
+        // visits whose report was never emailed. Legacy snapshots retain their
+        // email-history numbering; never accept a number from the email form.
+        const scanNumber = Number.isSafeInteger(snapshot.scanNumber) && snapshot.scanNumber > 0
+            ? snapshot.scanNumber : Number(maxRow?.max_scan || 0) + 1;
         const now = Date.now();
         const encryptedEmail = encryptConfirmationCodeAtRest(normalizedEmail, secret);
 
@@ -515,3 +519,4 @@ export default {
     sendHealthReportEmail,
     generateHealthReportDownload
 };
+
