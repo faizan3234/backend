@@ -217,12 +217,14 @@ class SessionManager {
         const stmt = this.db.prepare(`
             UPDATE sessions 
             SET service_type = ?, 
-                status = ?, 
+                status = ?,
+                expires_at = CASE WHEN ? = 'HEALTH_CHECKUP' THEN ? ELSE expires_at END,
                 updated_at = datetime('now')
             WHERE session_id = ?
         `);
         
-        stmt.run(serviceType, SESSION_STATES.SERVICE_SELECTED, sessionId);
+        stmt.run(serviceType, SESSION_STATES.SERVICE_SELECTED, serviceType,
+            new Date(Date.now() + 30 * 60 * 1000).toISOString(), sessionId);
         console.log(`[SessionManager] Service selected: ${serviceType} for session: ${sessionId}`);
     }
     
@@ -239,6 +241,39 @@ class SessionManager {
      * @param {Object} healthData
      * @returns {Object} Updated session
      */
+    completeHealthMeasurements(sessionId, pairingToken, healthData) {
+        // Recovery is only for this authenticated, unpaid measurement session.
+        // Preserve its profile binding and ID; never create a second visit/order.
+        return this.db.transaction(() => {
+            this.verifyPairingToken(sessionId, pairingToken);
+            const session = this.getSession(sessionId);
+            if (session.service_type !== 'HEALTH_CHECKUP' ||
+                ![SESSION_STATES.SERVICE_SELECTED, SESSION_STATES.MEASUREMENTS_COMPLETE].includes(session.status) ||
+                session.payment_status !== 'NOT_REQUIRED' || session.payment_id ||
+                this.db.prepare('SELECT 1 FROM transactions WHERE session_id = ? LIMIT 1').get(sessionId)) {
+                const error = new Error('This session has already moved beyond measurements. Results cannot be changed.');
+                error.code = 'MEASUREMENTS_CONFLICT';
+                throw error;
+            }
+            // SQLite stores UTC without a suffix; do not parse it as Pi local time.
+            const created = String(session.created_at || '');
+            const started = Date.parse(created.includes('T') ? created : created.replace(' ', 'T') + 'Z');
+            const now = Date.now();
+            const deadline = started + 45 * 60 * 1000;
+            if (!Number.isFinite(deadline) || now >= deadline) {
+                const error = new Error('This measurement session has expired. Please start a new checkup. You have not been charged for this session.');
+                error.code = 'SESSION_EXPIRED';
+                throw error;
+            }
+            // Allow the final snapshot and payment handoff even just after the old
+            // 10-minute expiry. The extension and snapshot commit/rollback together.
+            const expires = Math.min(deadline, Math.max(Date.parse(session.expires_at) || 0, now + 10 * 60 * 1000));
+            this.db.prepare('UPDATE sessions SET expires_at = ? WHERE session_id = ?')
+                .run(new Date(expires).toISOString(), sessionId);
+            return this.saveCompletedHealthData(sessionId, healthData);
+        })();
+    }
+
     saveCompletedHealthData(sessionId, healthData) {
         if (!sessionId) {
             throw new Error('Session ID is required');
@@ -698,7 +733,13 @@ class SessionManager {
         const stmt = this.db.prepare(`
             UPDATE sessions 
             SET status = 'COMPLETED'
-            WHERE expires_at < datetime('now') 
+            WHERE julianday(expires_at) <= julianday('now')
+            AND NOT (
+                service_type = 'HEALTH_CHECKUP'
+                AND status IN ('SERVICE_SELECTED', 'MEASUREMENTS_COMPLETE')
+                AND payment_status = 'NOT_REQUIRED' AND pairing_used = 0
+                AND julianday(created_at, '+45 minutes') > julianday('now')
+            )
             AND status NOT IN ('COMPLETED', 'PAYMENT_VERIFIED', 'FULFILLMENT')
         `);
         

@@ -48,7 +48,6 @@ import { buildValidatedRedirectUrl } from "./src/utils/redirectHelper.js";
 import paymentV2Service from "./src/services/paymentV2Service.js";
 import { createPaymentV2Router } from "./src/routes/paymentV2Routes.js";
 import { createAdRouter } from "./src/routes/adRoutes.js";
-import { createWifiRouter, wifiPortalHtmlHandler } from "./src/routes/wifiRoutes.js";
 import { createSpeechConfigHandler, validateSpeechConfig } from "./src/routes/speechConfig.js";
 import { createAdminAuth } from "./src/services/adminAuth.js";
 import { ownerAdminProvision } from "./src/services/ownerAdminProvision.js";
@@ -3715,8 +3714,6 @@ app.post("/api/payment-complete", handlePaymentComplete);
 // ───────────────────────────────────────────────────────────────────────────
 app.use("/api/sessions/:sessionId/payment-v2", createPaymentV2Router(paymentV2Service));
 app.use("/api/ads", createAdRouter());
-app.use("/api/wifi", createWifiRouter());
-app.get(["/wifi", "/wifi/"], wifiPortalHtmlHandler);
 
 // ───────────────────────────────────────────────────────────────────────────
 // ENDPOINT: Resolve QR Path (Returns session token from scanned QR path)
@@ -4099,6 +4096,14 @@ app.post("/api/sessions/:sessionId/measurements-complete", (req, res) => {
             });
         }
 
+        if (session.status === "COMPLETED" && session.payment_status === "NOT_REQUIRED" &&
+            Date.parse(session.expires_at) <= Date.now()) {
+            return res.status(410).json({
+                ok: false, code: "SESSION_EXPIRED",
+                message: "This checkup session has expired. Please start a new checkup."
+            });
+        }
+
         // Normal expected state immediately after the final measurement.
         //
         // Idempotent retry is also allowed if the first request succeeded
@@ -4114,7 +4119,7 @@ app.post("/api/sessions/:sessionId/measurements-complete", (req, res) => {
         }
 
         const updatedSession =
-            sessionManager.saveCompletedHealthData(sessionId, healthData);
+            sessionManager.completeHealthMeasurements(sessionId, pairingToken, healthData);
 
         return res.json({
             ok: true,
@@ -4134,7 +4139,12 @@ app.post("/api/sessions/:sessionId/measurements-complete", (req, res) => {
         const message =
             err.message || "Failed to save completed measurements";
 
+        if (err.code === "SESSION_EXPIRED") {
+            return res.status(410).json({ ok: false, code: err.code, message });
+        }
+
         const conflictCodes = new Set([
+            "MEASUREMENTS_CONFLICT",
             "HEALTH_SNAPSHOT_MISMATCH",
             "INVALID_HEALTH_SNAPSHOT"
         ]);
