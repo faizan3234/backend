@@ -102,18 +102,17 @@ export class PaymentV2Service {
      * Check if Payment V2 is fully configured with required pepper and keys
      * @returns {boolean}
      */
-    isConfigured() {
-        if (!this.pepper || !String(this.pepper).trim()) {
-            return false;
-        }
-        try {
-            const privateKey = this._getKioskPrivateKey();
-            const publicKey = this._getCloudPublicKey();
-            return Boolean(privateKey && publicKey);
-        } catch {
-            return false;
-        }
+    getConfigurationIssues() {
+        const missing = [];
+        if (!String(this.pepper || '').trim()) missing.push('PAYMENT_V2_CODE_PEPPER');
+        try { if (!this._getKioskPrivateKey()) missing.push('PAYMENT_V2_KIOSK_SIGNING_PRIVATE_KEY_PATH'); }
+        catch { missing.push('PAYMENT_V2_KIOSK_SIGNING_PRIVATE_KEY_PATH'); }
+        try { if (!this._getCloudPublicKey()) missing.push('PAYMENT_V2_CLOUD_ENCRYPTION_PUBLIC_KEY_PATH'); }
+        catch { missing.push('PAYMENT_V2_CLOUD_ENCRYPTION_PUBLIC_KEY_PATH'); }
+        return missing;
     }
+
+    isConfigured() { return this.getConfigurationIssues().length === 0; }
 
     _getKioskPrivateKey() {
         if (this._kioskPrivateKey) {
@@ -171,7 +170,7 @@ export class PaymentV2Service {
      */
     async createPaymentRequest(sessionId, { serviceType = null, cart = [] } = {}) {
         if (!this.isConfigured()) {
-            const err = new Error('Payment V2 is not configured on this kiosk. Required keys or pepper missing.');
+            const err = new Error(`Payment is not configured on this kiosk. Ask the operator to check: ${this.getConfigurationIssues().join(', ')}. Payment verification stays locked until configured.`);
             err.code = 'PAYMENT_V2_NOT_CONFIGURED';
             throw err;
         }
@@ -1082,4 +1081,5 @@ export const paymentV2Service = new Proxy({}, {
 });
 
 export default paymentV2Service;
+
 

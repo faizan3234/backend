@@ -1,3 +1,4 @@
+import { storySummary } from './services/storySummary.js';
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  * RELIV CLOUD PAYMENT BRIDGE - PAYMENT V2 SERVICE
@@ -26,6 +27,12 @@ import {
 } from './services/healthReportEmailService.js';
 
 export class PaymentV2CloudService {
+    _storySummary(order) {
+        if (order?.service_type !== 'HEALTH_CHECKUP' || !order.encrypted_health_snapshot) return null;
+        try { return storySummary(JSON.parse(decryptConfirmationCodeAtRest(order.encrypted_health_snapshot, this.codeSecret))); }
+        catch { return null; } // Optional card must never block a verified payment.
+    }
+
     constructor({
         db,
         razorpay,
@@ -750,6 +757,7 @@ export class PaymentV2CloudService {
                 paid: true,
                 alreadyVerified: true,
                 confirmationCode: code,
+                storySummary: this._storySummary(order),
                 requestId: order.request_id,
                 amount: order.amount,
                 currency: order.currency
@@ -831,6 +839,7 @@ export class PaymentV2CloudService {
                         paid: true,
                         alreadyVerified: true,
                         confirmationCode: code,
+                        storySummary: this._storySummary(currentOrder),
                         requestId: currentOrder.request_id,
                         amount: currentOrder.amount,
                         currency: currentOrder.currency
@@ -856,6 +865,7 @@ export class PaymentV2CloudService {
             paid: true,
             alreadyVerified: false,
             confirmationCode,
+            storySummary: this._storySummary(order),
             requestId: order.request_id,
             amount: order.amount,
             currency: order.currency
@@ -939,6 +949,7 @@ export class PaymentV2CloudService {
                 alreadyPaid: true,
                 status: 'PAID',
                 confirmationCode,
+                storySummary: this._storySummary(order),
                 requestId: order.request_id,
                 orderId: order.order_id,
                 paymentId: order.razorpay_payment_id,
@@ -1018,6 +1029,7 @@ export class PaymentV2CloudService {
                     alreadyPaid: true,
                     status: 'PAID',
                     confirmationCode: code,
+                    storySummary: this._storySummary(current),
                     requestId: current.request_id,
                     orderId: current.order_id,
                     paymentId: current.razorpay_payment_id,
@@ -1039,6 +1051,7 @@ export class PaymentV2CloudService {
             newlyVerified: true,
             status: 'PAID',
             confirmationCode,
+            storySummary: this._storySummary(order),
             requestId: order.request_id,
             orderId: order.order_id,
             paymentId: capturedPayment.id,
@@ -1132,4 +1145,5 @@ export class PaymentV2CloudService {
 }
 
 export default PaymentV2CloudService;
+
 
