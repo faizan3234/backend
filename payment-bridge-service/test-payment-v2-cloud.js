@@ -57,7 +57,8 @@ function section(name) {
 // ───────────────────────────────────────────────────────────────────────────
 // TEST FIXTURES & KEYS
 // ───────────────────────────────────────────────────────────────────────────
-const TEST_DB_PATH = './test-bridge-v2-expanded.db';
+// Each run gets a fresh DB; a stale WAL must not resurrect prior fixtures.
+const TEST_DB_PATH = ':memory:';
 if (fs.existsSync(TEST_DB_PATH)) {
     try { fs.unlinkSync(TEST_DB_PATH); } catch {}
 }
@@ -1991,3 +1992,4 @@ const v2CloudService = new PaymentV2CloudService({
         process.exit(1);
     }
 })();
+

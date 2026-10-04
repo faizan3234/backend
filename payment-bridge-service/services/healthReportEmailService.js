@@ -1,3 +1,4 @@
+import { storySummary } from './storySummary.js';
 import { validateStoryCard, generateCheckinCardPng } from './checkinCard.js';
 import { emailFailure } from './emailFailure.js';
 import crypto from 'crypto';
@@ -378,7 +379,7 @@ export async function sendHealthReportEmail({
             contentType: 'application/pdf'
         }];
 
-        if (requestedCard) attachments.push({ filename: 'Reliv-Together-Story-Card.png', content: await generateCheckinCardPng(requestedCard), contentType: 'image/png' });
+        if (requestedCard) attachments.push({ filename: 'Reliv-Together-Story-Card.png', content: await generateCheckinCardPng(requestedCard, storySummary(parseSnapshot(order.encrypted_health_snapshot, codeSecret))), contentType: 'image/png' });
 
         if (receiptPdf) {
             attachments.push({

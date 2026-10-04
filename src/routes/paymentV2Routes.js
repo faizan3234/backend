@@ -34,7 +34,7 @@ export function createPaymentV2Router(paymentV2Service = paymentV2ServiceInstanc
                 return res.status(503).json({
                     ok: false,
                     code: 'PAYMENT_V2_NOT_CONFIGURED',
-                    message: 'Payment V2 is not configured on this kiosk.'
+                    message: err.message
                 });
             }
 
@@ -116,7 +116,7 @@ export function createPaymentV2Router(paymentV2Service = paymentV2ServiceInstanc
                 return res.status(503).json({
                     ok: false,
                     code: 'PAYMENT_V2_NOT_CONFIGURED',
-                    message: 'Payment V2 is not configured on this kiosk.'
+                    message: err.message
                 });
             }
 
