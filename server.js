@@ -5276,7 +5276,7 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
         const allDerived = getAllDerivedParameters(enrichedVitals, patient, scanCount);
 
         let history = journey?.history || [];
-        if (!Array.isArray(history) || history.length === 0) {
+        if ((!Array.isArray(history) || history.length === 0) && !hasProfile) {
             const email = customerData.email ? String(customerData.email).trim().toLowerCase() : '';
             const phone = customerData.phone ? String(customerData.phone).trim() : '';
             if (email || phone) {
@@ -5315,19 +5315,20 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
                 }
             }
         }
-        if (!history || history.length === 0) {
-            history = [{
+        if (!Array.isArray(history) || history.length === 0) {
+            const observedVitals = {};
+            const historyKeys = ['height','weight','systolic','diastolic','bpm','oxygen','temperature','impedance','bmi','bodyFat','fatMass','fatFreeMass','muscleMass','skeletalMuscle','boneMass','bodyWater','bodyWaterLitres','visceralFat','metabolicAge','restingEnergy','bmr','bsa','ffmi','proteinMass','subcutaneousFat','healthScore'];
+            for (const key of historyKeys) {
+                const value = Number(rawVitals[key]);
+                if (rawVitals[key] !== null && rawVitals[key] !== undefined && rawVitals[key] !== '' && Number.isFinite(value) && value > 0) observedVitals[key] = value;
+            }
+            history = Object.keys(observedVitals).length ? [{
+                scanNumber: scanCount,
                 createdAt: session.created_at || new Date().toISOString(),
-                systolic: Number(enrichedVitals.systolic) || 120,
-                diastolic: Number(enrichedVitals.diastolic) || 80,
-                oxygen: Number(enrichedVitals.oxygen) || 98,
-                bpm: Number(enrichedVitals.bpm) || 72,
-                temperature: Number(enrichedVitals.temperature) || 98.4,
-                weight: Number(enrichedVitals.weight) || 68,
-                bodyFat: Number(enrichedVitals.bodyFat) || 18.5,
-                bodyWater: Number(enrichedVitals.bodyWater) || 58.2,
-                metabolicAge: Number(enrichedVitals.metabolicAge) || 26
-            }];
+                patient: { age: patient.age, gender: patient.gender },
+                ...observedVitals,
+                vitals: observedVitals
+            }] : [];
         }
 
         const chartConfig = {
