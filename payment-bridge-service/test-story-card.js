@@ -5,7 +5,7 @@ import { storySummary } from './services/storySummary.js';
 import { validateStoryCard, generateCheckinCardPng } from './services/checkinCard.js';
 const sample={scanNumber:4,patient:{age:32,gender:'male'},vitals:{weight:65.4,height:172.3}};
 test('signed-snapshot score is optional, finite and retains visit number',()=>{
- assert.deepEqual(storySummary(sample),{score:91,scanNumber:4,name:'',win:'Healthy BMI'});
+ assert.deepEqual(storySummary(sample),{score:91,scanNumber:4,name:'',win:'Healthy BMI',focus:'Review my weight guidance and choose one next step'});
  for(const v of [undefined,{}, {patient:{age:32,gender:'male'},vitals:{weight:Infinity,height:170}}])assert.equal(storySummary(v).score,null);
 });
 test('solo card requires explicit consent and cannot accept a client score',()=>{
@@ -29,4 +29,10 @@ test('highlights follow actual available readings and do not invent hydration',(
  assert.equal(storySummary({vitals:{oxygen:101,bodyWater:70}}).win,'Completed my check-in');
  assert.equal(storySummary({patient:{name:'Asha'},vitals:{oxygen:98}}).name,'Asha');
  assert.equal(storySummary({}).score,null);
+});
+
+test('focus uses only available signed report measurements',()=>{
+ assert.match(storySummary({vitals:{systolic:120,diastolic:80}}).focus,/blood pressure/);
+ assert.match(storySummary({vitals:{oxygen:98}}).focus,/oxygen/);
+ assert.equal(storySummary({vitals:{oxygen:Infinity,systolic:NaN}}).focus,'Review my report and choose one next step');
 });
