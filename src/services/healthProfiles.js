@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { reportReviewEnabled } from './kioskFeatures.js';
 
 const keyFor = name => typeof name === 'string'
     ? name.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US') : '';
@@ -72,7 +73,7 @@ const METRICS = ['height', 'weight', 'systolic', 'diastolic', 'bpm', 'oxygen', '
 export function privateHealthJourney(db, sessionId, accessToken) {
     if (typeof accessToken !== 'string' || !/^[a-f0-9]{64}$/.test(accessToken)) return null;
     const access = db.prepare('SELECT profile_id, access_hash FROM health_profile_sessions WHERE session_id = ?').get(sessionId);
-    if (!access || !crypto.timingSafeEqual(Buffer.from(digest(accessToken), 'hex'), Buffer.from(access.access_hash, 'hex'))) return null;
+    if (!access || (!crypto.timingSafeEqual(Buffer.from(digest(accessToken), 'hex'), Buffer.from(access.access_hash, 'hex')) && !isReviewAccess(db, sessionId, accessToken, access.profile_id))) return null;
     const current = db.prepare('SELECT rowid AS sequence FROM sessions WHERE session_id = ?').get(sessionId);
     if (!current) return null;
     const scans = db.prepare(`SELECT s.session_id, s.created_at, s.health_data, s.customer_data, COUNT(*) OVER() AS scan_count FROM sessions s
@@ -96,4 +97,40 @@ export function privateHealthJourney(db, sessionId, accessToken) {
         return point;
     });
     return { scanCount: scans[0]?.scan_count || 0, identityLinked: true, history };
+}
+
+// A review credential is separate from a payment/pairing token and expires.
+// Reviewing never creates a visit, writes measurements or changes payment state.
+export function openLatestPaidReport(db, input) {
+    if (!reportReviewEnabled()) { const e=new Error('Report review is disabled.'); e.status=404; throw e; }
+    const nameKey=keyFor(input?.name), pin=input?.pin;
+    if (nameKey.length<2 || nameKey.length>80 || !pinValid(pin)) { const e=new Error('Enter your name and six-digit PIN.'); e.status=400; throw e; }
+    const now=Date.now();
+    const attempts=db.prepare('SELECT failed_count, locked_until FROM health_profile_attempts WHERE name_key=?').get(nameKey);
+    if (attempts?.locked_until>now) { const e=new Error('Too many attempts. Please wait 15 minutes.'); e.status=429; throw e; }
+    const matching=db.prepare('SELECT * FROM health_profiles WHERE name_key=?').all(nameKey).find(row=>crypto.timingSafeEqual(Buffer.from(pinHash(pin,row.pin_salt),'hex'),Buffer.from(row.pin_hash,'hex')));
+    if (!matching) {
+        const count=(attempts?.failed_count||0)+1;
+        db.prepare(`INSERT INTO health_profile_attempts(name_key,failed_count,locked_until) VALUES(?,?,?)
+            ON CONFLICT(name_key) DO UPDATE SET failed_count=excluded.failed_count,locked_until=excluded.locked_until`).run(nameKey,count>=5?0:count,count>=5?now+15*60_000:0);
+        const e=new Error('Name or PIN did not match.'); e.status=401; throw e;
+    }
+    db.prepare('DELETE FROM health_profile_attempts WHERE name_key=?').run(nameKey);
+    const latest=db.prepare(`SELECT s.session_id FROM sessions s JOIN health_profile_sessions p ON p.session_id=s.session_id
+        WHERE p.profile_id=? AND s.service_type='HEALTH_CHECKUP' AND s.payment_status='VERIFIED'
+        AND s.report_status IN ('READY','EMAILED') AND s.health_data IS NOT NULL ORDER BY s.rowid DESC LIMIT 1`).get(matching.profile_id);
+    if (!latest) { const e=new Error('No completed paid report is saved for this profile.'); e.status=404; e.code='NO_SAVED_REPORT'; throw e; }
+    db.exec(`CREATE TABLE IF NOT EXISTS health_report_review_access (
+        access_hash TEXT PRIMARY KEY, session_id TEXT NOT NULL, profile_id TEXT NOT NULL, expires_at INTEGER NOT NULL)`);
+    const accessToken=crypto.randomBytes(32).toString('hex'), expiresAt=now+30*60_000;
+    db.transaction(()=>{
+        db.prepare('DELETE FROM health_report_review_access WHERE expires_at<=?').run(now);
+        db.prepare('INSERT INTO health_report_review_access(access_hash,session_id,profile_id,expires_at) VALUES(?,?,?,?)').run(digest(accessToken),latest.session_id,matching.profile_id,expiresAt);
+    })();
+    return {sessionId:latest.session_id,accessToken,expiresAt,reviewMode:true};
+}
+
+function isReviewAccess(db, sessionId, accessToken, profileId) {
+    if (!reportReviewEnabled() || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='health_report_review_access'").get()) return false;
+    return Boolean(db.prepare('SELECT 1 FROM health_report_review_access WHERE access_hash=? AND session_id=? AND profile_id=? AND expires_at>?').get(digest(accessToken),sessionId,profileId,Date.now()));
 }

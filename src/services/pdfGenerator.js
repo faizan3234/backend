@@ -1,3 +1,4 @@
+import { getLocalReportScanNumber } from './reportVisits.js';
 /**
  * PDF Generator Service
  * 
@@ -47,7 +48,8 @@ class PDFGenerator {
             const existing = this.getReportBySession(sessionId);
             const cached = this._readExisting(existing, 'reportId', 'report_id');
             if (cached) return cached;
-            return this._generateHealthReport(sessionId, customerData, healthData);
+            const scanNumber = getLocalReportScanNumber(this.db, sessionId, customerData);
+            return this._generateHealthReport(sessionId, customerData, {...healthData, reportScanNumber: scanNumber, scanCount: scanNumber});
         });
     }
 
@@ -190,6 +192,7 @@ class PDFGenerator {
             doc.fontSize(24).fillColor('#F97316').text('RELIV HEALTH REPORT', { align: 'center' });
             doc.moveDown(0.5);
             doc.fontSize(10).fillColor('#666').text(new Date().toLocaleDateString(), { align: 'center' });
+            doc.text(`Scan ${healthData?.reportScanNumber || healthData?.scanCount || 1}`, { align: 'center' });
             doc.moveDown(2);
 
             // Customer Info

@@ -220,7 +220,7 @@ function reportEmailContent({ scanNumber, totalScans, patientName }) {
 Your Reliv Health Report is ready.
 
 Health Check: Scan ${scanNumber}
-Scans linked to this history: ${totalScans}
+Emailed reports available in this history: ${totalScans}
 
 Your PDF health report is attached to this email. A payment receipt is also attached when available.
 
@@ -242,7 +242,7 @@ relivcustomercare.in@gmail.com`;
       <p>Your latest Reliv health report has been generated securely.</p>
       <div style="background:#fff4ed;border:1px solid #ffd7bf;border-radius:12px;padding:16px;margin:20px 0">
         <strong style="color:#ff641a">Scan ${scanNumber}</strong><br>
-        <span style="font-size:13px;color:#667085">${totalScans} paid scan${totalScans === 1 ? '' : 's'} linked to this history</span>
+        <span style="font-size:13px;color:#667085">${totalScans} emailed report${totalScans === 1 ? '' : 's'} available in this history</span>
       </div>
       <p>The PDF health report is attached. A payment receipt is also attached when available.</p>
       <p style="font-size:12px;color:#667085;line-height:1.6">

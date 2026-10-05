@@ -291,6 +291,8 @@ const fourth = await sendHealthReportEmail({db,requestId:'REQ-SCAN-4',email:'new
 assert(fourth.scanNumber===4,'first emailed report retains actual fourth kiosk scan');
 assert(sent.at(-1).subject.includes('Scan 4'),'email subject uses actual scan number');
 assert(sent.at(-1).attachments.some(a=>a.filename==='Reliv-Health-Report-Scan-4.pdf'),'PDF filename uses actual scan number');
+const seventhModel=buildHealthReportModel({scans:[1,4,7].map(scanNumber=>({scanNumber,createdAt:Date.now(),snapshot:{...snapshot1,scanNumber}})),currentScanNumber:7});
+assert(seventhModel.currentScanNumber===7 && seventhModel.totalScans===7 && seventhModel.retainedReports===3,'Scan 7 is not reset to three emailed reports');
 const mailCount=sent.length;
 const fourthRetry=await sendHealthReportEmail({db,requestId:'REQ-SCAN-4',email:'new-inbox@example.com',codeSecret:SECRET,transporter});
 assert(fourthRetry.scanNumber===4 && sent.length===mailCount,'email retry does not advance count or resend');

@@ -1,7 +1,8 @@
+import { reportReviewEnabled } from './src/services/kioskFeatures.js';
 import { createLocalSpeechHandler } from './src/routes/localSpeech.js';
 import { dispensingSnapshot } from './src/services/dispensingSnapshot.js';
-import { getReportVisitSummary } from './src/services/reportVisits.js';
-import { attachHealthProfile, privateHealthJourney } from './src/services/healthProfiles.js';
+import { getReportVisitSummary, getLocalReportScanNumber } from './src/services/reportVisits.js';
+import { attachHealthProfile, privateHealthJourney, openLatestPaidReport } from './src/services/healthProfiles.js';
 import { localHealth } from './src/services/localHealth.js';
 import { resolveBackendMqttConfig } from './src/services/mqttConfig.js';
 import { bodyEstimates, getAllDerivedParameters } from './src/services/bodyEstimates.js';
@@ -1331,7 +1332,8 @@ function generateReportPdf(data, ecoStats) {
 
             // ── Scan level & unlock flags ──
             const hist = history && Array.isArray(history) ? history : [];
-            const scan = patient.scanCount || (hist.length + 1);
+            const count = Number(data.reportScanNumber ?? data.scanCount ?? data.visitSummary?.scanCount ?? patient.scanCount);
+            const scan = Number.isSafeInteger(count) && count > 0 ? count : 1;
             const show = {
                 bodyCompBars: scan >= 2,
                 trendGraph: scan >= 2 && hist.length >= 1,
@@ -3910,6 +3912,16 @@ async function saveCustomerDataHandler(req, res) {
 
 // Kiosk-only identity step. The paired session, not a name, binds a private
 // profile to this visit. Keep PINs and the access token out of customer_data.
+app.get('/api/kiosk/features', (_req,res)=>{
+    res.set('Cache-Control','no-store');
+    res.json({ok:true,reportReviewMode:reportReviewEnabled()});
+});
+app.post('/api/health-profiles/review', (req,res)=>{
+    res.set('Cache-Control','private, no-store');
+    try { return res.json({ok:true,...openLatestPaidReport(getDb(),req.body)}); }
+    catch(error) { return res.status(error.status||500).json({ok:false,code:error.code,error:error.status?error.message:'Report review is unavailable.'}); }
+});
+
 app.post('/api/sessions/:sessionId/health-profile', (req, res) => {
     try {
         res.set('Cache-Control', 'private, no-store');
@@ -5260,7 +5272,7 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
         };
 
         const visitSummary = journey || getReportVisitSummary(getDb(), sessionId, customerData);
-        const scanCount = Math.max(1, Number(visitSummary.scanCount) || 1);
+        const scanCount = hasProfile ? getLocalReportScanNumber(getDb(),sessionId,customerData) : Math.max(1, Number(visitSummary.scanCount) || 1);
         const allDerived = getAllDerivedParameters(enrichedVitals, patient, scanCount);
 
         let history = journey?.history || [];
@@ -5360,7 +5372,9 @@ app.get("/api/sessions/:sessionId/report/data", async (req, res) => {
                 history,
                 chartConfig,
                 challenge,
+                reportScanNumber: scanCount,
                 scanCount,
+                patient: {...patient, scanCount},
                 visitSummary: { scanCount, scansRemaining: Math.max(0, 7 - scanCount), identityLinked: Boolean(visitSummary.identityLinked) },
                 identityLinked: Boolean(visitSummary.identityLinked),
                 reportPaymentUrl: paymentV2Service.getVerifiedReportPaymentUrl(sessionId)
