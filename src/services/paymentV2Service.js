@@ -1,3 +1,4 @@
+import { getLocalReportScanNumber } from './reportVisits.js';
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  * RELIV KIOSK - PAYMENT V2 SERVICE (Zero-Internet Kiosk)
@@ -510,13 +511,7 @@ export class PaymentV2Service {
                 // Opaque, kiosk-signed identity; an email address is not a patient ID.
                 ...(linked ? { profileKey: crypto.createHmac('sha256', this.pepper).update(`report-profile:${this.kioskId}:${linked.profile_id}`).digest('hex') } : {}),
                 // Count completed earlier visits, not how often a report was emailed.
-                scanNumber: linked ? 1 + this.db.prepare(`
-                    SELECT COUNT(*) AS total FROM sessions s
-                    JOIN health_profile_sessions p ON p.session_id = s.session_id
-                    WHERE p.profile_id = ? AND s.rowid < (SELECT rowid FROM sessions WHERE session_id = ?)
-                      AND s.service_type = 'HEALTH_CHECKUP' AND s.payment_status = 'VERIFIED'
-                      AND s.report_status IN ('READY', 'EMAILED') AND s.health_data IS NOT NULL
-                `).get(linked.profile_id, sessionId).total : 1,
+                scanNumber: getLocalReportScanNumber(this.db, sessionId, customerData),
 
                 patient: {
                     name:

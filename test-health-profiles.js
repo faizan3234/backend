@@ -75,3 +75,36 @@ test('fourth and seventh private visits keep their number after email and repeat
     }
   }
 });
+
+test('temporary review opens only latest paid report, creates no scans, expires and switches off', async () => {
+ const {openLatestPaidReport}=await import('./src/services/healthProfiles.js');
+ const {getLocalReportScanNumber}=await import('./src/services/reportVisits.js');
+ const previous=process.env.RELIV_REPORT_REVIEW_MODE;process.env.RELIV_REPORT_REVIEW_MODE='true';
+ try {
+  const db=initializeDatabase(':memory:');sessionManager.initialize();let last,normalToken;
+  for(let i=1;i<=7;i++){
+   const session=sessionManager.createSession();
+   const identity=attachHealthProfile(db,sessionManager,session.session_id,{mode:i===1?'new':'returning',name:'Review Person',pin:'423189',age:30,gender:'male'});
+   db.prepare("UPDATE sessions SET service_type='HEALTH_CHECKUP',payment_status='VERIFIED',report_status='READY',health_data=? WHERE session_id=?").run(JSON.stringify({vitals:{weight:60+i,height:170}}),session.session_id);
+   last=session.session_id;normalToken=identity.accessToken;
+  }
+  const other=sessionManager.createSession();attachHealthProfile(db,sessionManager,other.session_id,{mode:'new',name:'Review Person',pin:'183924',age:35,gender:'female'});
+  const unpaid=sessionManager.createSession();attachHealthProfile(db,sessionManager,unpaid.session_id,{mode:'returning',name:'Review Person',pin:'423189'});
+  const before=db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n;
+  const result=openLatestPaidReport(db,{name:'review person',pin:'423189'});
+  assert.equal(result.sessionId,last);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n,before);
+  assert.equal(privateHealthJourney(db,last,result.accessToken).scanCount,7);
+  assert.equal(getLocalReportScanNumber(db,last),7);
+  assert.equal(privateHealthJourney(db,other.session_id,result.accessToken),null);
+  assert.throws(()=>openLatestPaidReport(db,{name:'Review Person',pin:'183924'}),e=>e.code==='NO_SAVED_REPORT');
+  assert.throws(()=>openLatestPaidReport(db,{name:'Review Person',pin:'000000'}),e=>e.status===401);
+  process.env.RELIV_REPORT_REVIEW_MODE='false';
+  assert.equal(privateHealthJourney(db,last,result.accessToken),null);
+  assert.throws(()=>openLatestPaidReport(db,{name:'Review Person',pin:'423189'}),e=>e.status===404);
+  assert.equal(privateHealthJourney(db,last,normalToken).scanCount,7,'normal paid access survives feature off');
+  process.env.RELIV_REPORT_REVIEW_MODE='true';db.prepare('UPDATE health_report_review_access SET expires_at=0').run();
+  assert.equal(privateHealthJourney(db,last,result.accessToken),null);
+  for(let i=0;i<4;i++)assert.throws(()=>openLatestPaidReport(db,{name:'Review Person',pin:'000000'}),e=>e.status===401);
+  assert.throws(()=>openLatestPaidReport(db,{name:'Review Person',pin:'423189'}),e=>e.status===429);
+ } finally {if(previous===undefined)delete process.env.RELIV_REPORT_REVIEW_MODE;else process.env.RELIV_REPORT_REVIEW_MODE=previous;}
+});

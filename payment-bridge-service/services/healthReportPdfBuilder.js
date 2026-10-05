@@ -129,7 +129,8 @@ export function buildHealthReportModel({ scans, currentScanNumber, recipientEmai
         patient: latest.snapshot.patient,
         vitals: latest.snapshot.vitals,
         currentScanNumber: Number(currentScanNumber) || ordered.length,
-        totalScans: ordered.length,
+        totalScans: Number(currentScanNumber) || ordered.length,
+        retainedReports: ordered.length,
         tier: tierInfo.tier,
         tierName: tierInfo.name,
         recipientEmail: recipientEmail || '',
@@ -340,7 +341,7 @@ export async function generateCloudHealthReportPdfBuffer({
                         PAGE_W - M - 165, top + 20, { width: 145, align: 'right' });
 
                 doc.font(fontR).fontSize(8).fillColor(C.secondary)
-                    .text(`${model.totalScans} paid scan${model.totalScans === 1 ? '' : 's'} linked`,
+                    .text(`Scan ${model.currentScanNumber} | ${model.retainedReports} emailed report${model.retainedReports === 1 ? '' : 's'} available`,
                         PAGE_W - M - 165, top + 43, { width: 145, align: 'right' });
             });
 
