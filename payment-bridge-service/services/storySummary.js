@@ -2,7 +2,7 @@
 // This is not a clinically validated health rating and is never a payment input.
 export function storySummary(snapshot) {
  const v=snapshot?.vitals||{},p=snapshot?.patient||{};
- const base={name:typeof p.name==='string'?p.name.trim().slice(0,80):'',win:todayWin(snapshot),scanNumber:Number.isSafeInteger(snapshot?.scanNumber)&&snapshot.scanNumber>0?snapshot.scanNumber:1};
+ const base={name:typeof p.name==='string'?p.name.trim().slice(0,80):'',win:todayWin(snapshot),focus:reportFocus(snapshot),scanNumber:Number.isSafeInteger(snapshot?.scanNumber)&&snapshot.scanNumber>0?snapshot.scanNumber:1};
  const weight=Number(v.weight),height=Number(v.height),age=Number(p.age);
  const gender=String(p.gender||'').toLowerCase();
  if(!([weight,height,age].every(n=>Number.isFinite(n)&&n>0))||!['male','female'].includes(gender))return {...base,score:null};
@@ -27,4 +27,14 @@ export function todayWin(snapshot) {
  }
  if(Number.isFinite(oxygen)&&oxygen>=95&&oxygen<=100)return 'Good oxygen level';
  return 'Completed my check-in';
+}
+
+// A report-reading prompt, not a diagnosis or a prescription from a share card.
+export function reportFocus(snapshot) {
+ const v=snapshot?.vitals||{};
+ const present=key=>v[key]!==null&&v[key]!==undefined&&v[key]!==''&&Number.isFinite(Number(v[key]))&&Number(v[key])>0;
+ if(present('systolic')&&present('diastolic'))return 'Understand my blood pressure and its next steps';
+ if(present('oxygen'))return 'Review my oxygen reading and its guidance';
+ if(present('weight')&&present('height'))return 'Review my weight guidance and choose one next step';
+ return 'Review my report and choose one next step';
 }
