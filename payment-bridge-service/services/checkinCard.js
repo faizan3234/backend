@@ -1,3 +1,4 @@
+import {storyLayouts,storyFields} from './storyLayout.js';
 import sharp from 'sharp';
 import { fileURLToPath } from 'node:url';
 export function validateStoryCard(value) {
@@ -9,29 +10,18 @@ export function validateStoryCard(value) {
  return {alias:names[0],partner:names[1]||'',relationship:value.relationship,consent:true};
 }
 const xml = value => String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[ch]));
-// 9:16 social image, generated locally on the bridge. No external render service.
+// Both browser preview and email use the original artwork and shared coordinates.
 export async function generateCheckinCardPng(value, summary = null) {
  const card=validateStoryCard(value);
  if(!card)throw new Error('Story card required');
- const logo=await sharp(fileURLToPath(new URL('../assets/reliv.png',import.meta.url))).trim({threshold:20}).resize(330,130,{fit:'contain',background:'#ffffff'}).png().toBuffer();
- const solo=card.relationship==='solo';
- const score=typeof summary?.score==='number' && Number.isFinite(summary.score)?Math.max(0,Math.min(100,Math.round(summary.score))):null;
- const nameSize = name => [...name].length>14?42:54;
- const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920">
- <defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#172033"/><stop offset="1" stop-color="#34375b"/></linearGradient></defs>
- <rect width="1080" height="1920" fill="url(#bg)"/><circle cx="1050" cy="60" r="300" fill="#ff641a"/>
- <g font-family="DejaVu Sans, sans-serif" fill="white">
- <text x="90" y="405" font-size="78" font-weight="bold">BETTER HABITS.</text><text x="90" y="505" font-size="78" font-weight="bold">${solo?'FOR ME.':'TOGETHER.'}</text>
- <text x="90" y="650" font-size="32" fill="#fde68a">${solo?'MY RELIV CHECK-IN':card.relationship==='couple'?'OUR COUPLE CHECK-IN':'OUR FRIEND CHECK-IN'}</text>
- <rect x="80" y="740" width="920" height="490" rx="36" fill="#414567"/>
- <text x="120" y="845" font-size="${nameSize(card.alias)}" font-weight="bold">${xml(card.alias)}</text>
- <text x="120" y="925" font-size="46" fill="#fdba74">${solo?'': '&amp;'}</text>
- <text x="120" y="1015" font-size="${nameSize(card.partner)}" font-weight="bold">${solo?(score===null?'Check-in complete':score+' / 100'):xml(card.partner)}</text>
- <text x="120" y="1140" font-size="30" fill="#fed7aa">${solo?'Body-score estimate · not a diagnosis':'We are making time for our health.'}</text>
- <text x="90" y="1440" font-size="48" font-weight="bold">THE WIN: SHOWING UP.</text>
- <text x="90" y="1545" font-size="29">${solo?'My pace. My progress.':'A shared intention. No medical rankings.'}</text>
- <text x="90" y="1600" font-size="29">Choose a habit. Encourage each other.</text>
- <text x="90" y="1750" font-size="36" fill="#fdba74">#RelivTogether · @reliv_care</text>
- </g></svg>`;
- return sharp(Buffer.from(svg)).composite([{input:logo,left:90,top:110}]).png().toBuffer();
+ const layout=storyLayouts[card.relationship],fields=storyFields(card,summary);
+ const text=Object.entries(layout).map(([key,[x,y,width,size]])=>{
+  const content=fields[key];
+  const fitted=Math.min(size,width/(Math.max(1,[...content].length)*.65));
+  return `<text x="${x}" y="${y}" text-anchor="middle" font-size="${fitted}" textLength="${Math.min(width,Math.max(1,[...content].length)*fitted*.65)}" lengthAdjust="spacingAndGlyphs" font-weight="bold">${xml(content)}</text>`;
+ }).join('');
+ const note=card.relationship==='solo'?'':`<text x="${layout.win[0]}" y="${layout.win[1]+24}" text-anchor="middle" font-size="17">${xml(fields.winNote)}</text>`;
+ const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1600"><g font-family="DejaVu Sans, sans-serif" fill="#29291f">${text}${note}</g><text x="450" y="1572" text-anchor="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#29291f">Score is an estimate, not a diagnosis. — = unavailable.</text></svg>`;
+ const background=fileURLToPath(new URL(`../assets/story-cards/${card.relationship}.jpeg`,import.meta.url));
+ return sharp(background).composite([{input:Buffer.from(svg)}]).png().toBuffer();
 }

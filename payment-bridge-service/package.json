@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node index.js",
     "check": "node --check index.js && node --check paymentV2Crypto.js && node --check paymentV2Service.js && node --check paymentV2Routes.js && node --check paymentV2Db.js && node --check generate-payment-v2-cloud-key.js && node --check services/receiptEmailService.js && node --check services/receiptPdfBuilder.js",
-    "test": "node --test test-email-failure.js test-receipt-concurrency.js && node test-payment-v2-cloud.js && node test-health-report-cloud.js",
+    "test": "node --test test-email-failure.js test-receipt-concurrency.js && node test-payment-v2-cloud.js && node test-health-report-cloud.js && node --test test-story-card.js",
     "dev": "node --watch index.js",
     "generate-keys": "node generate-keys.js",
     "generate-v2-keys": "node generate-payment-v2-cloud-key.js",
