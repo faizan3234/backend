@@ -13,7 +13,7 @@ test('private trends contain only paid scans for the PIN verified profile', () =
       mode, name: ' Rahul Kumar ', pin, age: 26, gender: 'male', email: ''
     });
     db.prepare(`UPDATE sessions SET service_type='HEALTH_CHECKUP', payment_status=?, report_status=?, health_data=? WHERE session_id=?`)
-      .run(paid ? 'VERIFIED' : 'PENDING', paid ? 'READY' : 'NOT_REQUIRED', JSON.stringify({vitals:{systolic,diastolic:80,oxygen:98,impedance:500}}), session.session_id);
+      .run(paid ? 'VERIFIED' : 'PENDING', paid ? 'READY' : 'NOT_REQUIRED', JSON.stringify({vitals:{systolic,diastolic:80,oxygen:98,impedance:500,weight:67,bodyWater:52.4,bodyFat:25.3}}), session.session_id);
     return { sessionId: session.session_id, token: result.accessToken };
   }
   const first = visit('new','123456',120);
@@ -26,6 +26,11 @@ test('private trends contain only paid scans for the PIN verified profile', () =
   assert.equal(journey.scanCount, 2);
   assert.deepEqual(journey.history.map(x => x.systolic), [120,124]);
   assert.equal('impedance' in journey.history[0], false);
+  assert.equal(journey.history[0].vitals.impedance,500);
+  assert.equal(journey.history[0].vitals.systolic,120);
+  assert.equal(journey.history[0].vitals.weight,67);
+  assert.equal(journey.history[0].vitals.bodyWater,52.4);
+  assert.equal(journey.history[0].vitals.bodyFat,25.3);
   assert.deepEqual(journey.history[0].patient,{age:26,gender:'male'});
   assert.equal(journey.history[0].patient.name,undefined);
   assert.equal(privateHealthJourney(db, someoneElse.sessionId, someoneElse.token).scanCount, 1);

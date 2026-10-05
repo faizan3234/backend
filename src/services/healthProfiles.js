@@ -69,7 +69,7 @@ export function attachHealthProfile(db, sessionManager, sessionId, input) {
     return { customerData, accessToken };
 }
 
-const METRICS = ['height', 'weight', 'systolic', 'diastolic', 'bpm', 'oxygen', 'temperature'];
+const HISTORY_VITALS = ['height','weight','systolic','diastolic','bpm','oxygen','temperature','impedance','bmi','bodyFat','fatMass','fatFreeMass','muscleMass','skeletalMuscle','boneMass','bodyWater','bodyWaterLitres','visceralFat','metabolicAge','restingEnergy','bmr','bsa','ffmi','proteinMass','subcutaneousFat','healthScore'];
 export function privateHealthJourney(db, sessionId, accessToken) {
     if (typeof accessToken !== 'string' || !/^[a-f0-9]{64}$/.test(accessToken)) return null;
     const access = db.prepare('SELECT profile_id, access_hash FROM health_profile_sessions WHERE session_id = ?').get(sessionId);
@@ -89,12 +89,22 @@ export function privateHealthJourney(db, sessionId, accessToken) {
         // Historical estimates must use demographics recorded at that visit.
         // Only age/gender are needed; never expose another name, email or PIN.
         const patient = snapshot.patient || customer;
-        const point = { scanNumber: scans[0].scan_count - scans.length + index + 1, createdAt: row.created_at, patient: { age: patient.age, gender: patient.gender } };
-        for (const key of METRICS) {
+        const observedVitals = {};
+        for (const key of HISTORY_VITALS) {
             const value = Number(vitals[key]);
-            if (vitals[key] !== null && vitals[key] !== undefined && vitals[key] !== '' && Number.isFinite(value) && value > 0) point[key] = value;
+            if (vitals[key] !== null && vitals[key] !== undefined && vitals[key] !== '' && Number.isFinite(value) && value > 0) observedVitals[key] = value;
         }
-        return point;
+        // Report 2 reads the historical snapshot under `vitals`; other graph
+        // and narration helpers consume top-level fields. Keep both views tied
+        // to the same allowlisted values and never expose customer identity.
+        const graphVitals = Object.fromEntries(Object.entries(observedVitals).filter(([key]) => key !== 'impedance'));
+        return {
+            scanNumber: scans[0].scan_count - scans.length + index + 1,
+            createdAt: row.created_at,
+            patient: { age: patient.age, gender: patient.gender },
+            ...graphVitals,
+            vitals: observedVitals
+        };
     });
     return { scanCount: scans[0]?.scan_count || 0, identityLinked: true, history };
 }
