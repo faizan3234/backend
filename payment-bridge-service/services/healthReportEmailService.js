@@ -305,6 +305,8 @@ export async function sendHealthReportEmail({
                 requestId: order.request_id,
                 email: normalizedEmail,
                 scanNumber: Number(scanRow.scan_number),
+                totalScans: Number(scanRow.scan_number),
+                retainedReports: loadHistory(db, scanRow.email_key, codeSecret, order.request_id).length,
                 downloadToken: dl.token,
                 downloadTokenExpiresAt: dl.expiresAt
             };
@@ -426,7 +428,8 @@ export async function sendHealthReportEmail({
                 requestId: order.request_id,
                 email: normalizedEmail,
                 scanNumber: current.scanNumber,
-                totalScans: history.length,
+                totalScans: current.scanNumber,
+                retainedReports: history.length,
                 messageId,
                 sentAt,
                 downloadToken: dl.token,

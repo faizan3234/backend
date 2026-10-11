@@ -223,6 +223,7 @@ const v2CloudService = new PaymentV2CloudService({
         amount: 50000,
         currency: 'INR',
         serviceType: 'MEDICINE',
+        lowStock: [{ id:'MED-1', name:'Synthetic medicine', quantity:2, unitPricePaise:1234, revision:'2026-10-11 12:00:00', observedAt:Date.now() }],
         confirmationCode: '7294',
         issuedAt: Date.now(),
         expiresAt: Date.now() + 300000
@@ -396,6 +397,7 @@ const v2CloudService = new PaymentV2CloudService({
     // Check DB record
     const dbOrder = db.prepare('SELECT * FROM payment_v2_orders WHERE request_id = ?').get('REQ-TEST-1');
     assert(dbOrder && dbOrder.status === 'CREATED', 'Order stored in SQLite with status CREATED');
+    assert(JSON.parse(dbOrder.low_stock_json)[0].quantity === 2, 'kiosk-signed low-stock snapshot persists on the cloud order');
     assert(dbOrder.payload_fingerprint === fp1, 'Stored payload_fingerprint matches calculated SHA-256');
     assert(!dbOrder.encrypted_code.includes('7294'), 'Plain confirmation code NOT stored in plain text');
     assert(decryptConfirmationCodeAtRest(dbOrder.encrypted_code, TEST_SECRET) === '7294', 'Encrypted code in SQLite decrypts to original code');
