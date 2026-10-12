@@ -13,6 +13,9 @@ import Database from "better-sqlite3";
 test("real offline API: session -> customer -> health/medicine, retries and failures", { timeout: 30000 }, async (t) => {
   const temp = mkdtempSync(join(tmpdir(), "reliv-flow-test-"));
   mkdirSync(join(temp, "config"));
+  mkdirSync(join(temp, "medicine-images"));
+  const imageBytes = Buffer.from("89504e470d0a1a0a", "hex");
+  writeFileSync(join(temp, "medicine-images", "fixture.png"), imageBytes);
   const { publicKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048, publicKeyEncoding: { type: "spki", format: "pem" },
   });
@@ -25,7 +28,7 @@ test("real offline API: session -> customer -> health/medicine, retries and fail
   const child = spawn(process.execPath, [fileURLToPath(new URL("./server.js", import.meta.url))], {
     cwd: temp,
     env: {
-      ...process.env, PORT: String(port), HOST: "127.0.0.1",
+      ...process.env, MEDICINE_IMAGE_DIR: join(temp, "medicine-images"), PORT: String(port), HOST: "127.0.0.1",
       KIOSK_IP: "127.0.0.1", DB_PATH: join(temp, "kiosk-test.db"),
       MQTT_BROKER_URL: "mqtt://127.0.0.1:9",
       MONGODB_URI: "", GMAIL_USER: "", GMAIL_PASS: "", CUSTOMER_GMAIL_USER: "",
@@ -58,6 +61,13 @@ test("real offline API: session -> customer -> health/medicine, retries and fail
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert.ok(ready, output);
+  for (const route of ['/medicine-images/fixture.png', '/api/medicine-images/fixture.png']) {
+    const image = await fetch(base + route);
+    assert.equal(image.status, 200);
+    assert.match(image.headers.get('content-type'), /image\/png/);
+    assert.deepEqual(Buffer.from(await image.arrayBuffer()), imageBytes);
+  }
+  assert.equal((await fetch(base + '/api/medicine-images/missing.png')).status, 404);
   const config = await (await fetch(base + "/api/speech-config")).json();
   assert.ok(config["two-options"].en);
   async function post(path, body) {

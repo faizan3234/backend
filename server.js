@@ -2790,7 +2790,7 @@ function handleMedicineImageUpload(req, res, next) {
 
 // Serve local medicine images statically
 app.use(
-    MEDICINE_IMAGE_ROUTE,
+    [MEDICINE_IMAGE_ROUTE, `/api${MEDICINE_IMAGE_ROUTE}`],
     express.static(MEDICINE_IMAGE_DIR, {
         maxAge: 0,
         etag: true
