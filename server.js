@@ -1,3 +1,4 @@
+import { mountMedicineImages } from './src/services/medicineImageRoutes.js';
 import { reportReviewEnabled } from './src/services/kioskFeatures.js';
 import { createLocalSpeechHandler } from './src/routes/localSpeech.js';
 import { dispensingSnapshot } from './src/services/dispensingSnapshot.js';
@@ -2788,14 +2789,8 @@ function handleMedicineImageUpload(req, res, next) {
     });
 }
 
-// Serve local medicine images statically
-app.use(
-    MEDICINE_IMAGE_ROUTE,
-    express.static(MEDICINE_IMAGE_DIR, {
-        maxAge: 0,
-        etag: true
-    })
-);
+// Preserve existing image files; both old clients and nginx /api use this mount.
+mountMedicineImages(app, MEDICINE_IMAGE_DIR);
 
 /**
  * Map an inventoryManager item to the canonical API response shape.
@@ -4598,6 +4593,7 @@ app.get("/api/sessions/:sessionId/status", async (req, res) => {
         }
 
         const transaction = transactionManager.getTransactionBySession(sessionId);
+        fulfillmentManager.expireStalledJobs(sessionId);
         const sessionJobs = fulfillmentManager.getSessionJobs(sessionId);
         res.set('Cache-Control', 'private, no-store');
         res.json(dispensingSnapshot(session, transaction, sessionJobs));

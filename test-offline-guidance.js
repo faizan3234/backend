@@ -88,6 +88,18 @@ test('durable claim precedes MQTT, early ACK survives PUBACK, duplicates and unc
     await assert.rejects(fulfillment.startDispensing('J2'),/uncertain/);
     assert.equal(fulfillment.getJobStatus('J2').state,'MANUAL_REVIEW_REQUIRED');
     assert.equal(await fulfillment.startDispensing('J2'),false);
+    insert('J4');
+    fulfillment.setMqttClient({connected:true,publish(t,p,o,cb){publishCount++;cb(null);}});
+    await fulfillment.startDispensing('J4');
+    assert.equal(fulfillment.expireStalledJobs('S'),0);
+    db.prepare("UPDATE fulfillment_jobs SET mqtt_published_at=datetime('now','-3 minutes') WHERE job_id='J4'").run();
+    assert.equal(fulfillment.expireStalledJobs('S'),1);
+    assert.equal(fulfillment.getJobStatus('J4').state,'MANUAL_REVIEW_REQUIRED');
+    assert.equal(await fulfillment.startDispensing('J4'),false);
+    assert.equal(publishCount,2,'missing final ACK never causes another motor command');
+    assert.equal(fulfillment.getJobStatus('J1').state,'COMPLETED','timeout leaves completed jobs intact');
+    const counts=dispensingSnapshot({session_id:'S',service_type:'MEDICINE'},{status:'VERIFIED'},[{state:'COMPLETED',quantity:2},{state:'IN_PROGRESS',quantity:3}]);
+    assert.equal(counts.itemsCount,5);assert.equal(counts.itemsCompleted,2);
     insert('J3'); fulfillment.setMqttClient({connected:false,publish(){throw new Error('must not publish');}});
     await assert.rejects(fulfillment.startDispensing('J3'),/disconnected/);
     assert.equal(fulfillment.getJobStatus('J3').state,'PENDING');
@@ -96,3 +108,4 @@ test('durable claim precedes MQTT, early ACK survives PUBACK, duplicates and unc
     assert.equal(fulfillment.getJobStatus('J3').state,'MANUAL_REVIEW_REQUIRED');
   } finally { closeDatabase(); rmSync(dir,{recursive:true,force:true}); }
 });
+

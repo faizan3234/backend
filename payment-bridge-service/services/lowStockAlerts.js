@@ -60,8 +60,8 @@ export async function sendLowStockAlerts({ db, requestId, transporter = null }) 
         try {
             const result = await mailer.sendMail({
                 from: `"Reliv Stock Alerts" <${sender}>`, to: 'khanfaizan3234@gmail.com',
-                subject: `Reliv low stock: ${item.quantity} left at QR creation`,
-                text: `Kiosk: ${order.kiosk_id}\nMedicine: ${item.name}\nItem ID: ${item.id}\nPhysical quantity at QR creation: ${item.quantity}\nUnit price: INR ${(item.unitPricePaise/100).toFixed(2)}\nObserved: ${new Date(item.observedAt).toISOString()}\nInventory revision: ${item.revision}\n\nThis signed snapshot was carried by a customer's phone. It predates dispensing for this payment and is not confirmation of delivery or the current stock. Check the kiosk before replenishment.`,
+                subject: `Reliv: ${item.name} running low — last count ${item.quantity}`,
+                text: `${item.name} needs restocking.\n\nLast recorded stock: ${item.quantity} ${item.quantity === 1 ? 'item' : 'items'}\nKiosk: ${order.kiosk_id}\nPrice per item: INR ${(item.unitPricePaise/100).toFixed(2)}\nStock checked: ${new Date(item.observedAt).toLocaleString('en-IN', {timeZone:'Asia/Kolkata'})} IST\n\nThis count was taken before this customer's order was dispensed. There may be fewer items now. Please check the kiosk and refill if needed.\n\nItem reference: ${item.id}`,
                 messageId: `<stock-${key}@reliv.in>`
             });
             if (Array.isArray(result?.accepted) && !result.accepted.length) {
