@@ -82,6 +82,22 @@ test('health report snapshot, Unicode customer data and signature survive compre
     'report reuses the exact signed payment URL after verification');
 });
 
+test('signed low-stock snapshot travels with a health QR', async () => {
+  db.prepare("UPDATE inventory SET quantity=2 WHERE kit_id='KIT-QR-1'").run();
+  try {
+    const session=sessions.createSession('RELIV-001','HEALTH_CHECKUP');
+    db.prepare("UPDATE sessions SET status='MEASUREMENTS_COMPLETE',health_data=? WHERE session_id=?")
+      .run(JSON.stringify({patient:{name:'Synthetic',age:30,gender:'female'},vitals:{oxygen:98}}),session.session_id);
+    const request=await service.createPaymentRequest(session.session_id,{serviceType:'HEALTH_CHECKUP'});
+    const decoded=decryptPackage(request.paymentUrl.split('#p=')[1],cloud.privateKey);
+    assert.equal(decoded.payload.lowStock.find(item=>item.id==='KIT-QR-1').quantity,2);
+    assert.equal(decoded.payload.items[0].quantity,1);
+    assert.ok(verifyKioskSignature(decoded.payload,decoded.signature,kiosk.publicKey));
+    assert.ok(request.paymentUrl.length<=2953);
+    assert.doesNotThrow(()=>QRCode.create(request.paymentUrl,{errorCorrectionLevel:'L'}));
+  } finally { db.prepare("UPDATE inventory SET quantity=100 WHERE kit_id='KIT-QR-1'").run(); }
+});
+
 test('legacy and compressed envelopes round-trip through both decoders', () => {
   const payload = { kioskId: 'RELIV-001', confirmationCode: '0042', note: 'synthetic '.repeat(80) };
   const inner = { payload, signature: signPayload(payload, kiosk.privateKey) };

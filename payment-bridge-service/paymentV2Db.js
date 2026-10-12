@@ -89,6 +89,11 @@ export function initPaymentV2Schema(db) {
         ON payment_v2_health_scans(delivery_status);
     `);
 
+    db.exec(`CREATE TABLE IF NOT EXISTS low_stock_alerts (
+        event_key TEXT PRIMARY KEY, request_id TEXT NOT NULL,
+        status TEXT NOT NULL, updated_at INTEGER NOT NULL
+    )`);
+
     // Migration helper: safely add columns if table was created in an earlier schema version
     try {
         const cols = db.prepare("PRAGMA table_info(payment_v2_orders)").all();
@@ -97,6 +102,7 @@ export function initPaymentV2Schema(db) {
             db.exec("ALTER TABLE payment_v2_orders ADD COLUMN payload_fingerprint TEXT DEFAULT '';");
             db.exec("CREATE INDEX IF NOT EXISTS idx_v2_orders_fingerprint ON payment_v2_orders(payload_fingerprint);");
         }
+        if (!colNames.has('low_stock_json')) db.exec('ALTER TABLE payment_v2_orders ADD COLUMN low_stock_json TEXT');
         if (!colNames.has('item_name')) {
             db.exec("ALTER TABLE payment_v2_orders ADD COLUMN item_name TEXT;");
         }

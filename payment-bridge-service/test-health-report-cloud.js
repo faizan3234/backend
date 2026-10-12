@@ -291,6 +291,14 @@ const fourth = await sendHealthReportEmail({db,requestId:'REQ-SCAN-4',email:'new
 assert(fourth.scanNumber===4,'first emailed report retains actual fourth kiosk scan');
 assert(sent.at(-1).subject.includes('Scan 4'),'email subject uses actual scan number');
 assert(sent.at(-1).attachments.some(a=>a.filename==='Reliv-Health-Report-Scan-4.pdf'),'PDF filename uses actual scan number');
+assert(fourth.totalScans===4 && fourth.retainedReports===1,'actual scan count is distinct from retained emailed reports');
+insertPaidHealth({ requestId:'REQ-SCAN-8', orderId:'order_scan8', txnId:'TXN-SCAN-8',
+    paymentId:'pay_scan8', snapshot:{...snapshot1, profileKey:'c'.repeat(64), scanNumber:8} });
+const eighth = await sendHealthReportEmail({db,requestId:'REQ-SCAN-8',email:'new-inbox@example.com',codeSecret:SECRET,transporter});
+assert(eighth.scanNumber===8 && eighth.totalScans===8 && eighth.retainedReports===2,'Scan 8 remains Scan 8 with only two cloud reports');
+assert(sent.at(-1).subject.includes('Scan 8') && sent.at(-1).attachments.some(a=>a.filename==='Reliv-Health-Report-Scan-8.pdf'),'Scan 8 email and PDF filename agree');
+const eighthRetry = await sendHealthReportEmail({db,requestId:'REQ-SCAN-8',email:'new-inbox@example.com',codeSecret:SECRET,transporter});
+assert(eighthRetry.totalScans===8 && eighthRetry.retainedReports===2,'idempotent response retains actual scan count');
 const seventhModel=buildHealthReportModel({scans:[1,4,7].map(scanNumber=>({scanNumber,createdAt:Date.now(),snapshot:{...snapshot1,scanNumber}})),currentScanNumber:7});
 assert(seventhModel.currentScanNumber===7 && seventhModel.totalScans===7 && seventhModel.retainedReports===3,'Scan 7 is not reset to three emailed reports');
 const mailCount=sent.length;

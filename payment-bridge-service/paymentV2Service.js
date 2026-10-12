@@ -1,3 +1,4 @@
+import { validateLowStock, sendLowStockAlerts } from './services/lowStockAlerts.js';
 import { storySummary } from './services/storySummary.js';
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -453,6 +454,8 @@ export class PaymentV2CloudService {
             }
         }
 
+        const lowStockJson = JSON.stringify(validateLowStock(payload.lowStock));
+
         // 7. Compute Payload Fingerprint (SHA-256)
         const payloadFingerprint = computePayloadFingerprint(payload);
 
@@ -660,8 +663,8 @@ export class PaymentV2CloudService {
                     session_id, transaction_id, kiosk_id, amount, currency,
                     service_type, item_name, cart, customer_name,
                     items_json, breakdown_json, encrypted_health_snapshot,
-                    encrypted_code, status, created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, ?, ?, ?, ?, ?, ?, 'CREATED', ?, ?)
+                    encrypted_code, status, created_at, expires_at, low_stock_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, ?, ?, ?, ?, ?, ?, 'CREATED', ?, ?, ?)
             `).run(
                 rzpOrder.id,
                 payload.requestId,
@@ -680,7 +683,8 @@ export class PaymentV2CloudService {
                 encryptedHealthSnapshot,
                 encryptedCode,
                 now,
-                payload.expiresAt
+                payload.expiresAt,
+                lowStockJson
             );
 
             console.log(`[PaymentV2Cloud] ✅ Created Razorpay order ${rzpOrder.id} for request ${payload.requestId} (₹${authoritativeAmount / 100})`);
@@ -1072,7 +1076,7 @@ export class PaymentV2CloudService {
         reportPdfBuilderOverride = null,
         receiptPdfBuilderOverride = null
     }) {
-        return await sendHealthReportEmail({
+        const result = await sendHealthReportEmail({
             db: this.db,
             requestId,
             email,
@@ -1082,6 +1086,8 @@ export class PaymentV2CloudService {
             reportPdfBuilderOverride,
             receiptPdfBuilderOverride
         });
+        void this._notifyLowStock(requestId);
+        return result;
     }
 
     /**
@@ -1135,12 +1141,19 @@ export class PaymentV2CloudService {
         }
 
         // 3. Dispatch receipt email
-        return await sendPaymentReceipt({
+        const result = await sendPaymentReceipt({
             db: this.db,
             order,
             email,
             transporter: transporterOverride
         });
+        void this._notifyLowStock(requestId);
+        return result;
+    }
+
+    async _notifyLowStock(requestId) {
+        try { await sendLowStockAlerts({ db: this.db, requestId }); }
+        catch { console.warn('[LowStock] Operational email unavailable; customer delivery succeeded. Retry via receipt/report request.'); }
     }
 }
 

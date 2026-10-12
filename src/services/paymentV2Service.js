@@ -1,3 +1,4 @@
+import { lowStockSnapshot } from './lowStockSnapshot.js';
 import { getLocalReportScanNumber } from './reportVisits.js';
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -586,6 +587,9 @@ export class PaymentV2Service {
                 : {})
         };
 
+        const stockSnapshot = lowStockSnapshot(this.db, now);
+        if (stockSnapshot.length) canonicalPayload.lowStock = stockSnapshot;
+
         // Legacy compatibility fields
         if (itemsSnapshot.length > 0) {
             canonicalPayload.cart = itemsSnapshot.map(it => ({
@@ -600,18 +604,19 @@ export class PaymentV2Service {
 
         // Sign with Kiosk Ed25519 Private Key
         const kioskPrivateKey = this._getKioskPrivateKey();
-        const signature = signPayload(canonicalPayload, kioskPrivateKey);
-
-        // Hybrid Encrypt for Cloud with RSA-OAEP + AES-256-GCM
         const cloudPublicKey = this._getCloudPublicKey();
-        const encryptedPackage = encryptPackage({
-            payload: canonicalPayload,
-            signature
-        }, cloudPublicKey, { compress: true });
-
-        // Never persist an unusable QR or silently truncate the signed payload.
-        // Frontend selects M for smaller packages and L up to 2953 bytes.
-        const paymentUrl = `${this.paymentUrlBase}#p=${encryptedPackage}`;
+        const encode = () => encryptPackage({ payload: canonicalPayload,
+            signature: signPayload(canonicalPayload, kioskPrivateKey) }, cloudPublicKey, { compress: true });
+        let encryptedPackage = encode();
+        let paymentUrl = `${this.paymentUrlBase}#p=${encryptedPackage}`;
+        // Trim optional telemetry before it forces a QR past M error-correction capacity.
+        // Payment/report fields are never truncated.
+        while (Buffer.byteLength(paymentUrl, 'utf8') > 2331 && canonicalPayload.lowStock?.length) {
+            canonicalPayload.lowStock.pop();
+            if (!canonicalPayload.lowStock.length) delete canonicalPayload.lowStock;
+            encryptedPackage = encode();
+            paymentUrl = `${this.paymentUrlBase}#p=${encryptedPackage}`;
+        }
         if (Buffer.byteLength(paymentUrl, 'utf8') > 2953) {
             const err = new Error('Payment details are too large for one QR. Reduce the cart or contact the kiosk operator.');
             err.code = 'PAYMENT_QR_TOO_LARGE';
