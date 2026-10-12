@@ -94,6 +94,12 @@ export function initPaymentV2Schema(db) {
         status TEXT NOT NULL, updated_at INTEGER NOT NULL
     )`);
 
+    db.exec(`CREATE TABLE IF NOT EXISTS low_stock_dispatch (
+        request_id TEXT PRIMARY KEY, status TEXT NOT NULL,
+        next_attempt_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_low_stock_dispatch_due ON low_stock_dispatch(status,next_attempt_at);`);
+
     // Migration helper: safely add columns if table was created in an earlier schema version
     try {
         const cols = db.prepare("PRAGMA table_info(payment_v2_orders)").all();

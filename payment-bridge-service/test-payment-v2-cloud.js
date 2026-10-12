@@ -203,6 +203,12 @@ const v2CloudService = new PaymentV2CloudService({
     },
     codeSecret: TEST_SECRET
 });
+const stockNotifications = [];
+const originalStockNotify = v2CloudService._notifyLowStock.bind(v2CloudService);
+v2CloudService._notifyLowStock = async requestId => {
+    stockNotifications.push(requestId);
+    await originalStockNotify(requestId);
+};
 
 (async function runAllCloudTests() {
     console.log('\n🚀 RUNNING HARDENED CLOUD PAYMENT TRANSPORT V2 TEST SUITE\n');
@@ -988,6 +994,7 @@ const v2CloudService = new PaymentV2CloudService({
     } catch (e) { if (e.code === 'REQUEST_ID_MISMATCH') reqIdMismatch = true; }
     assert(reqIdMismatch, 'Provided requestId mismatch rejected');
 
+    assert(!stockNotifications.includes('REQ-VERIFY-2'), 'Rejected payment attempts never trigger stock notification');
     // VALID VERIFICATION & CODE REVEAL
     const verifySuccess = await v2CloudService.verifyPaymentAndRevealCode({
         orderId: testOrderId,
@@ -996,6 +1003,7 @@ const v2CloudService = new PaymentV2CloudService({
         requestId: 'REQ-VERIFY-2'
     });
     assert(verifySuccess.ok === true && verifySuccess.paid === true, 'Payment verified successfully');
+    assert(stockNotifications.includes('REQ-VERIFY-2'), 'Verified payment triggers stock notification without an email request');
     assert(verifySuccess.confirmationCode === '5566', '4-digit confirmation code revealed to paying customer');
     assert(verifySuccess.amount === 50000, 'Verified amount reported in response');
     assert(verifySuccess.alreadyVerified === false, 'First verification reports alreadyVerified: false');
@@ -1688,6 +1696,7 @@ const v2CloudService = new PaymentV2CloudService({
     });
 
     assert(successfulRecoveryRes.ok === true, 'recoverPayment succeeds on captured payment');
+    assert(stockNotifications.includes(recoveryReqId), 'Captured payment recovery triggers stock notification without an email request');
     assert(successfulRecoveryRes.paid === true, 'recoverPayment reports paid: true');
     assert(successfulRecoveryRes.recovered === true, 'recoverPayment reports recovered: true');
     assert(successfulRecoveryRes.newlyVerified === true, 'recoverPayment reports newlyVerified: true on first recovery');
