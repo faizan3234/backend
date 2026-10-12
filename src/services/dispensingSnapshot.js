@@ -14,5 +14,7 @@ export function dispensingSnapshot(session, transaction, jobs) {
     status, paymentVerified, sessionStatus: session.status,
     dispenseStatus: review ? 'MANUAL_REVIEW_REQUIRED' : done ? 'COMPLETED' : total ? 'IN_PROGRESS' : 'PENDING',
     reportStatus: session.report_status, fulfilled: transaction?.fulfilled === 1,
+    itemsCount: jobs.reduce((sum,j)=>sum+Math.max(0,Number(j.quantity)||0),0),
+    itemsCompleted: jobs.filter(j=>j.state==='COMPLETED').reduce((sum,j)=>sum+Math.max(0,Number(j.quantity)||0),0),
     jobsCount: total, jobsCompleted: completed };
 }
