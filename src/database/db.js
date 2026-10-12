@@ -1,3 +1,4 @@
+import { initInventoryRevisions } from '../services/inventoryRevision.js';
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  * RELIV KIOSK - LOCAL DATABASE MODULE
@@ -6,7 +7,7 @@
  */
 
 import Database from 'better-sqlite3';
-import { readFileSync, renameSync, unlinkSync } from 'fs';
+import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -231,6 +232,8 @@ export function initializeDatabase(customPath = null) {
             throw err;
         }
         
+        initInventoryRevisions(db);
+
         // Verify schema version
         const versionRow = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get();
         const currentVersion = versionRow ? versionRow.version : 0;
@@ -245,18 +248,11 @@ export function initializeDatabase(customPath = null) {
     try {
         return setupDatabase();
     } catch (err) {
-        if (err.code === 'SQLITE_CORRUPT' || err.code === 'SQLITE_NOTADB' || err.message?.includes('malformed database schema') || err.message?.includes('already exists')) {
-            console.error(`[DB] ⚠️ Corrupt SQLite schema detected in ${targetPath}: ${err.message}`);
-            const backupPath = `${targetPath}.corrupt.${Date.now()}`;
-            console.warn(`[DB] Moving corrupt database to ${backupPath} and re-initializing clean database...`);
-            try { if (db) db.close(); } catch {}
-            db = null;
-            currentDbPath = null;
-            try { renameSync(targetPath, backupPath); } catch {}
-            try { unlinkSync(`${targetPath}-wal`); } catch {}
-            try { unlinkSync(`${targetPath}-shm`); } catch {}
-            return setupDatabase();
-        }
+        // Never replace a user's database or delete WAL after an initialization
+        // error. WAL may hold committed payments, stock and private scan history.
+        try { db?.close(); } catch { /* Preserve the original failure. */ }
+        db = null;
+        currentDbPath = null;
         console.error('[DB] ❌ Failed to initialize database:', err);
         throw err;
     }
