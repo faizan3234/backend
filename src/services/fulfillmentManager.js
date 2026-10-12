@@ -499,6 +499,17 @@ class FulfillmentManager {
    * @param {string} sessionId - Session ID
    * @returns {Array} - Jobs
    */
+  expireStalledJobs(sessionId) {
+    // Allow 30s per ordered unit plus setup time (minimum 90s). A broker PUBACK
+    // only proves receipt by Mosquitto, not that the dispenser delivered anything.
+    return this.db.prepare(`UPDATE fulfillment_jobs
+      SET state = 'MANUAL_REVIEW_REQUIRED',
+          error_message = 'Dispenser did not confirm delivery in time. Check the tray and ESP32 connection; do not automatically retry.'
+      WHERE session_id = ? AND state = 'IN_PROGRESS'
+        AND julianday('now') >= julianday(COALESCE(mqtt_published_at, started_at, created_at))
+          + MAX(90, 30 + quantity * 30) / 86400.0`).run(sessionId).changes;
+  }
+
   getSessionJobs(sessionId) {
     return this.db.prepare(`
       SELECT * FROM fulfillment_jobs
