@@ -100,6 +100,10 @@ export function initPaymentV2Schema(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_low_stock_dispatch_due ON low_stock_dispatch(status,next_attempt_at);`);
 
+    if (!db.prepare('PRAGMA table_info(low_stock_dispatch)').all().some(column => column.name === 'attempts')) {
+        db.exec('ALTER TABLE low_stock_dispatch ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
+    }
+
     // Migration helper: safely add columns if table was created in an earlier schema version
     try {
         const cols = db.prepare("PRAGMA table_info(payment_v2_orders)").all();

@@ -1,3 +1,4 @@
+import { recordStockRelay } from './inventoryRevision.js';
 import { lowStockSnapshot } from './lowStockSnapshot.js';
 import { getLocalReportScanNumber } from './reportVisits.js';
 /**
@@ -648,6 +649,8 @@ export class PaymentV2Service {
         );
 
         // Security logging: ONLY safe identifiers/amounts, NEVER code/HMAC/keys
+        recordStockRelay(this.db, canonicalPayload.lowStock);
+
         console.log(`[PaymentV2] Payment request created: ${requestId} (session: ${sessionId}, transaction: ${transaction.transaction_id}, amount: ₹${authoritativeAmount / 100}, expires in ${this.ttlSeconds}s)`);
 
         return {

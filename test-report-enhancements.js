@@ -96,30 +96,20 @@ test('generateChallengeCardPdf builds valid 9:16 Instagram Story PDF buffer', as
     assert.equal(pdfBuf.toString('ascii', 0, 4), '%PDF', 'Buffer starts with PDF magic header');
 });
 
-test('generateReportSpeech creates natural, conversational everyday Hindi/Bengali/English', () => {
-    const vitals = { systolic: 120, diastolic: 80, oxygen: 98, bpm: 72, temperature: 98.4, weight: 70, height: 175 };
-    const patient = { age: 30, gender: 'male' };
-
-    // Hindi Screen 2 (Vitals): MUST use natural words (blood pressure, oxygen, saans, fefde), NOT shudh Sanskrit
-    const speechHi2 = generateReportSpeech({ pageNumber: 2, language: 'hi', vitals, patient, scanNumber: 1 });
-    assert(speechHi2.script.includes('blood pressure'), 'Uses colloquial blood pressure');
-    assert(speechHi2.script.includes('oxygen'), 'Uses colloquial oxygen');
-    assert(speechHi2.script.includes('fefde') || speechHi2.script.includes('saans'), 'Uses colloquial saans / fefde');
-    assert(!speechHi2.script.includes('रक्तचाप'), 'Does NOT use archaic shudh Hindi raktchaap');
-    assert(!speechHi2.script.includes('रक्त '), 'Does NOT use archaic shudh Hindi rakht');
-
-    // Hindi Screen 3 (Metabolic Age): Explains metabolic age clearly
-    const speechHi3 = generateReportSpeech({ pageNumber: 3, language: 'hi', vitals, patient, scanNumber: 1 });
-    assert(speechHi3.script.includes('Metabolic Age'), 'Explains metabolic age');
-    assert(speechHi3.script.includes('visceral fat'), 'Explains visceral fat');
-
-    // Hindi Screen 5 (Summary): Tells user what to improve and why next scan is needed
-    const speechHi5 = generateReportSpeech({ pageNumber: 5, language: 'hi', vitals, patient, scanNumber: 1 });
-    assert(speechHi5.script.includes('paani') || speechHi5.script.includes('water'), 'Reminds about water hydration');
-    assert(speechHi5.script.includes('scan 2'), 'Explains scan 2 unlocking');
-
-    // Bengali Screen 2
-    const speechBn2 = generateReportSpeech({ pageNumber: 2, language: 'bn', vitals, patient, scanNumber: 1 });
-    assert(speechBn2.script.toLowerCase().includes('blood pressure'), 'Bengali uses accessible terms');
-    assert(speechBn2.script.toLowerCase().includes('oxygen'), 'Bengali uses oxygen');
+test('report speech uses supplied readings in every language without invented normal values', () => {
+    for (const language of ['en','hi','bn']) {
+        for (let pageNumber=1;pageNumber<=5;pageNumber++) {
+            const missing=generateReportSpeech({pageNumber,language,vitals:{}});
+            assert(Object.values(missing.metrics).every(value=>value===null));
+            assert(!/120|98.4|18.5|58.2|82|scan 2|green zone/.test(missing.script));
+        }
+        const report=generateReportSpeech({pageNumber:2,language,vitals:{systolic:180,diastolic:110,oxygen:88,bpm:120,temperature:39}});
+        assert(report.script.includes('180') && report.script.includes('88'));
+        assert(!/optimal|safe zone|strong|healthy range|normal/.test(report.script));
+        const summary=generateReportSpeech({pageNumber:5,language,vitals:{healthScore:98},scanNumber:8});
+        assert.equal(summary.metrics.healthScore,98);assert.equal(summary.scanNumber,8);
+        assert(summary.script.includes('98'));
+    }
+    assert.equal(generateReportSpeech({vitals:{weight:''}}).metrics.weight,null);
+    assert.equal(generateReportSpeech({vitals:{weight:Infinity}}).metrics.weight,null);
 });

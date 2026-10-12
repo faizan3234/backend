@@ -84,7 +84,7 @@ test('ambiguous SMTP timeout goes to review instead of duplicate mail', async ()
 test('worker recovers an interrupted claim without blindly replaying SMTP', async () => {
     const db=fixture();
     await sendLowStockAlerts({db,requestId:'r',transporter:{sendMail:async()=>({})}});
-    db.exec("UPDATE low_stock_alerts SET status='SENDING',updated_at=0; INSERT INTO low_stock_dispatch VALUES ('r','WORKING',0)");
+    db.exec("UPDATE low_stock_alerts SET status='SENDING',updated_at=0; INSERT INTO low_stock_dispatch(request_id,status,next_attempt_at) VALUES ('r','WORKING',0)");
     let sends=0; const worker=createStockAlertWorker({db,transporter:{sendMail:async()=>{sends++;}}});
     await worker.runOnce(); assert.equal(sends,0);
     assert.equal(db.prepare('SELECT status FROM low_stock_dispatch').get().status,'REVIEW'); await worker.stop(); db.close();
@@ -95,6 +95,7 @@ test('unpaid, old and superseded inventory cannot generate current alerts', asyn
     await processStockAlertRequest({db,requestId:'r',transporter}); assert.equal(sends,0);
     db.exec("UPDATE payment_v2_orders SET status='PAID',created_at=1");
     await processStockAlertRequest({db,requestId:'r',transporter}); assert.equal(sends,0);
+    assert.equal(db.prepare('SELECT status FROM low_stock_dispatch').get().status,'EXPIRED');
     db.exec('DELETE FROM low_stock_dispatch');
     db.prepare('UPDATE payment_v2_orders SET created_at=?').run(Date.now());
     db.prepare(`INSERT INTO payment_v2_orders(order_id,request_id,request_nonce,payload_fingerprint,session_id,transaction_id,kiosk_id,amount,service_type,encrypted_code,status,razorpay_payment_id,created_at,expires_at,low_stock_json)
@@ -109,4 +110,26 @@ test('rejected recipient is a failed delivery, not SENT', async () => {
 });
 test('out of range timestamps are rejected before formatting', () => {
     assert.throws(()=>validateLowStock([{...item,observedAt:Number.MAX_SAFE_INTEGER}]));
+});
+
+test('new numeric inventory revision supersedes old stock even if Pi clock rolls back', async () => {
+    const db=fixture();
+    db.prepare('UPDATE payment_v2_orders SET low_stock_json=?').run(JSON.stringify([{...item,revision:'r2',observedAt:1000}]));
+    db.prepare(`INSERT INTO payment_v2_orders(order_id,request_id,request_nonce,payload_fingerprint,session_id,transaction_id,kiosk_id,amount,service_type,encrypted_code,status,razorpay_payment_id,created_at,expires_at,low_stock_json)
+        VALUES ('o3','r3','n3','f3','s3','t3','k',1700,'MEDICINE','x','PAID','pay3',?,2,?)`)
+        .run(Date.now(),JSON.stringify([{...item,revision:'r3',quantity:1,observedAt:500}]));
+    let sends=0;const transporter={sendMail:async()=>{sends++;return {};}};
+    await sendLowStockAlerts({db,requestId:'r',transporter});assert.equal(sends,0);
+    await sendLowStockAlerts({db,requestId:'r3',transporter});assert.equal(sends,1);db.close();
+});
+test('repeated known failures back off while remaining visible', async () => {
+    const db=fixture();const transporter={sendMail:async()=>{throw Object.assign(new Error('quota'),{responseCode:421});}};
+    for(let attempt=1;attempt<=3;attempt++) {
+        db.exec('UPDATE low_stock_dispatch SET next_attempt_at=0; UPDATE low_stock_alerts SET updated_at=0;');
+        const before=Date.now();await processStockAlertRequest({db,requestId:'r',transporter});
+        const state=db.prepare('SELECT * FROM low_stock_dispatch').get();
+        assert.equal(state.status,'RETRY');assert.equal(state.attempts,attempt);
+        assert.ok(state.next_attempt_at-before >= 60000*2**(attempt-1));
+    }
+    db.close();
 });

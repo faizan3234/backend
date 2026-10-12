@@ -10,22 +10,24 @@ export async function processStockAlertRequest({ db, requestId, transporter = nu
         WHERE request_id=? AND status='PAID' AND razorpay_payment_id IS NOT NULL
         AND low_stock_json IS NOT NULL AND low_stock_json != '[]'`).get(requestId);
     if (!order) return;
-    const claim = db.prepare(`INSERT INTO low_stock_dispatch(request_id,status,next_attempt_at)
-        VALUES (?,'WORKING',?) ON CONFLICT(request_id) DO UPDATE SET status='WORKING',next_attempt_at=excluded.next_attempt_at
+    const claim = db.prepare(`INSERT INTO low_stock_dispatch(request_id,status,next_attempt_at,attempts)
+        VALUES (?,'WORKING',?,1) ON CONFLICT(request_id) DO UPDATE SET status='WORKING',next_attempt_at=excluded.next_attempt_at,attempts=low_stock_dispatch.attempts+1
         WHERE low_stock_dispatch.status IN ('RETRY','WORKING') AND low_stock_dispatch.next_attempt_at <= ?`)
         .run(requestId,now + LEASE_MS,now);
     if (!claim.changes) return;
+    const attempts = db.prepare('SELECT attempts FROM low_stock_dispatch WHERE request_id=?').get(requestId).attempts;
+    const retryDelay = Math.min(3600000,RETRY_MS * 2 ** Math.min(6,attempts-1));
     // A previous worker may have died during SMTP. Never blindly resend it.
     db.prepare("UPDATE low_stock_alerts SET status='UNKNOWN' WHERE status='SENDING' AND updated_at < ?").run(now - LEASE_MS);
     try {
         const result = await sendLowStockAlerts({db,requestId,transporter});
-        const status = result?.retry ? 'RETRY' : result?.review ? 'REVIEW' : 'DONE';
+        const status = result?.state || (result?.retry ? 'RETRY' : result?.review ? 'REVIEW' : 'DONE');
         db.prepare('UPDATE low_stock_dispatch SET status=?,next_attempt_at=? WHERE request_id=?')
-            .run(status,Date.now()+RETRY_MS,requestId);
+            .run(status,Date.now()+retryDelay,requestId);
         if (result?.review) console.warn('[LowStock] Delivery uncertain; reconcile UNKNOWN entries before retrying.');
     } catch {
         db.prepare("UPDATE low_stock_dispatch SET status='RETRY',next_attempt_at=? WHERE request_id=?")
-            .run(Date.now()+RETRY_MS,requestId);
+            .run(Date.now()+retryDelay,requestId);
         console.warn('[LowStock] Dispatch deferred; retry retained on Oracle.');
     }
 }

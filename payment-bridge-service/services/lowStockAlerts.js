@@ -22,7 +22,7 @@ export async function sendLowStockAlerts({ db, requestId, transporter = null }) 
     if (!order || order.status !== 'PAID' || !order.razorpay_payment_id) return;
     // Do not send days-old inventory as a new operational alert. This uses
     // Oracle's receipt time, so a badly set Pi clock cannot extend the window.
-    if (order.created_at < Date.now() - 24 * 60 * 60 * 1000) return;
+    if (order.created_at < Date.now() - 24 * 60 * 60 * 1000) return { state: 'EXPIRED' };
     const outcome = { retry: false, review: false };
     const stock = validateLowStock(JSON.parse(order.low_stock_json || '[]'));
     if (!stock.length) return;
@@ -40,8 +40,12 @@ export async function sendLowStockAlerts({ db, requestId, transporter = null }) 
             json_each(CASE WHEN json_valid(o.low_stock_json) THEN o.low_stock_json ELSE '[]' END) j
             WHERE o.status='PAID' AND o.razorpay_payment_id IS NOT NULL
             AND o.kiosk_id=? AND json_extract(j.value,'$.id')=?
-            AND json_extract(j.value,'$.observedAt') > ? LIMIT 1`)
-            .get(order.kiosk_id,item.id,item.observedAt);
+            AND ((? IS NOT NULL AND json_extract(j.value,'$.revision') GLOB 'r[0-9]*'
+                 AND CAST(substr(json_extract(j.value,'$.revision'),2) AS INTEGER) > ?)
+                OR (? IS NULL AND json_extract(j.value,'$.observedAt') > ?)) LIMIT 1`)
+            .get(order.kiosk_id,item.id, /^r\d+$/.test(item.revision) ? Number(item.revision.slice(1)) : null,
+                /^r\d+$/.test(item.revision) ? Number(item.revision.slice(1)) : null,
+                /^r\d+$/.test(item.revision) ? Number(item.revision.slice(1)) : null,item.observedAt);
         if (newer) continue; // A newer signed snapshot supersedes this item.
         const now = Date.now();
         const claimed = db.prepare(`INSERT INTO low_stock_alerts(event_key,request_id,status,updated_at)
