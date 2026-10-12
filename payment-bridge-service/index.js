@@ -1,3 +1,4 @@
+import { createStockAlertWorker } from './services/stockAlertWorker.js';
 import express from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -235,6 +236,9 @@ const paymentV2Service = new PaymentV2CloudService({
     kioskPublicKeyPath: process.env.PAYMENT_V2_KIOSK_PUBLIC_KEY_PATH || './payment-v2-kiosk-public-key.pem',
     codeSecret: process.env.PAYMENT_V2_CODE_ENCRYPTION_SECRET
 });
+
+const stockAlertWorker = createStockAlertWorker({ db });
+stockAlertWorker.start();
 
 app.use('/v2', createPaymentV2Router(paymentV2Service));
 app.use('/api/v2', createPaymentV2Router(paymentV2Service));
@@ -681,10 +685,11 @@ app.use((err, req, res, next) => {
 });
 
 // Graceful shutdown
-function shutdown(signal) {
+async function shutdown(signal) {
     console.log(`\n⚠️ ${signal} received. Shutting down...`);
 
     try {
+        await stockAlertWorker.stop();
         if (db) {
             db.close();
             console.log('✅ Payment database closed');

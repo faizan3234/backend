@@ -1,4 +1,5 @@
-import { validateLowStock, sendLowStockAlerts } from './services/lowStockAlerts.js';
+import { validateLowStock } from './services/lowStockAlerts.js';
+import { processStockAlertRequest } from './services/stockAlertWorker.js';
 import { storySummary } from './services/storySummary.js';
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -754,6 +755,7 @@ export class PaymentV2CloudService {
                 throw err;
             }
 
+            void this._notifyLowStock(order.request_id);
             const code = decryptConfirmationCodeAtRest(order.encrypted_code, this.codeSecret);
             console.log(`[PaymentV2Cloud] Re-revealing code for already paid order ${orderId} (idempotent)`);
             return {
@@ -837,6 +839,7 @@ export class PaymentV2CloudService {
                 // Check if concurrent request already marked PAID
                 const currentOrder = this.db.prepare('SELECT * FROM payment_v2_orders WHERE order_id = ?').get(orderId);
                 if (currentOrder && currentOrder.status === 'PAID' && currentOrder.razorpay_payment_id === paymentId) {
+                    void this._notifyLowStock(currentOrder.request_id);
                     const code = decryptConfirmationCodeAtRest(currentOrder.encrypted_code, this.codeSecret);
                     return {
                         ok: true,
@@ -861,6 +864,7 @@ export class PaymentV2CloudService {
         }
 
         // 7. Decrypt and Reveal Confirmation Code ONLY AFTER verified payment
+        void this._notifyLowStock(order.request_id);
         const confirmationCode = decryptConfirmationCodeAtRest(order.encrypted_code, this.codeSecret);
         console.log(`[PaymentV2Cloud] ✅ Payment verified and code unlocked for order ${orderId}, request ${order.request_id}`);
 
@@ -944,6 +948,7 @@ export class PaymentV2CloudService {
         // 2. CASE A: Order is already PAID
         if (order.status === 'PAID' && order.razorpay_payment_id) {
             console.log(`[PaymentV2Cloud] ℹ️ Order for request ${normalizedRequestId} is already PAID (${order.order_id}). Returning unlocked code.`);
+            void this._notifyLowStock(order.request_id);
             const confirmationCode = decryptConfirmationCodeAtRest(order.encrypted_code, this.codeSecret);
 
             return {
@@ -1025,6 +1030,7 @@ export class PaymentV2CloudService {
             // Already updated concurrently
             const current = this.db.prepare('SELECT * FROM payment_v2_orders WHERE order_id = ?').get(order.order_id);
             if (current && current.status === 'PAID') {
+                void this._notifyLowStock(current.request_id);
                 const code = decryptConfirmationCodeAtRest(current.encrypted_code, this.codeSecret);
                 return {
                     ok: true,
@@ -1045,6 +1051,7 @@ export class PaymentV2CloudService {
         }
 
         // 6. Decrypt confirmation code at rest
+        void this._notifyLowStock(order.request_id);
         const confirmationCode = decryptConfirmationCodeAtRest(order.encrypted_code, this.codeSecret);
         console.log(`[PaymentV2Cloud] ✅ Recovered and verified payment ${capturedPayment.id} for order ${order.order_id}, request ${order.request_id} (Code revealed)`);
 
@@ -1152,8 +1159,8 @@ export class PaymentV2CloudService {
     }
 
     async _notifyLowStock(requestId) {
-        try { await sendLowStockAlerts({ db: this.db, requestId }); }
-        catch { console.warn('[LowStock] Operational email unavailable; customer delivery succeeded. Retry via receipt/report request.'); }
+        try { await processStockAlertRequest({ db: this.db, requestId }); }
+        catch { console.warn('[LowStock] Operational email deferred; durable paid order will be retried by Oracle.'); }
     }
 }
 
