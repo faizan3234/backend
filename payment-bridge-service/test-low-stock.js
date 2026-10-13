@@ -32,11 +32,14 @@ test('paid relay sends internal mail once across retries; qty1 creates next aler
     assert.equal(sent.length,1);
     assert.equal(sent[0].to,'khanfaizan3234@gmail.com');
     assert.match(sent[0].from,/relivcustomercare.in@gmail.com/);
-    assert.match(sent[0].text,/12.34/); assert.match(sent[0].text,/before this customer's order was dispensed/);
+    assert.match(sent[0].text,/12.34/); assert.match(sent[0].text,/before the customer/);
     db.prepare('UPDATE payment_v2_orders SET low_stock_json=?').run(JSON.stringify([{...item,quantity:1}]));
     await sendLowStockAlerts({db,requestId:'r',transporter}); assert.equal(sent.length,2);
     db.prepare("UPDATE payment_v2_orders SET status='CREATED',low_stock_json=?").run(JSON.stringify([{...item,quantity:0}]));
-    await sendLowStockAlerts({db,requestId:'r',transporter}); assert.equal(sent.length,2); db.close();
+    await sendLowStockAlerts({db,requestId:'r',transporter}); assert.equal(sent.length,2);
+    db.prepare("UPDATE payment_v2_orders SET status='PAID'").run();
+    await sendLowStockAlerts({db,requestId:'r',transporter});
+    assert.equal(sent.length,3); assert.match(sent[2].subject,/out of stock/); assert.match(sent[2].text,/0 — out of stock/); db.close();
 });
 test('failed SMTP is retryable after cooldown, sent alerts persist across schema initialization', async () => {
     const db=fixture();

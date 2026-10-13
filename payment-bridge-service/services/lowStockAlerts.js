@@ -60,8 +60,8 @@ export async function sendLowStockAlerts({ db, requestId, transporter = null }) 
         try {
             const result = await mailer.sendMail({
                 from: `"Reliv Stock Alerts" <${sender}>`, to: 'khanfaizan3234@gmail.com',
-                subject: `Reliv: ${item.name} running low — last count ${item.quantity}`,
-                text: `${item.name} needs restocking.\n\nLast recorded stock: ${item.quantity} ${item.quantity === 1 ? 'item' : 'items'}\nKiosk: ${order.kiosk_id}\nPrice per item: INR ${(item.unitPricePaise/100).toFixed(2)}\nStock checked: ${new Date(item.observedAt).toLocaleString('en-IN', {timeZone:'Asia/Kolkata'})} IST\n\nThis count was taken before this customer's order was dispensed. There may be fewer items now. Please check the kiosk and refill if needed.\n\nItem reference: ${item.id}`,
+                subject: `Reliv: ${item.name} — ${item.quantity === 0 ? 'out of stock' : `only ${item.quantity} left at last check`}`,
+                text: `Please refill ${item.name}.\n\nKiosk: ${order.kiosk_id}\nLast recorded stock: ${item.quantity === 0 ? '0 — out of stock' : `${item.quantity} left`}\nPrice per item: INR ${(item.unitPricePaise/100).toFixed(2)}\n\nThis count was checked before the customer's order was dispensed. There may be fewer items now. Please check the kiosk and refill as needed.\n\nLast check: ${new Date(item.observedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST\nItem reference: ${item.id}`,
                 messageId: `<stock-${key}@reliv.in>`
             });
             if (Array.isArray(result?.accepted) && !result.accepted.length) {

@@ -2793,7 +2793,7 @@ function handleMedicineImageUpload(req, res, next) {
     });
 }
 
-// Preserve existing image files; both old clients and nginx /api use this mount.
+// Preserve existing image files and support nginx's API proxy.
 mountMedicineImages(app, MEDICINE_IMAGE_DIR);
 
 /**
