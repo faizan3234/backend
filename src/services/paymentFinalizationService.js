@@ -34,6 +34,11 @@ export class PaymentFinalizationService {
         return this._db;
     }
 
+    recordSupportFailure(event,sessionId,transactionId,error) {
+        try { this.db.prepare('INSERT INTO audit_log(event_type,session_id,transaction_id,success,error_message) VALUES(?,?,?,0,?)').run(event,sessionId,transactionId,String(error?.message||error).slice(0,1000)); }
+        catch (auditError) { console.error('[Support] Could not persist failure evidence:',auditError.message); }
+    }
+
     get pdfGenerator() {
         if (!this._pdfGenerator) {
             this._pdfGenerator = new PDFGenerator(this.db);
@@ -167,6 +172,7 @@ export class PaymentFinalizationService {
                         }
                     } catch (jobErr) {
                         console.error(`[PaymentFinalization] ❌ Could not create fulfillment job for kit ${kitId}:`, jobErr.message);
+                        this.recordSupportFailure('SUPPORT_JOB_FAILED',sessionId,transactionId,jobErr);
                         fulfillmentError = jobErr;
                     }
                 }
@@ -236,6 +242,7 @@ export class PaymentFinalizationService {
                     completionStatus = 'report_ready';
                 } catch (pdfErr) {
                     console.error(`[PaymentFinalization] ❌ Health report PDF generation failed for session ${sessionId}:`, pdfErr);
+                    this.recordSupportFailure('SUPPORT_REPORT_FAILED',sessionId,transactionId,pdfErr);
                     this.sessionManager.updateReportStatus(sessionId, 'FAILED');
                     completionStatus = 'report_failed';
                 }

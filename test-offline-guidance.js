@@ -104,7 +104,8 @@ test('durable claim precedes MQTT, early ACK survives PUBACK, duplicates and unc
     await assert.rejects(fulfillment.startDispensing('J3'),/disconnected/);
     assert.equal(fulfillment.getJobStatus('J3').state,'PENDING');
     db.prepare("UPDATE fulfillment_jobs SET state='IN_PROGRESS' WHERE job_id='J3'").run();
-    await fulfillment.markFailed('J3','sensor uncertain');
+    await fulfillment.markCompleted('J3',{jobId:'J3',kitId:'K',quantity:1,status:'ERROR',reason:'motor fault'});
+    assert.equal(JSON.parse(fulfillment.getJobStatus('J3').esp32_ack_payload).reason,'motor fault','failed device reply survives for support');
     assert.equal(fulfillment.getJobStatus('J3').state,'MANUAL_REVIEW_REQUIRED');
   } finally { closeDatabase(); rmSync(dir,{recursive:true,force:true}); }
 });
