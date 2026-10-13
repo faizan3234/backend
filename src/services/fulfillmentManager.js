@@ -302,6 +302,7 @@ class FulfillmentManager {
     // Check if ESP32 reported a physical dispense failure
     const ackStatus = typeof ackData.status === 'string' ? ackData.status.trim().toUpperCase() : ackData.status;
     if (ackStatus === 'FAILED' || ackStatus === 'ERROR' || ackData.success === false) {
+      this.db.prepare("UPDATE fulfillment_jobs SET esp32_ack_received_at=datetime('now'), esp32_ack_payload=? WHERE job_id=?").run(JSON.stringify(ackData),jobId);
       await this.markFailed(jobId, 'ESP32 reported a dispensing failure; physical verification required.');
       return false;
     }
@@ -578,3 +579,4 @@ class FulfillmentManager {
 const fulfillmentManager = new FulfillmentManager();
 
 export default fulfillmentManager;
+

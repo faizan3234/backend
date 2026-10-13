@@ -1,3 +1,4 @@
+import { initializeSupport, registerSupportRoutes } from './src/services/supportCases.js';
 import { mountMedicineImages } from './src/services/medicineImageRoutes.js';
 import { reportReviewEnabled } from './src/services/kioskFeatures.js';
 import { createLocalSpeechHandler } from './src/routes/localSpeech.js';
@@ -935,6 +936,7 @@ const adminAuth = createAdminAuth({
 });
 app.use(adminAuth.protectWrites);
 adminAuth.register(app);
+registerSupportRoutes(app, { getDb, requireAdmin: adminAuth.requireAdmin });
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -1011,6 +1013,8 @@ async function start() {
     try {
         log.info('Initializing local SQLite database...');
         db = initializeDatabase();
+        initializeSupport(db);
+        db.prepare("INSERT INTO audit_log(event_type,details) VALUES('SUPPORT_BACKEND_START','Backend process started; cause unknown')").run();
         sessionManager.initialize();
         transactionManager.initialize();
 
