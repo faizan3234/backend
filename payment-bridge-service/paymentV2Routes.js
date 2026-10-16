@@ -109,11 +109,12 @@ export function createPaymentV2Router(paymentV2CloudService, {
                 err.code === 'PAYLOAD_TAMPERING_OR_FINGERPRINT_MISMATCH' ||
                 err.code === 'INVALID_AD_CAMPAIGN' ||
                 err.code === 'AMOUNT_MISMATCH'
-            ) ? 400 : (err.code === 'REQUEST_EXPIRED' ? 410 : 500);
+            ) ? 400 : (err.code === 'REQUEST_EXPIRED' ? 410 : ['KIOSK_CLOCK_AHEAD', 'INVALID_PAYMENT_WINDOW'].includes(err.code) ? 400 : 500);
 
             return res.status(statusCode).json({
                 ok: false,
                 code: err.code || 'CREATE_ORDER_FAILED',
+                ...(err.paymentTiming ? { paymentTiming: err.paymentTiming } : {}),
                 message: err.message || 'Failed to create payment order'
             });
         }
@@ -198,7 +199,7 @@ export function createPaymentV2Router(paymentV2CloudService, {
             ) ? 404 : (
                 err.code === 'MISSING_REQUEST_ID' ||
                 err.code === 'PAYMENT_ID_ALREADY_USED'
-            ) ? 400 : (err.code === 'REQUEST_EXPIRED' ? 410 : 500);
+            ) ? 400 : (err.code === 'REQUEST_EXPIRED' ? 410 : ['KIOSK_CLOCK_AHEAD', 'INVALID_PAYMENT_WINDOW'].includes(err.code) ? 400 : 500);
 
             return res.status(statusCode).json({
                 ok: false,
