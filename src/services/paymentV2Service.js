@@ -86,6 +86,9 @@ export class PaymentV2Service {
         this.kioskSigningPrivateKeyPath = kioskSigningPrivateKeyPath;
         this.cloudEncryptionPublicKeyPath = cloudEncryptionPublicKeyPath;
         this.kioskId = kioskId;
+        if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 1800) {
+            throw new Error('PAYMENT_V2_TTL_SECONDS must be a whole number from 60 to 1800 (recommended: 300).');
+        }
         this.ttlSeconds = ttlSeconds;
         this.maxAttempts = maxAttempts;
         this.paymentUrlBase = paymentUrlBase;

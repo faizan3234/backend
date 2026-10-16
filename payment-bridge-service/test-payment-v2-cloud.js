@@ -380,7 +380,7 @@ v2CloudService._notifyLowStock = async requestId => {
     // Expired Request
     let expiredReq = false;
     try {
-        const invalidP = { ...testPayload, requestId: 'REQ-EXP-TEST', expiresAt: Date.now() - 60000 };
+        const invalidP = { ...testPayload, requestId: 'REQ-EXP-TEST', issuedAt: Date.now() - 360000, expiresAt: Date.now() - 60000 };
         const p = createPiHybridPackage(invalidP, kioskKeys.privateKey, cloudKeys4096.publicKey);
         await v2CloudService.createOrderFromPackage(p);
     } catch (e) { if (e.code === 'REQUEST_EXPIRED') expiredReq = true; }
