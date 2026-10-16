@@ -4107,20 +4107,6 @@ app.post("/api/sessions/:sessionId/measurements-complete", (req, res) => {
             });
         }
 
-        // Normal expected state immediately after the final measurement.
-        //
-        // Idempotent retry is also allowed if the first request succeeded
-        // but the frontend lost the HTTP response.
-        if (
-            session.status !== "SERVICE_SELECTED" &&
-            session.status !== "MEASUREMENTS_COMPLETE"
-        ) {
-            return res.status(409).json({
-                ok: false,
-                message: `Measurements cannot be completed while session is ${session.status}`
-            });
-        }
-
         const updatedSession =
             sessionManager.completeHealthMeasurements(sessionId, pairingToken, healthData);
 
@@ -4130,7 +4116,7 @@ app.post("/api/sessions/:sessionId/measurements-complete", (req, res) => {
             status: updatedSession.status,
             measurementsSaved: true,
             paymentReady:
-                updatedSession.status === "MEASUREMENTS_COMPLETE"
+                ["MEASUREMENTS_COMPLETE", "PAYMENT_REQUIRED", "PAYMENT_PENDING"].includes(updatedSession.status)
         });
 
     } catch (err) {
@@ -4158,10 +4144,15 @@ app.post("/api/sessions/:sessionId/measurements-complete", (req, res) => {
             message.includes("HEALTH_CHECKUP") ||
             message.includes("transition")
         ) {
+            let resume = null;
+            try {
+                resume = sessionManager.getResumableHealthMeasurements(req.params.sessionId, req.body?.pairingToken);
+            } catch { /* Never disclose a snapshot without its valid pairing token. */ }
             return res.status(409).json({
                 ok: false,
                 code: err.code || "MEASUREMENTS_CONFLICT",
-                message
+                message,
+                resume
             });
         }
 
@@ -6891,4 +6882,5 @@ start()
         // Still start health monitoring even in degraded mode
         startComprehensiveHealthMonitoring();
     });
+
 

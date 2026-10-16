@@ -47,4 +47,23 @@ test('45-minute hard limit rejects recovery and cleanup handles ISO dates',()=>{
  assert.throws(()=>manager.completeHealthMeasurements(id,token,data),e=>e.code==='SESSION_EXPIRED');
  manager.expireOldSessions();assert.equal(manager.getSession(id).status,'COMPLETED');
 });
+test('saved results resume after a payment transaction without mutation or renewal',()=>{
+ const {id,token}=fixture();manager.completeHealthMeasurements(id,token,data);
+ db.prepare("INSERT INTO transactions(transaction_id,session_id,type,amount) VALUES(?,?,'HEALTH_CHECKUP',17)").run('T-'+id,id);
+ for(const state of ['MEASUREMENTS_COMPLETE','PAYMENT_REQUIRED','PAYMENT_PENDING']) {
+  db.prepare("UPDATE sessions SET status=?,payment_status='PENDING' WHERE session_id=?").run(state,id);
+  const before=manager.getSession(id);
+  assert.deepEqual(manager.completeHealthMeasurements(id,token,data),before);
+  assert.deepEqual(manager.getResumableHealthMeasurements(id,token),{sessionId:id,healthData:data});
+  assert.throws(()=>manager.completeHealthMeasurements(id,token,{...data,vitals:{...data.vitals,temperature:101}}),e=>e.code==='HEALTH_SNAPSHOT_MISMATCH');
+  assert.deepEqual(manager.getSession(id),before);
+ }
+ assert.equal(db.prepare('SELECT count(*) n FROM transactions WHERE session_id=?').get(id).n,1);
+ assert.throws(()=>manager.getResumableHealthMeasurements(id,'wrong'));
+ db.prepare("UPDATE sessions SET payment_status='VERIFIED' WHERE session_id=?").run(id);
+ assert.equal(manager.getResumableHealthMeasurements(id,token),null);
+ db.prepare("UPDATE sessions SET payment_status='PENDING',expires_at=? WHERE session_id=?").run(new Date(Date.now()-1000).toISOString(),id);
+ assert.equal(manager.getResumableHealthMeasurements(id,token),null);
+ assert.throws(()=>manager.completeHealthMeasurements(id,token,data));
+});
 test.after(()=>closeDatabase());
