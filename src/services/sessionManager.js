@@ -7,6 +7,7 @@
 
 import { getDb } from '../database/db.js';
 import crypto from 'crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Session State Machine
@@ -241,12 +242,33 @@ class SessionManager {
      * @param {Object} healthData
      * @returns {Object} Updated session
      */
+    // Read-only recovery: never revive expired sessions or replace paid results.
+    getResumableHealthMeasurements(sessionId, pairingToken) {
+        this.verifyPairingToken(sessionId, pairingToken);
+        const session = this.getSession(sessionId);
+        if (session.service_type !== 'HEALTH_CHECKUP' ||
+            !['MEASUREMENTS_COMPLETE', 'PAYMENT_REQUIRED', 'PAYMENT_PENDING'].includes(session.status) ||
+            !['NOT_REQUIRED', 'PENDING', 'FAILED'].includes(session.payment_status) ||
+            !(Date.parse(session.expires_at) > Date.now())) return null;
+        const healthData = session.health_data;
+        if (!healthData || typeof healthData !== 'object' || Array.isArray(healthData) ||
+            !healthData.vitals || !Object.keys(healthData.vitals).length) return null;
+        return { sessionId, healthData };
+    }
+
     completeHealthMeasurements(sessionId, pairingToken, healthData) {
         // Recovery is only for this authenticated, unpaid measurement session.
         // Preserve its profile binding and ID; never create a second visit/order.
         return this.db.transaction(() => {
             this.verifyPairingToken(sessionId, pairingToken);
             const session = this.getSession(sessionId);
+            const saved = this.getResumableHealthMeasurements(sessionId, pairingToken);
+            if (saved) {
+                if (isDeepStrictEqual(saved.healthData, healthData)) return session;
+                const error = new Error('Results were already saved for this checkup. Continue with the saved results.');
+                error.code = 'HEALTH_SNAPSHOT_MISMATCH';
+                throw error;
+            }
             if (session.service_type !== 'HEALTH_CHECKUP' ||
                 ![SESSION_STATES.SERVICE_SELECTED, SESSION_STATES.MEASUREMENTS_COMPLETE].includes(session.status) ||
                 session.payment_status !== 'NOT_REQUIRED' || session.payment_id ||
@@ -788,3 +810,4 @@ class SessionManager {
 const sessionManager = new SessionManager();
 export default sessionManager;
 export { SESSION_STATES };
+
