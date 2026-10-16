@@ -29,6 +29,24 @@ import {
 } from './services/healthReportEmailService.js';
 
 export class PaymentV2CloudService {
+    exportAppRecord(packageStr) {
+        if (process.env.RELIV_APP_REPORT_SYNC !== 'true') {
+            const error = new Error('App report saving is disabled. Email and payment still work.');
+            error.code = 'SYNC_DISABLED'; throw error;
+        }
+        if (typeof packageStr !== 'string' || !packageStr || Buffer.byteLength(packageStr) > 16384) throw new Error('Invalid payment package');
+        const { payload, signature } = decryptPackage(packageStr, this.getCloudPrivateKey());
+        if (!verifyKioskSignature(payload, signature, this.getKioskPublicKey(payload.kioskId))) throw new Error('Invalid kiosk signature');
+        const order = this.db.prepare('SELECT * FROM payment_v2_orders WHERE request_id=?').get(payload.requestId);
+        if (!order || order.status !== 'PAID' || !order.razorpay_payment_id || order.service_type !== 'HEALTH_CHECKUP' ||
+            order.payload_fingerprint !== computePayloadFingerprint(payload) || !order.encrypted_health_snapshot) throw new Error('Verified paid health record unavailable');
+        const snapshot = JSON.parse(decryptConfirmationCodeAtRest(order.encrypted_health_snapshot, this.codeSecret));
+        return { ok: true, record: { version: 1, id: order.request_id,
+            profileKey: `${order.kiosk_id}:${snapshot.profileKey || `unlinked:${order.request_id}`}`,
+            kioskId: order.kiosk_id, scanNumber: snapshot.scanNumber, recordedAt: order.created_at,
+            patient: snapshot.patient || {}, vitals: snapshot.vitals || {}, summary: storySummary(snapshot) } };
+    }
+
     _storySummary(order) {
         if (order?.service_type !== 'HEALTH_CHECKUP' || !order.encrypted_health_snapshot) return null;
         try { return storySummary(JSON.parse(decryptConfirmationCodeAtRest(order.encrypted_health_snapshot, this.codeSecret))); }

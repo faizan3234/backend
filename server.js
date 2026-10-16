@@ -1,3 +1,4 @@
+import { finalizeDispenseAck } from './src/services/finalizeDispenseAck.js';
 import { initializeSupport, registerSupportRoutes } from './src/services/supportCases.js';
 import { mountMedicineImages } from './src/services/medicineImageRoutes.js';
 import { reportReviewEnabled } from './src/services/kioskFeatures.js';
@@ -2592,20 +2593,11 @@ mqttClient.on("message", async (topic, message) => {
 
         // Validate ACK and mark THIS job completed
         try {
-            const completed = await fulfillmentManager.markCompleted(jobId, ackData);
+            const completed = finalizeDispenseAck(getDb(), fulfillmentManager, inventoryManager, jobId, ackData);
 
             if (completed) {
                 const job = fulfillmentManager.getJobStatus(jobId);
                 if (job && job.transaction_id) {
-                    // Finalize inventory reservation for this specific physically dispensed kit
-                    if (inventoryManager) {
-                        try {
-                            inventoryManager.deductInventory(job.transaction_id, jobId, job.kit_id);
-                        } catch (invErr) {
-                            log.error(`⚠️ Failed to finalize inventory deduction for job ${jobId}: ${invErr.message}`);
-                        }
-                    }
-
                     // Multi-kit verification: fetch EVERY fulfillment job for this transaction
                     const txnJobs = fulfillmentManager.getJobsByTransaction(job.transaction_id);
                     const allTxnCompleted = txnJobs.length > 0 && txnJobs.every(j => j.state === 'COMPLETED');

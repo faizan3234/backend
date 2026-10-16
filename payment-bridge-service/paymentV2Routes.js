@@ -58,6 +58,14 @@ export function createPaymentV2Router(paymentV2CloudService, {
     emailReceiptLimiter = createV2RateLimiter({ windowMs: 60000, max: 20 })
 } = {}) {
     const router = express.Router();
+    router.get('/app-features', (_req, res) => {
+        res.set('Cache-Control', 'no-store').json({ appReportSync: process.env.RELIV_APP_REPORT_SYNC === 'true' });
+    });
+    router.post('/app-record', emailReceiptLimiter, (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        try { res.json(paymentV2CloudService.exportAppRecord(req.body?.package)); }
+        catch (error) { res.status(error.code === 'SYNC_DISABLED' ? 403 : 400).json({ ok: false, message: error.code === 'SYNC_DISABLED' ? 'App report saving is disabled.' : 'Verified paid health record unavailable. Please scan your own payment QR again.' }); }
+    });
 
     /**
      * POST /v2/create-order

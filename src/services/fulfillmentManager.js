@@ -239,7 +239,7 @@ class FulfillmentManager {
    * @param {object} ackData - ACK payload from ESP32
    * @returns {Promise<boolean>} - Success
    */
-  async markCompleted(jobId, ackData = {}) {
+  markCompleted(jobId, ackData = {}) {
     if (!ackData || typeof ackData !== 'object' || Array.isArray(ackData)) return false;
     const job = this.db.prepare('SELECT * FROM fulfillment_jobs WHERE job_id = ?').get(jobId);
     
@@ -303,7 +303,7 @@ class FulfillmentManager {
     const ackStatus = typeof ackData.status === 'string' ? ackData.status.trim().toUpperCase() : ackData.status;
     if (ackStatus === 'FAILED' || ackStatus === 'ERROR' || ackData.success === false) {
       this.db.prepare("UPDATE fulfillment_jobs SET esp32_ack_received_at=datetime('now'), esp32_ack_payload=? WHERE job_id=?").run(JSON.stringify(ackData),jobId);
-      await this.markFailed(jobId, 'ESP32 reported a dispensing failure; physical verification required.');
+      this.markFailed(jobId, 'ESP32 reported a dispensing failure; physical verification required.');
       return false;
     }
 
@@ -333,7 +333,7 @@ class FulfillmentManager {
    * @param {string} errorMessage - Error description
    * @returns {Promise<boolean>} - Success
    */
-  async markFailed(jobId, errorMessage) {
+  markFailed(jobId, errorMessage) {
     const job = this.db.prepare('SELECT * FROM fulfillment_jobs WHERE job_id = ?').get(jobId);
     
     if (!job) {
