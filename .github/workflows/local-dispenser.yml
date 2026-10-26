@@ -4,9 +4,13 @@ on:
     paths:
       - 'firmware/RelivLocalDispenser/**'
       - 'src/services/dispenseReceipt.js'
+      - 'src/services/lateDispenseAck.js'
+      - 'src/services/finalizeDispenseAck.js'
       - 'src/services/fulfillmentManager.js'
       - 'tests/dispense-receipt.mjs'
       - 'tests/motor-cycle.cpp'
+      - 'tests/motor-queue.cpp'
+      - 'tests/late-dispense-ack.mjs'
       - '.github/workflows/local-dispenser.yml'
   workflow_dispatch:
 permissions:
@@ -19,8 +23,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test tests/dispense-receipt.mjs
+      - run: npm ci
+      - run: node --test tests/dispense-receipt.mjs tests/late-dispense-ack.mjs test-atomic-stock.js
       - run: g++ -std=c++11 -Wall -Wextra -Werror tests/motor-cycle.cpp -o /tmp/cycles && /tmp/cycles
+      - run: g++ -std=c++11 -Wall -Wextra -Werror tests/motor-queue.cpp -o /tmp/queue && /tmp/queue
       - uses: arduino/setup-arduino-cli@v2
       - name: Install ESP32 and sketch libraries
         run: |
@@ -33,3 +39,4 @@ jobs:
         run: |
           cp firmware/RelivLocalDispenser/local_config.example.h firmware/RelivLocalDispenser/local_config.h
           arduino-cli compile --fqbn esp32:esp32:esp32 firmware/RelivLocalDispenser
+

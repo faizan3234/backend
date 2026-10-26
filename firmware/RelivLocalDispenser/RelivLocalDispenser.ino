@@ -5,6 +5,7 @@
 #include <Preferences.h>
 #include "local_config.h"
 #include "MotorCycle.h"
+#include "QueueSafety.h"
 
 WiFiClient transport;
 PubSubClient mqtt(transport);
@@ -12,6 +13,7 @@ Preferences journal;
 MotorCycle cycle;
 constexpr unsigned QUEUE_SIZE = 8;
 String queue[QUEUE_SIZE];
+uint32_t receivedAt[QUEUE_SIZE];
 unsigned queued = 0;
 String pendingKey, pendingResult, clientId;
 int activeMotor = -1;
@@ -52,6 +54,10 @@ bool sameJob(JsonDocument &a, JsonDocument &b) {
     a["motor"].as<int>() == b["motor"].as<int>() &&
     a["quantity"].as<int>() == b["quantity"].as<int>();
 }
+void clearQueuedJobs() {
+  for (unsigned i = 0; i < queued; ++i) queue[i] = "";
+  queued = 0;
+}
 void onMessage(char *topic, byte *payload, unsigned length) {
   if (!storageOK || length > 1500) return;
   // Copy before any future publish: PubSubClient shares its packet buffer.
@@ -66,6 +72,10 @@ void onMessage(char *topic, byte *payload, unsigned length) {
         receivedTopic == "reliv/dispense/receipt/" + String(saved["jobId"] | "") &&
         sameJob(saved, data) &&
         String(data["status"] | "") == String(saved["status"] | "")) {
+      if (String(data["jobState"] | "") != "COMPLETED") {
+        clearQueuedJobs();
+        Serial.println("Pi saved late/uncertain result for STAFF REVIEW. Old queued jobs discarded; not dispensed again.");
+      }
       // Keep per-job replay ledger. Remove only the acknowledged outbox pointer.
       if (!journal.remove("outbox")) { storageFault(); return; }
       pendingKey = ""; pendingResult = "";
@@ -92,13 +102,18 @@ void onMessage(char *topic, byte *payload, unsigned length) {
   if (queued == QUEUE_SIZE) {
     Serial.println("Queue full: command not executed; Pi timeout requires staff review."); return;
   }
+  receivedAt[queued] = millis();
   queue[queued++] = command;
 }
 void startNext() {
   if (!storageOK || pendingKey.length() || !queued || cycle.active || !mqtt.connected()) return;
   String command = queue[0];
-  for (unsigned i = 1; i < queued; ++i) queue[i - 1] = queue[i];
+  bool expired = queueExpired(receivedAt[0], millis());
+  for (unsigned i = 1; i < queued; ++i) {
+    queue[i - 1] = queue[i]; receivedAt[i - 1] = receivedAt[i];
+  }
   queue[--queued] = "";
+  if (expired) { Serial.println("Unstarted job expired; staff review required."); return; }
   JsonDocument data; deserializeJson(data, command);
   String key = keyFor(data["jobId"].as<String>());
   if (journal.isKey(key.c_str())) {
@@ -149,11 +164,15 @@ void sendResult() {
     pendingResult = record;
   }
   String topic = "reliv/dispense/confirm/" + String(data["jobId"] | "");
-  mqtt.publish(topic.c_str(), pendingResult.c_str(), false);
+  data["receiptProtocol"] = 2;
+  String outgoing; serializeJson(data, outgoing);
+  mqtt.publish(topic.c_str(), outgoing.c_str(), false);
   // A socket write is NOT a receipt. Retry until Pi confirms durable storage.
 }
 void maintainConnection() {
   uint32_t now = millis();
+  // Reconnecting must not restart waiting commands from a previous connection.
+  if (WiFi.status() != WL_CONNECTED || !mqtt.connected()) clearQueuedJobs();
   if (WiFi.status() != WL_CONNECTED) {
     if (now - wifiAttempt >= 20000) {
       wifiAttempt = now; WiFi.disconnect();
@@ -202,8 +221,10 @@ void loop() {
   maintainConnection();
   if (mqtt.connected()) {
     mqtt.loop();
+    if (!mqtt.connected()) clearQueuedJobs();
     if (storageOK) sendResult();
     if (storageOK) startNext();
   }
   delay(1);
 }
+

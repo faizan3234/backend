@@ -31,7 +31,7 @@ Do not erase ESP flash/NVS or select an erase-all upload option: this deletes du
 - Full queue, invalid command, storage failure/full, corrupt journal, or identity collision refuses operation. Pi timeout exposes missing confirmations for staff review.
 - The replay ledger is deliberately not auto-evicted. NVS is finite: monitor storage and reconcile/archive jobs before maintenance. This is not unlimited unattended storage.
 - Backend manual retry of an old job ID does not bypass ESP replay protection. Reconcile/replace the operation under staff control; never clear all history just to retry.
-- If the Pi restarted and already marked a job uncertain, a late success does not silently resolve it; staff must inspect the tray. The outbox remains pending until that exact result is recorded. Do not reset payment or charge again.
+- If the Pi restarted and already marked a job uncertain, a late success does not silently resolve it; staff must inspect the tray. The backend now records a validated late result as evidence and returns a manual-review receipt to v2 firmware. The ESP clears its outbox and discards old queued work, but the order stays in staff review and stock is not deducted automatically. Do not reset payment or charge again.
 
 SUCCESS here means **timed motor cycles completed**, not physical delivery. ACK includes
 `confirmationType: timed_motor_cycle` and `deliveryVerified: false`.
@@ -69,3 +69,43 @@ No physical Pi/ESP/motor test has been performed remotely.
 Library references:
 - https://pubsubclient.knolleary.net/api (shared callback buffer and publish semantics)
 - https://docs.espressif.com/projects/arduino-esp32/en/latest/api/preferences.html
+
+
+## Recovery update: repeated SUCCESS with no Pi receipt
+
+The reported log repeatedly reaches the backend ACK handler with no receipt. The
+previous handler silently returned for jobs already in MANUAL_REVIEW_REQUIRED
+(after a timeout/restart), so no evidence was stored and the ESP waited forever.
+The log also shows MQTT keepalive/connection timeouts, but does not contain the
+SQLite state at the first failure. Confirm the original cause using the read-only
+inspection command below; network switching alone is not proof of it.
+
+This update records matching late final ACK evidence without completing an uncertain
+order or changing stock. Only receiptProtocol=2 can receive a manual-review receipt:
+the new firmware clears stale queued jobs before becoming ready for a fresh order.
+Old firmware must be updated; backend-only deployment deliberately leaves old
+firmware waiting rather than unexpectedly releasing queued motors. Pending job
+records from the previous firmware are compatible; do not erase NVS.
+
+Waiting commands expire after 60 seconds and are discarded on MQTT/Wi-Fi disconnect.
+Large carts that cannot start all motors in that window require staff review.
+Commands are never automatically recreated or replayed. Keep the Pi on RELIV-KIOSK
+during orders; use the laptop/phone Internet to share logs instead of changing the
+Pi's AP connection.
+
+Install BOTH updated backend and updated motor sketch (including QueueSafety.h),
+when no motor is running. Restart the backend normally. No frontend change is needed.
+A valid recovered result should produce a receipt with jobState MANUAL_REVIEW_REQUIRED
+and the ESP message 'Pi saved late/uncertain result for STAFF REVIEW'. This clears the
+communication blockage, not the old delivery dispute. Inspect tray/stock and handle
+that paid order with staff; do not take another payment or erase/replay its job.
+
+Read-only diagnosis on the Pi (no motor command, no database changes):
+
+    cd ~/backend
+    python3 deploy/inspect-dispense.py JOB-1793004698499-0BDC0B14
+
+Verification: SQLite regression for late success, errors, mismatched identity,
+conflicting evidence, repeated ACK, write failure and no stock/state change;
+existing atomic-stock regression; firmware queue age/rollover checks. Physical
+network switching and motor operation still require an empty-mechanism bench test.
