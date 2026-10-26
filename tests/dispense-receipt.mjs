@@ -12,7 +12,7 @@ test('only exact durable results receive a receipt; replay is idempotent',()=>{
  assert.equal(dispenseReceipt({...job,esp32_ack_payload:null},ack),null);
 });
 test('recorded physical uncertainty is acknowledged without converting it to success',()=>{
- const error={...ack,status:'ERROR',success:false};
+ const error={...ack,status:'ERROR',success:false,receiptProtocol:2};
  assert.equal(dispenseReceipt({...job,state:'MANUAL_REVIEW_REQUIRED',esp32_ack_payload:JSON.stringify(error)},error).status,'ERROR');
  assert.equal(dispenseReceipt({...job,state:'MANUAL_REVIEW_REQUIRED'},error),null);
 });
@@ -25,3 +25,4 @@ test('completed job rejects mismatched and failed ACKs before accepting replay',
  for(const bad of [{},{...ack,kitId:'wrong'},{...ack,motor:3},{...ack,quantity:2},{...ack,jobId:'wrong'},{...ack,status:'ERROR',success:false}]) assert.equal(manager.markCompleted('J',bad),false);
  delete globalThis.testDispenseDb;
 });
+
