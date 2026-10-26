@@ -7,6 +7,8 @@ on:
       - 'src/services/lateDispenseAck.js'
       - 'src/services/finalizeDispenseAck.js'
       - 'src/services/fulfillmentManager.js'
+      - 'src/services/reserveDispenseStock.js'
+      - 'tests/dispense-stock-reservation.mjs'
       - 'tests/dispense-receipt.mjs'
       - 'tests/motor-cycle.cpp'
       - 'tests/motor-queue.cpp'
@@ -24,7 +26,7 @@ jobs:
         with:
           node-version: '22'
       - run: npm ci
-      - run: node --test tests/dispense-receipt.mjs tests/late-dispense-ack.mjs test-atomic-stock.js
+      - run: node --test tests/dispense-receipt.mjs tests/late-dispense-ack.mjs test-atomic-stock.js tests/dispense-stock-reservation.mjs
       - run: g++ -std=c++11 -Wall -Wextra -Werror tests/motor-cycle.cpp -o /tmp/cycles && /tmp/cycles
       - run: g++ -std=c++11 -Wall -Wextra -Werror tests/motor-queue.cpp -o /tmp/queue && /tmp/queue
       - uses: arduino/setup-arduino-cli@v2
