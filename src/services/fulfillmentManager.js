@@ -1,5 +1,6 @@
 import { getDb } from '../database/db.js';
 import crypto from 'crypto';
+import { reserveDispenseStock } from './reserveDispenseStock.js';
 
 /**
  * Fulfillment State Machine
@@ -202,12 +203,26 @@ class FulfillmentManager {
 
     // Persist the claim BEFORE the physical command leaves the Pi. A crash or
     // an early ESP32 ACK must never leave the job looking safe to republish.
-    const claimed = this.db.prepare(`
-      UPDATE fulfillment_jobs SET state = 'IN_PROGRESS', mqtt_topic = ?,
-        mqtt_payload = ?, mqtt_published_at = datetime('now'),
-        started_at = COALESCE(started_at, datetime('now')), attempts = attempts + 1
-      WHERE job_id = ? AND state = 'PENDING'
-    `).run(topic, payload, jobId);
+    let claimed;
+    try {
+      claimed = this.db.transaction(() => {
+        const current = this.db.prepare('SELECT * FROM fulfillment_jobs WHERE job_id=?').get(jobId);
+        if (current.state !== 'PENDING') return { changes: 0 };
+        reserveDispenseStock(this.db, current);
+        return this.db.prepare(`
+          UPDATE fulfillment_jobs SET state = 'IN_PROGRESS', mqtt_topic = ?,
+            mqtt_payload = ?, mqtt_published_at = datetime('now'),
+            started_at = COALESCE(started_at, datetime('now')), attempts = attempts + 1
+          WHERE job_id = ? AND state = 'PENDING'
+        `).run(topic, payload, jobId);
+      })();
+    } catch (error) {
+      // No physical command was sent. Persist a useful terminal state instead
+      // of leaving the paid customer waiting for an ACK that cannot arrive.
+      this.db.prepare(`UPDATE fulfillment_jobs SET state='MANUAL_REVIEW_REQUIRED',
+        error_message=? WHERE job_id=? AND state='PENDING'`).run(error.message, jobId);
+      throw error;
+    }
     if (claimed.changes !== 1) return false;
 
     return new Promise((resolve, reject) => {
@@ -572,5 +587,6 @@ class FulfillmentManager {
 const fulfillmentManager = new FulfillmentManager();
 
 export default fulfillmentManager;
+
 
 
