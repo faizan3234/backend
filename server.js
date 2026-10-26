@@ -1,3 +1,4 @@
+import { dispenseReceipt } from './src/services/dispenseReceipt.js';
 import { finalizeDispenseAck } from './src/services/finalizeDispenseAck.js';
 import { initializeSupport, registerSupportRoutes } from './src/services/supportCases.js';
 import { mountMedicineImages } from './src/services/medicineImageRoutes.js';
@@ -2594,6 +2595,11 @@ mqttClient.on("message", async (topic, message) => {
         // Validate ACK and mark THIS job completed
         try {
             const completed = finalizeDispenseAck(getDb(), fulfillmentManager, inventoryManager, jobId, ackData);
+            // Receipt means SQLite durably recorded this exact result, not that
+            // a packet physically fell into the tray. ESP retries ACK, never motor.
+            const receipt = dispenseReceipt(fulfillmentManager.getJobStatus(jobId), ackData);
+            if (receipt) mqttClient.publish(`reliv/dispense/receipt/${jobId}`,
+                JSON.stringify(receipt), { qos: 1, retain: false });
 
             if (completed) {
                 const job = fulfillmentManager.getJobStatus(jobId);

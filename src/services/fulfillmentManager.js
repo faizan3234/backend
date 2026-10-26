@@ -248,17 +248,8 @@ class FulfillmentManager {
       return false;
     }
 
-    // Idempotent: already completed
-    if (job.state === 'COMPLETED') {
-      console.log(`⚠️ Job already completed (duplicate ACK): ${jobId}`);
-      return true;
-    }
-
-    // Only IN_PROGRESS jobs can be completed
-    if (job.state !== 'IN_PROGRESS') {
-      console.warn(`⚠️ Cannot mark job as completed from state: ${job.state}`);
-      return false;
-    }
+    // Replayed ACKs still need identity and result validation.
+    if (!['IN_PROGRESS', 'COMPLETED'].includes(job.state)) return false;
 
     // STRICT ACK VALIDATION:
     // Mandatory fields: jobId (or topic jobId), kitId, and quantity must be present and match.
@@ -302,6 +293,7 @@ class FulfillmentManager {
     // Check if ESP32 reported a physical dispense failure
     const ackStatus = typeof ackData.status === 'string' ? ackData.status.trim().toUpperCase() : ackData.status;
     if (ackStatus === 'FAILED' || ackStatus === 'ERROR' || ackData.success === false) {
+      if (job.state === 'COMPLETED') return false;
       this.db.prepare("UPDATE fulfillment_jobs SET esp32_ack_received_at=datetime('now'), esp32_ack_payload=? WHERE job_id=?").run(JSON.stringify(ackData),jobId);
       this.markFailed(jobId, 'ESP32 reported a dispensing failure; physical verification required.');
       return false;
@@ -310,6 +302,7 @@ class FulfillmentManager {
     // Legacy final ACKs may omit status. Explicit progress/unknown states are never delivery proof.
     if (ackData.status !== undefined && !['SUCCESS', 'COMPLETED', 'DONE', 'OK'].includes(ackStatus)) return false;
     if (ackData.success !== undefined && ackData.success !== true) return false;
+    if (job.state === 'COMPLETED') return true;
 
     this.db.prepare(`
       UPDATE fulfillment_jobs
@@ -579,4 +572,5 @@ class FulfillmentManager {
 const fulfillmentManager = new FulfillmentManager();
 
 export default fulfillmentManager;
+
 
