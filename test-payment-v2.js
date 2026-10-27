@@ -1250,18 +1250,21 @@ db.prepare(`
     const sV1 = sessionManager.createSession('RELIV-001', 'MEDICINE');
     const txnV1 = transactionManager.createTransaction(sV1.session_id, 'MEDICINE', [{ kit_id: 'KIT-FIRST-AID', quantity: 1 }]);
     const job1 = await fulfillmentManager.createJob(sV1.session_id, txnV1.transaction_id, 'KIT-FIRST-AID', 1, 1);
+    db.prepare("UPDATE transactions SET status='VERIFIED',verified=1 WHERE transaction_id=?").run(txnV1.transaction_id);
     await fulfillmentManager.startDispensing(job1.job_id);
     assert(capturedMqttPayloads[0].data.motor === 1, 'Valid motor 1 correctly published to MQTT');
 
     const sV2 = sessionManager.createSession('RELIV-001', 'MEDICINE');
     const txnV2 = transactionManager.createTransaction(sV2.session_id, 'MEDICINE', [{ kit_id: 'KIT-TRAVEL', quantity: 1 }]);
     const job2 = await fulfillmentManager.createJob(sV2.session_id, txnV2.transaction_id, 'KIT-TRAVEL', 1, 2);
+    db.prepare("UPDATE transactions SET status='VERIFIED',verified=1 WHERE transaction_id=?").run(txnV2.transaction_id);
     await fulfillmentManager.startDispensing(job2.job_id);
     assert(capturedMqttPayloads[1].data.motor === 2, 'Valid motor 2 correctly published to MQTT');
 
     const sV3 = sessionManager.createSession('RELIV-001', 'MEDICINE');
     const txnV3 = transactionManager.createTransaction(sV3.session_id, 'MEDICINE', [{ kit_id: 'KIT-WOMEN', quantity: 1 }]);
     const job3 = await fulfillmentManager.createJob(sV3.session_id, txnV3.transaction_id, 'KIT-WOMEN', 1, 3);
+    db.prepare("UPDATE transactions SET status='VERIFIED',verified=1 WHERE transaction_id=?").run(txnV3.transaction_id);
     await fulfillmentManager.startDispensing(job3.job_id);
     assert(capturedMqttPayloads[2].data.motor === 3, 'Valid motor 3 correctly published to MQTT');
 

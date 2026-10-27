@@ -66,6 +66,7 @@ test('durable claim precedes MQTT, early ACK survives PUBACK, duplicates and unc
     db.prepare("INSERT INTO inventory(kit_id,name,price,quantity,motor_id) VALUES('K','Test kit',100,10,1)").run();
     const insert=id=>{
       db.prepare("INSERT INTO transactions(transaction_id,session_id,type,amount,status) VALUES(?,'S','MEDICINE',100,'VERIFIED')").run('T'+id);
+      db.prepare('UPDATE transactions SET cart=? WHERE transaction_id=?').run(JSON.stringify([{kit_id:'K',quantity:1}]),'T'+id);
       db.prepare("INSERT INTO fulfillment_jobs(job_id,session_id,transaction_id,kit_id,quantity,motor_id,state) VALUES(?,'S',?,'K',1,1,'PENDING')").run(id,'T'+id);
     };
     insert('J1'); let publishCount=0, callback;

@@ -235,7 +235,7 @@ section('3. Pairing Token Consume (Atomic, Post-Verification)');
 // ═══════════════════════════════════════════════════════════════════════════
 section('4. paymentAuthVerifier.verifyPaymentAuthorization() Call Signature');
 
-(async () => {
+await (async () => {
     // The verifier expects: { authorization, signature, sessionId, transactionId, expectedAmount }
     // It should NOT be called with positional arguments
     
@@ -374,7 +374,7 @@ section('7. transactionManager.verifyPayment() Not Captured');
 // ═══════════════════════════════════════════════════════════════════════════
 section('8. startDispensing() Only Allows PENDING State');
 
-(async () => {
+await (async () => {
     const db = getDb();
     const { session } = createTestSession();
     const t1 = createTestTransaction(session.session_id, 100);
@@ -414,6 +414,7 @@ section('8. startDispensing() Only Allows PENDING State');
         VALUES (?, ?, ?, 'TEST-KIT-1', 1, 1, 'PENDING')
     `).run(jobId3, session.session_id, t3.transaction_id);
     
+    db.prepare("UPDATE transactions SET status='VERIFIED',cart=? WHERE transaction_id=?").run(JSON.stringify([{kit_id:'TEST-KIT-1',quantity:1}]),t3.transaction_id);
     const result3 = await fulfillmentManager.startDispensing(jobId3);
     assert(result3 === true, 'startDispensing() accepts PENDING jobs');
 })();
@@ -423,7 +424,7 @@ section('8. startDispensing() Only Allows PENDING State');
 // ═══════════════════════════════════════════════════════════════════════════
 section('9. Restart Safety: IN_PROGRESS → MANUAL_REVIEW_REQUIRED');
 
-(async () => {
+await (async () => {
     const db = getDb();
     const { session } = createTestSession();
     const t1 = createTestTransaction(session.session_id, 100);
@@ -528,7 +529,7 @@ section('10. Manual Review Resolution');
 // ═══════════════════════════════════════════════════════════════════════════
 section('11. ACK Validation (Strict Mandatory Fields & Matching)');
 
-(async () => {
+await (async () => {
     const db = getDb();
     const { session } = createTestSession();
     const transaction = createTestTransaction(session.session_id, 100);
@@ -579,7 +580,7 @@ section('11. ACK Validation (Strict Mandatory Fields & Matching)');
 // ═══════════════════════════════════════════════════════════════════════════
 section('12. Duplicate ACK Idempotency');
 
-(async () => {
+await (async () => {
     const db = getDb();
     const { session } = createTestSession();
     const transaction = createTestTransaction(session.session_id, 100);
@@ -609,7 +610,7 @@ section('12. Duplicate ACK Idempotency');
 // ═══════════════════════════════════════════════════════════════════════════
 section('13. Duplicate Dispense Prevention (Job Idempotency)');
 
-(async () => {
+await (async () => {
     const { session } = createTestSession();
     const transaction = createTestTransaction(session.session_id, 10000);
     
@@ -631,7 +632,7 @@ section('13. Duplicate Dispense Prevention (Job Idempotency)');
 // ═══════════════════════════════════════════════════════════════════════════
 section('14. markCompleted() State Validation');
 
-(async () => {
+await (async () => {
     const db = getDb();
     const { session } = createTestSession();
     const t1 = createTestTransaction(session.session_id, 100);
@@ -692,7 +693,7 @@ section('16. SessionManager API Completeness');
 // ═══════════════════════════════════════════════════════════════════════════
 section('17. retryJob() Only Allows PENDING');
 
-(async () => {
+await (async () => {
     const db = getDb();
     const { session } = createTestSession();
     const transaction = createTestTransaction(session.session_id, 100);
@@ -820,7 +821,7 @@ section('20. Mandatory Payment Bridge Order Binding');
 // ═══════════════════════════════════════════════════════════════════════════
 section('21. Multi-Kit Cart Creation & Motor Resolution');
 
-(async () => {
+await (async () => {
     const db = getDb();
     const { session } = createTestSession();
     const transaction = createTestTransaction(session.session_id, 30000);
@@ -854,6 +855,7 @@ section('21. Multi-Kit Cart Creation & Motor Resolution');
         }
     };
     
+    db.prepare("UPDATE transactions SET status='VERIFIED',cart=? WHERE transaction_id=?").run(JSON.stringify([{kit_id:'TEST-KIT-1',quantity:1},{kit_id:'TEST-KIT-2',quantity:2},{kit_id:'TEST-KIT-3',quantity:1}]),transaction.transaction_id);
     await fulfillmentManager.startDispensing(jobA.job_id);
     assert(publishedTopic === `reliv/dispense/${jobA.job_id}`, 'Canonical MQTT topic matches reliv/dispense/<jobId>');
     assert(publishedPayload && publishedPayload.motor === 1 && publishedPayload.kitId === 'TEST-KIT-1', 'Canonical MQTT payload contains motor number and kitId');
@@ -864,7 +866,7 @@ section('21. Multi-Kit Cart Creation & Motor Resolution');
 // ═══════════════════════════════════════════════════════════════════════════
 section('22. Multi-Kit Completion Requirements');
 
-(async () => {
+await (async () => {
     const db = getDb();
     const { session } = createTestSession();
     const transaction = createTestTransaction(session.session_id, 20000);

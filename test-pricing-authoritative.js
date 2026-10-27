@@ -260,13 +260,16 @@ assert(tx.amount === 3784, 'Transaction amount is authoritatively ₹37.84 (3784
     assert(floatQtyThrown, 'Fail-closed: Float/fractional quantity throws error');
 
     // 6.4 Insufficient stock
+    const savedStock=db.prepare("SELECT quantity FROM inventory WHERE kit_id='KIT-BASE-32'").get().quantity;
+    db.prepare("UPDATE inventory SET quantity=0 WHERE kit_id='KIT-BASE-32'").run();
     let stockThrown = false;
     try {
-        pricingService.calculateAuthoritativeCartTotal([{ kit_id: 'KIT-BASE-32', quantity: 999 }]);
+        pricingService.calculateAuthoritativeCartTotal([{ kit_id: 'KIT-BASE-32', quantity: 1 }]);
     } catch (e) {
         stockThrown = e.code === 'INSUFFICIENT_STOCK' || e.message.includes('Insufficient stock');
     }
     assert(stockThrown, 'Fail-closed: Insufficient stock throws error');
+    db.prepare("UPDATE inventory SET quantity=? WHERE kit_id='KIT-BASE-32'").run(savedStock);
 
     // 6.5 Empty cart
     let emptyCartThrown = false;

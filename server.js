@@ -1,3 +1,4 @@
+import {canonicalMedicineCart} from './src/services/cartValidation.js';
 import {stockInteger,assertStockFloor,assertKitCanBeReassigned} from './src/services/inventoryGuards.js';
 import {saveFeedback,listFeedback} from './src/services/feedbackStore.js';
 import { dispenseReceipt } from './src/services/dispenseReceipt.js';
@@ -4230,33 +4231,7 @@ app.post("/api/create-order", async (req, res) => {
                 rawCart = rawCart.length > 0 ? JSON.parse(rawCart) : [];
             }
 
-            if (!Array.isArray(rawCart)) {
-                rawCart = [];
-            }
-
-            normalizedCart = rawCart
-                .map((item) => {
-                    if (!item || typeof item !== 'object') return null;
-
-                    const kitId = String(
-                        item.kit_id ?? item.id ?? item.inventory_id ?? ''
-                    ).trim();
-
-                    const quantity = Number(
-                        item.quantity ?? item.cartQuantity ?? 0
-                    );
-
-                    if (!kitId || !Number.isFinite(quantity) || quantity <= 0) {
-                        return null;
-                    }
-
-                    return {
-                        kit_id: kitId,
-                        quantity: Math.floor(quantity),
-                        ...(item.name ? { name: String(item.name) } : {})
-                    };
-                })
-                .filter(Boolean);
+            normalizedCart = canonicalMedicineCart(rawCart ?? []);
 
         } catch (cartParseError) {
             log.error(`[CREATE ORDER] Invalid cart JSON: ${cartParseError.message}`);
@@ -4280,7 +4255,7 @@ app.post("/api/create-order", async (req, res) => {
         }
 
         // Per-item validation (kit_id presence already guaranteed above; quantity
-        // is already a positive integer after Math.floor + filter).
+        // has already passed strict quantity and dispenser-limit validation).
         if (serviceType === 'MEDICINE') {
             for (const item of normalizedCart) {
                 if (!Number.isInteger(item.quantity) || item.quantity <= 0) {

@@ -14,5 +14,8 @@ export function canonicalMedicineCart(cart) {
         }
         quantities.set(id,total);
     }
+    if ([...quantities.values()].reduce((sum,n)=>sum+n,0)>MAX_DISPENSE_QUANTITY) {
+        throw Object.assign(new Error('Choose at most 10 medicine units per order. This keeps the local dispenser queue within its time limit.'),{code:'INVALID_QUANTITY',status:400});
+    }
     return [...quantities].map(([kit_id,quantity])=>({kit_id,quantity})).sort((a,b)=>a.kit_id.localeCompare(b.kit_id));
 }
