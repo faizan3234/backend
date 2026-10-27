@@ -1,3 +1,4 @@
+import {canonicalMedicineCart} from './cartValidation.js';
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  * RELIV KIOSK — AUTHORITATIVE PRICING SERVICE
@@ -121,7 +122,7 @@ export class PricingService {
         let totalTaxPaise = 0;
         const items = [];
 
-        for (const item of cart) {
+        for (const item of canonicalMedicineCart(cart)) {
             if (!item || typeof item !== 'object') {
                 const err = new Error('Invalid cart item structure');
                 err.code = 'INVALID_CART_ITEM';
@@ -143,7 +144,9 @@ export class PricingService {
             }
 
             const inventoryItem = this.db.prepare(`
-                SELECT kit_id, name, price, quantity, motor_id
+                SELECT kit_id, name, price, quantity, motor_id,
+                    COALESCE((SELECT SUM(r.quantity) FROM inventory_reservations r
+                        WHERE r.kit_id=inventory.kit_id AND r.status='RESERVED'),0) AS reserved
                 FROM inventory
                 WHERE kit_id = ?
             `).get(kitId);
@@ -169,8 +172,8 @@ export class PricingService {
                 throw err;
             }
 
-            if (inventoryItem.quantity < quantity) {
-                const err = new Error(`Insufficient stock for ${kitId}: have ${inventoryItem.quantity}, need ${quantity}`);
+            if (inventoryItem.quantity - inventoryItem.reserved < quantity) {
+                const err = new Error(`Insufficient stock for ${kitId}: have ${inventoryItem.quantity - inventoryItem.reserved} available, need ${quantity}`);
                 err.code = 'INSUFFICIENT_STOCK';
                 throw err;
             }

@@ -1,0 +1,21 @@
+name: Offline logic regression
+on: [pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: node --check server.js
+      - run: npm run test:kiosk
+      - run: npm run test:ads
+      - run: node --test tests/dispense-stock-reservation.mjs tests/dispense-receipt.mjs tests/late-dispense-ack.mjs
+      - run: npm ci
+        working-directory: payment-bridge-service
+      - run: npm test
+        working-directory: payment-bridge-service

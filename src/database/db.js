@@ -1,3 +1,4 @@
+import {preserveFulfillmentJobs} from '../services/fulfillmentMigration.js';
 import { initInventoryRevisions } from '../services/inventoryRevision.js';
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -73,18 +74,10 @@ export function initializeDatabase(customPath = null) {
 
         // Migration helper: ensure motor_id and unique index exist in fulfillment_jobs table
         try { db.exec("ALTER TABLE fulfillment_jobs ADD COLUMN motor_id INTEGER;"); } catch (e) {}
-        try {
-            // Deduplicate any legacy duplicate rows before applying unique index
-            db.exec(`
-                DELETE FROM fulfillment_jobs
-                WHERE rowid NOT IN (
-                    SELECT MIN(rowid)
-                    FROM fulfillment_jobs
-                    GROUP BY transaction_id, kit_id
-                );
-            `);
-            db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fulfillment_jobs_txn_kit ON fulfillment_jobs(transaction_id, kit_id);");
-        } catch (e) {}
+        let uniqueFulfillmentSafe = true;
+        if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fulfillment_jobs'").get()) {
+            uniqueFulfillmentSafe = preserveFulfillmentJobs(db);
+        }
 
         // Migration helper: ensure unique motor index on inventory table
         try {
@@ -156,7 +149,8 @@ export function initializeDatabase(customPath = null) {
 
         // Run schema initialization
         const schema = readFileSync(SCHEMA_PATH, 'utf-8');
-        db.exec(schema);
+        db.exec(uniqueFulfillmentSafe ? schema : schema.replace(
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_fulfillment_jobs_txn_kit ON fulfillment_jobs(transaction_id, kit_id);', ''));
 
         // ─────────────────────────────────────────────────────────────────────────────
         // MIGRATION: persistent health measurement snapshot

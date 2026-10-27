@@ -1,3 +1,4 @@
+import {stockInteger,assertStockFloor} from './inventoryGuards.js';
 /**
  * Inventory Manager
  * 
@@ -337,11 +338,11 @@ export class InventoryManager {
           WHERE reservation_id = ?
         `).run(r.reservation_id);
 
-        this.db.prepare(`
-          UPDATE inventory
-          SET quantity = MAX(0, quantity - ?), updated_at = datetime('now')
-          WHERE kit_id = ?
-        `).run(r.quantity, r.kit_id);
+        const changed=this.db.prepare(`
+          UPDATE inventory SET quantity = quantity - ?, updated_at = datetime('now')
+          WHERE kit_id = ? AND quantity >= ?
+        `).run(r.quantity, r.kit_id, r.quantity);
+        if(changed.changes!==1)throw new Error('Stock deduction mismatch; staff review required.');
       }
     });
 
@@ -393,11 +394,14 @@ export class InventoryManager {
    * Add stock (purchase/restock)
    */
   addStock(itemId, quantity, notes = 'Stock added') {
+    quantity=stockInteger(quantity);
+    if(quantity===0)throw Object.assign(new Error('Stock added must be positive.'),{status:400});
     const item = this.getInventoryItem(itemId);
     if (!item) {
       throw new Error(`Inventory item ${itemId} not found`);
     }
 
+    stockInteger(item.quantity + quantity);
     this.db.prepare(`
       UPDATE inventory
       SET quantity = quantity + ?, updated_at = datetime('now')
@@ -412,14 +416,16 @@ export class InventoryManager {
    * Manual stock adjustment
    */
   adjustStock(itemId, quantity, notes) {
+    quantity=stockInteger(quantity,{signed:true});
     const item = this.getInventoryItem(itemId);
     if (!item) {
       throw new Error(`Inventory item ${itemId} not found`);
     }
 
+    assertStockFloor(item,item.quantity + quantity);
     this.db.prepare(`
       UPDATE inventory
-      SET quantity = MAX(0, quantity + ?), updated_at = datetime('now')
+      SET quantity = quantity + ?, updated_at = datetime('now')
       WHERE kit_id = ?
     `).run(quantity, itemId);
 
