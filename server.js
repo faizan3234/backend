@@ -1,3 +1,5 @@
+import {stockInteger,assertStockFloor,assertKitCanBeReassigned} from './src/services/inventoryGuards.js';
+import {saveFeedback,listFeedback} from './src/services/feedbackStore.js';
 import { dispenseReceipt } from './src/services/dispenseReceipt.js';
 import { finalizeDispenseAck } from './src/services/finalizeDispenseAck.js';
 import { initializeSupport, registerSupportRoutes } from './src/services/supportCases.js';
@@ -2869,7 +2871,7 @@ app.post("/api/kits", (req, res) => {
 
         const kitIdStr = String(kit_id).trim();
         const priceNum = Number(price);
-        const qtyNum = Math.floor(Number(quantity));
+        const qtyNum = stockInteger(quantity);
 
         if (!kitIdStr) {
             return res.status(400).json({ ok: false, message: "kit_id must not be empty" });
@@ -2928,7 +2930,7 @@ app.post("/api/kits", (req, res) => {
 
     } catch (err) {
         log.error("POST /api/kits error:", err.message);
-        res.status(500).json({ ok: false, message: "Failed to create kit" });
+        res.status(err.status || 500).json({ ok: false, message: err.status ? err.message : "Failed to create kit" });
     }
 });
 
@@ -2955,6 +2957,8 @@ app.patch("/api/kits/:id", (req, res) => {
         const values = [];
 
         if (req.body.name !== undefined) {
+            if(!String(req.body.name).trim())return res.status(400).json({ok:false,message:'Medicine name cannot be blank.'});
+            if(String(req.body.name).trim()!==existing.name)assertKitCanBeReassigned(inventoryManager.db,kitId);
             sets.push('name = ?');
             values.push(String(req.body.name).trim());
         }
@@ -2971,7 +2975,8 @@ app.patch("/api/kits/:id", (req, res) => {
             values.push(p);
         }
         if (req.body.quantity !== undefined) {
-            const q = Math.floor(Number(req.body.quantity));
+            const q = stockInteger(req.body.quantity);
+            assertStockFloor(existing,q);
             if (!Number.isInteger(q) || q < 0) {
                 return res.status(400).json({ ok: false, message: "quantity must be a non-negative integer" });
             }
@@ -2997,6 +3002,7 @@ app.patch("/api/kits/:id", (req, res) => {
                 });
             }
 
+            if(motorNum!==existing.motor_id)assertKitCanBeReassigned(inventoryManager.db,kitId);
             sets.push('motor_id = ?');
             values.push(motorNum);
         }
@@ -3018,7 +3024,7 @@ app.patch("/api/kits/:id", (req, res) => {
 
     } catch (err) {
         log.error("PATCH /api/kits/:id error:", err.message);
-        res.status(500).json({ ok: false, message: "Failed to update kit" });
+        res.status(err.status || 500).json({ ok: false, message: err.status ? err.message : "Failed to update kit" });
     }
 });
 
@@ -3226,6 +3232,11 @@ app.delete("/api/kits/:id", async (req, res) => {
             });
         }
 
+        assertKitCanBeReassigned(inventoryManager.db,kitId);
+        if (inventoryManager.db.prepare('SELECT 1 FROM inventory_reservations WHERE kit_id=? LIMIT 1').get(kitId)
+            || inventoryManager.db.prepare('SELECT 1 FROM fulfillment_jobs WHERE kit_id=? LIMIT 1').get(kitId)) {
+            return res.status(409).json({ok:false,message:'This item has order history. Keep it for support records; set its unreserved stock to zero to stop sales.'});
+        }
         const oldImagePath = existing.image_path || "";
 
         const result = inventoryManager.db.prepare(`
@@ -3255,9 +3266,9 @@ app.delete("/api/kits/:id", async (req, res) => {
     } catch (err) {
         log.error("DELETE /api/kits/:id error:", err.message);
 
-        return res.status(500).json({
+        return res.status(err.status || 500).json({
             ok: false,
-            message: "Failed to delete medicine"
+            message: err.status ? err.message : "Failed to delete medicine"
         });
     }
 });
@@ -3268,212 +3279,25 @@ app.delete("/api/kits/:id", async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 const FEEDBACK_EMAIL = 'Mairagouher@gmail.com';
 
-app.post("/api/feedback", async (req, res) => {
+app.post("/api/feedback", (req,res)=>{
     try {
-        const { name, role, stream, mood, positives, comment, submittedAt, collaboration } = req.body;
-
-        // Build email content
-        const moodEmojis = { 1: '😡 Very Bad', 3: '😐 Okay', 4: '🙂 Good', 5: '😊 Great', 6: '🤩 Excellent' };
-        const moodText = moodEmojis[mood] || `Rating: ${mood}`;
-
-        const emailContent = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <div style="background: linear-gradient(135deg, #FF7A00, #FFA14A); padding: 20px; border-radius: 12px 12px 0 0;">
-          <h1 style="color: white; margin: 0; text-align: center;">📋 New Kiosk Feedback</h1>
-        </div>
-        
-        <div style="background: #fff; padding: 24px; border: 1px solid #e5e7eb; border-radius: 0 0 12px 12px;">
-          <table style="width: 100%; border-collapse: collapse;">
-            <tr style="border-bottom: 1px solid #f3f4f6;">
-              <td style="padding: 12px 0; font-weight: bold; color: #6b7280;">Name:</td>
-              <td style="padding: 12px 0; color: #1f2937;">${name || 'Anonymous'}</td>
-            </tr>
-            <tr style="border-bottom: 1px solid #f3f4f6;">
-              <td style="padding: 12px 0; font-weight: bold; color: #6b7280;">Role:</td>
-              <td style="padding: 12px 0; color: #1f2937;">${role}</td>
-            </tr>
-            ${stream ? `
-            <tr style="border-bottom: 1px solid #f3f4f6;">
-              <td style="padding: 12px 0; font-weight: bold; color: #6b7280;">Stream:</td>
-              <td style="padding: 12px 0; color: #1f2937;">${stream}</td>
-            </tr>
-            ` : ''}
-            <tr style="border-bottom: 1px solid #f3f4f6;">
-              <td style="padding: 12px 0; font-weight: bold; color: #6b7280;">Mood Rating:</td>
-              <td style="padding: 12px 0; color: #1f2937; font-size: 18px;">${moodText}</td>
-            </tr>
-            <tr style="border-bottom: 1px solid #f3f4f6;">
-              <td style="padding: 12px 0; font-weight: bold; color: #6b7280;">Positives:</td>
-              <td style="padding: 12px 0; color: #1f2937;">${positives?.join(', ') || 'None selected'}</td>
-            </tr>
-            ${comment ? `
-            <tr style="border-bottom: 1px solid #f3f4f6;">
-              <td style="padding: 12px 0; font-weight: bold; color: #6b7280;">Comment:</td>
-              <td style="padding: 12px 0; color: #1f2937;">${comment}</td>
-            </tr>
-            ` : ''}
-          </table>
-          
-          ${collaboration ? `
-          <div style="margin-top: 20px; padding: 16px; background: #FFF7ED; border-radius: 8px; border-left: 4px solid #FF7A00;">
-            <h3 style="margin: 0 0 12px 0; color: #B45309;">🤝 Wants to Collaborate!</h3>
-            <p style="margin: 4px 0; color: #1f2937;"><strong>Email:</strong> ${collaboration.email || 'Not provided'}</p>
-            <p style="margin: 4px 0; color: #1f2937;"><strong>Phone:</strong> ${collaboration.phone || 'Not provided'}</p>
-          </div>
-          ` : ''}
-          
-          <p style="margin-top: 20px; font-size: 12px; color: #9ca3af; text-align: center;">
-            Submitted: ${new Date(submittedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
-          </p>
-        </div>
-      </div>
-    `;
-
-        // Send email
-        const emailResult = await sendEmailSafe({
-            from: `"Reliv Kiosk" <${process.env.GMAIL_USER}>`,
-            to: FEEDBACK_EMAIL,
-            subject: `📋 Kiosk Feedback: ${moodText} from ${name || 'Anonymous'}`,
-            html: emailContent
-        });
-
-        if (emailResult.success) {
-            log.info(`✅ Feedback email sent for: ${name || 'Anonymous'}`);
-            res.json({ ok: true, message: 'Feedback submitted successfully' });
-        } else {
-            log.warn(`⚠️ Feedback email failed: ${emailResult.reason}`);
-            // Still return success to user - we don't want them to know about email issues
-            res.json({ ok: true, message: 'Feedback received' });
+        const saved=saveFeedback(getDb(),req.body);
+        res.json({ok:true,feedbackId:saved.id,message:'Feedback saved on this kiosk.'});
+        // Local acknowledgement never waits for Internet or SMTP.
+        if(saved.created && process.env.GMAIL_USER && process.env.GMAIL_PASS) {
+            void sendEmailSafe({from:`"Reliv Kiosk" <${process.env.GMAIL_USER}>`,to:FEEDBACK_EMAIL,
+                subject:'Reliv kiosk feedback',text:JSON.stringify(saved.payload,null,2)})
+                .catch(error=>log.warn('Optional feedback notification failed:',error.message));
         }
-
-    } catch (err) {
-        log.error('Feedback submission error:', err.message);
-        res.status(500).json({ ok: false, message: 'Failed to submit feedback' });
+    } catch(error) {
+        res.status(error.status||500).json({ok:false,message:error.status?error.message:'Feedback could not be saved. Please retry or skip.'});
     }
 });
-
-app.post("/api/kits", async (req, res) => {
-    if (!dbConnected || !db) {
-        return res.status(503).json({ ok: false, message: "Database temporarily unavailable" });
-    }
-
-    try {
-        const kit = req.body;
-        if (!kit.name || !kit.description || !kit.price || !kit.quantity || !kit.expiryDate) {
-            return res.status(400).json({ message: "Missing required fields" });
-        }
-
-        // Generate auto-incrementing ID
-        const kitsCollection = db.collection("kits");
-        const lastKit = await kitsCollection.find({}).sort({ id: -1 }).limit(1).toArray();
-        const newId = lastKit.length > 0 ? lastKit[0].id + 1 : 1;
-
-        const newKit = {
-            id: newId,
-            name: kit.name,
-            description: kit.description,
-            price: Number(kit.price),
-            quantity: Number(kit.quantity),
-            expiryDate: kit.expiryDate,
-            folderUrl: kit.folderUrl || "",
-            imageUrl: kit.imageUrl || "",
-            createdAt: new Date(),
-            updatedAt: new Date()
-        };
-
-        await kitsCollection.insertOne(newKit);
-        res.json({ ok: true, kit: newKit });
-    } catch (err) {
-        console.error("Error adding kit:", err);
-        res.status(500).json({ message: "Failed to add kit" });
-    }
+app.get('/api/admin/feedback',adminAuth.requireAdmin,(req,res)=>{
+    try {res.json({ok:true,items:listFeedback(getDb(),req.query.before===undefined?undefined:Number(req.query.before))});}
+    catch(error){res.status(error.status||500).json({ok:false,message:error.status?error.message:'Cannot load feedback.'});}
 });
-app.patch("/api/kits/:id", async (req, res) => {
-    if (!dbConnected || !db) {
-        return res.status(503).json({ ok: false, message: "Database temporarily unavailable" });
-    }
 
-    try {
-        const { id } = req.params;
-        const numId = parseInt(id);
-        if (isNaN(numId)) return res.status(400).json({ message: "Invalid kit ID" });
-
-        // Build update object with only allowed fields
-        const updateFields = {};
-        if (req.body.name !== undefined) updateFields.name = req.body.name;
-        if (req.body.description !== undefined) updateFields.description = req.body.description;
-        if (req.body.price !== undefined) updateFields.price = Number(req.body.price);
-        if (req.body.quantity !== undefined) updateFields.quantity = Number(req.body.quantity);
-        if (req.body.expiryDate !== undefined) updateFields.expiryDate = req.body.expiryDate;
-        if (req.body.folderUrl !== undefined) updateFields.folderUrl = req.body.folderUrl;
-        if (req.body.imageUrl !== undefined) updateFields.imageUrl = req.body.imageUrl;
-
-        updateFields.updatedAt = new Date();
-
-        const result = await db.collection("kits").updateOne(
-            { id: numId },
-            { $set: updateFields }
-        );
-
-        if (result.matchedCount === 0) {
-            return res.status(404).json({ message: "Kit not found" });
-        }
-
-        // Return updated kit
-        const updatedKit = await db.collection("kits").findOne({ id: numId });
-        res.json({ ok: true, kit: updatedKit });
-    } catch (err) {
-        console.error("Error updating kit:", err);
-        res.status(500).json({ message: "Failed to update kit" });
-    }
-});
-app.patch("/api/kits/:id/image", async (req, res) => {
-    if (!dbConnected || !db) {
-        return res.status(503).json({ ok: false, message: "Database temporarily unavailable" });
-    }
-
-    try {
-        const { id } = req.params;
-        const { imageUrl } = req.body;
-        const numId = parseInt(id);
-        if (isNaN(numId)) return res.status(400).json({ message: "Invalid kit ID" });
-        if (!imageUrl) return res.status(400).json({ message: "Missing imageUrl" });
-
-        const result = await db.collection("kits").updateOne(
-            { id: numId },
-            { $set: { imageUrl, updatedAt: new Date() } }
-        );
-
-        if (result.matchedCount === 0) {
-            return res.status(404).json({ message: "Kit not found" });
-        }
-
-        const updatedKit = await db.collection("kits").findOne({ id: numId });
-        res.json({ ok: true, kit: updatedKit });
-    } catch (err) {
-        console.error("Error updating kit image:", err);
-        res.status(500).json({ message: "Failed to update kit image" });
-    }
-});
-app.delete("/api/kits/:id", async (req, res) => {
-    if (!dbConnected || !db) {
-        return res.status(503).json({ ok: false, message: "Database temporarily unavailable" });
-    }
-
-    try {
-        const { id } = req.params;
-        const numId = parseInt(id);
-        if (isNaN(numId)) return res.status(400).json({ message: "Invalid kit ID" });
-        const result = await db.collection("kits").deleteOne({ id: numId });
-        if (result.deletedCount === 0) {
-            return res.status(404).json({ message: "Kit not found" });
-        }
-        res.json({ ok: true });
-    } catch (err) {
-        console.error("Error deleting kit:", err);
-        res.status(500).json({ message: "Failed to delete kit" });
-    }
-});
 app.get("/api/report/:id/download", async (req, res) => {
     if (!dbConnected || !db) {
         return res.status(503).json({ error: "Database temporarily unavailable" });
@@ -5628,7 +5452,7 @@ app.post("/api/inventory/:id/add", (req, res) => {
 
     } catch (err) {
         log.error("❌ Add stock error:", err.message);
-        res.status(500).json({ ok: false, message: err.message || "Failed to add stock" });
+        res.status(err.status || 500).json({ ok: false, message: err.message || "Failed to add stock" });
     }
 });
 
@@ -5656,7 +5480,7 @@ app.post("/api/inventory/:id/adjust", (req, res) => {
 
     } catch (err) {
         log.error("❌ Adjust stock error:", err.message);
-        res.status(500).json({ ok: false, message: err.message || "Failed to adjust stock" });
+        res.status(err.status || 500).json({ ok: false, message: err.message || "Failed to adjust stock" });
     }
 });
 

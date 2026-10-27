@@ -81,6 +81,8 @@ export class PaymentFinalizationService {
             throw new Error(`Transaction ${transactionId} not found`);
         }
 
+        if (transaction.session_id !== sessionId) throw new Error('Payment belongs to a different kiosk session.');
+
         // 1. Check if transaction is already verified
         const isAlreadyVerified = transaction.status === 'VERIFIED' || 
                                   transaction.status === 'FULFILLED' || 

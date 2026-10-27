@@ -1,3 +1,4 @@
+import {canonicalMedicineCart} from './cartValidation.js';
 import { recordStockRelay } from './inventoryRevision.js';
 import { lowStockSnapshot } from './lowStockSnapshot.js';
 import { getLocalReportScanNumber } from './reportVisits.js';
@@ -32,18 +33,7 @@ import {
  * @returns {Array<{kit_id: string, quantity: number}>}
  */
 export function getCanonicalCart(cart) {
-    if (!Array.isArray(cart)) return [];
-    return cart
-        .map(item => {
-            const rawQty = item.cartQuantity ?? item.quantityRequested ?? item.selectedQuantity ?? item.quantity;
-            const parsedQty = parseInt(rawQty, 10);
-            return {
-                kit_id: String(item.kit_id || item._id || item.id || '').trim(),
-                quantity: Number.isInteger(parsedQty) && parsedQty > 0 ? parsedQty : 1
-            };
-        })
-        .filter(item => Boolean(item.kit_id))
-        .sort((a, b) => a.kit_id.localeCompare(b.kit_id));
+    return canonicalMedicineCart(cart ?? []);
 }
 
 /**

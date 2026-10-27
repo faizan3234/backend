@@ -1,3 +1,4 @@
+import {assertSingleFulfillment} from './fulfillmentMigration.js';
 import { getDb } from '../database/db.js';
 import crypto from 'crypto';
 import { reserveDispenseStock } from './reserveDispenseStock.js';
@@ -103,6 +104,8 @@ class FulfillmentManager {
       throw err;
     }
 
+    assertSingleFulfillment(this.db, transactionId, kitId);
+
     // Check if fulfillment job already exists for this specific (transaction_id, kit_id)
     const existing = this.db.prepare(`
       SELECT * FROM fulfillment_jobs
@@ -162,6 +165,7 @@ class FulfillmentManager {
     if (!job) {
       throw new Error(`Fulfillment job not found: ${jobId}`);
     }
+    assertSingleFulfillment(this.db, job.transaction_id, job.kit_id);
 
     // SAFETY: Only PENDING jobs may be published to MQTT.
     // IN_PROGRESS jobs must NEVER be republished — the physical state is uncertain.
