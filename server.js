@@ -1,3 +1,5 @@
+import { WifiManager, assertWifiIdle } from './src/services/wifiManager.js';
+import { createWifiRouter, wifiMaintenanceGuard } from './src/routes/wifiRoutes.js';
 import {canonicalMedicineCart} from './src/services/cartValidation.js';
 import {stockInteger,assertStockFloor,assertKitCanBeReassigned} from './src/services/inventoryGuards.js';
 import {saveFeedback,listFeedback} from './src/services/feedbackStore.js';
@@ -941,6 +943,11 @@ const adminAuth = createAdminAuth({
 });
 app.use(adminAuth.protectWrites);
 adminAuth.register(app);
+const ownerWifi = new WifiManager({ checkIdle: () => assertWifiIdle(getDb()) });
+ownerWifi.startPolling();
+app.use(wifiMaintenanceGuard(ownerWifi));
+app.use('/api/wifi', createWifiRouter({ manager: ownerWifi, requireAdmin: adminAuth.requireAdmin }));
+app.get('/api/kiosk-maintenance', (_req, res) => res.set('Cache-Control', 'no-store').json({ maintenance: ownerWifi.isMaintenance() }));
 registerSupportRoutes(app, { getDb, requireAdmin: adminAuth.requireAdmin });
 
 // Request logging middleware
