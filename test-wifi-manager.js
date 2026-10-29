@@ -1,128 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { wifiManager } from './src/services/wifiManager.js';
-import express from 'express';
-import { createWifiRouter, wifiPortalHtmlHandler } from './src/routes/wifiRoutes.js';
-
-test('WifiManager - getStatus returns valid connection status', async () => {
-    const status = await wifiManager.getStatus();
-    assert.ok(status, 'status should exist');
-    assert.equal(typeof status.connected, 'boolean');
-    assert.ok('signal' in status);
-    assert.ok('bars' in status);
+import Database from 'better-sqlite3';
+import { WifiManager, assertWifiIdle } from './src/services/wifiManager.js';
+import { wifiMaintenanceGuard, createWifiRouter } from './src/routes/wifiRoutes.js';
+test('missing helper never fabricates a connection', async () => {
+ const manager = new WifiManager({ installed:false, request:async()=>{throw new Error('missing helper');} });
+ await assert.rejects(manager.getStatus(), /missing/); assert.equal(manager.isMaintenance(), false);
 });
-
-test('WifiManager - scanNetworks returns list of networks', async () => {
-    const networks = await wifiManager.scanNetworks({ forceRescan: false });
-    assert.ok(Array.isArray(networks), 'networks should be an array');
-    assert.ok(networks.length > 0, 'should return at least one nearby network');
-    const first = networks[0];
-    assert.ok('ssid' in first, 'network should have ssid');
-    assert.ok('signal' in first, 'network should have signal');
-    assert.ok('security' in first, 'network should have security');
+test('switch blocks new writes immediately and rejects concurrent submissions', async () => {
+ let finish; const manager = new WifiManager({ installed:true, request:()=>new Promise(resolve=>{finish=resolve;}) });
+ const first=manager.connectNetwork({ssid:'phone'});assert.equal(manager.isMaintenance(),true);
+ await assert.rejects(manager.connectNetwork({ssid:'phone'}), /already/);
+ finish({phase:'scheduled',singleAdapter:true});await first;assert.equal(manager.isMaintenance(),true);
+ manager.request=async()=>({singleAdapter:true,operation:{phase:'restored'}});await manager.getStatus();assert.equal(manager.isMaintenance(),false);
 });
-
-test('WifiManager - getSavedNetworks returns saved profiles', async () => {
-    const saved = await wifiManager.getSavedNetworks();
-    assert.ok(Array.isArray(saved), 'saved should be an array');
-    assert.ok(saved.length > 0, 'should have initial saved networks');
-    assert.ok('ssid' in saved[0], 'saved network should have ssid');
-    assert.ok('autoConnect' in saved[0], 'saved network should have autoConnect');
+test('idle gate checks local sessions, paid work and ad activation grace', () => {
+ const db = new Database(':memory:');
+ db.exec('CREATE TABLE fulfillment_jobs(state TEXT); CREATE TABLE sessions(status TEXT, expires_at TEXT); CREATE TABLE payment_v2_requests(status TEXT, expires_at INTEGER); CREATE TABLE ad_payment_requests(status TEXT, expires_at INTEGER)');
+ assert.doesNotThrow(()=>assertWifiIdle(db));
+ for(const [table,columns,values] of [
+  ['fulfillment_jobs','state',['IN_PROGRESS']],
+  ['sessions','status,expires_at',['MEASURING',new Date(Date.now()+60000).toISOString()]],
+  ['payment_v2_requests','status,expires_at',['ACTIVE',Date.now()+60000]],
+  ['ad_payment_requests','status,expires_at',['ACTIVE',Date.now()-1000]],
+ ]) {db.prepare(`INSERT INTO ${table} (${columns}) VALUES (${values.map(()=>'?')})`).run(...values);assert.throws(()=>assertWifiIdle(db),/Finish/);db.exec(`DELETE FROM ${table}`);}
+ db.close();assert.throws(()=>assertWifiIdle(null),/not ready/);
 });
-
-test('WifiManager - connectNetwork connects and persists network', async () => {
-    const testSsid = 'Test_Kiosk_Hotspot_5G';
-    const res = await wifiManager.connectNetwork({
-        ssid: testSsid,
-        password: 'SecretPassword123'
-    });
-
-    assert.ok(res.success, 'connectNetwork should return success: true');
-    assert.equal(res.status.connected, true);
-    assert.equal(res.status.ssid, testSsid);
-
-    const statusAfter = await wifiManager.getStatus();
-    assert.equal(statusAfter.connected, true);
-    assert.equal(statusAfter.ssid, testSsid);
-
-    const saved = await wifiManager.getSavedNetworks();
-    const found = saved.find((s) => s.ssid === testSsid);
-    assert.ok(found, 'new network should be present in saved networks');
-    assert.equal(found.isCurrent, true);
+test('maintenance allows owner recovery and reads but denies customer writes', () => {
+ const guard=wifiMaintenanceGuard({isMaintenance:()=>true});
+ let allowed=0,blocked=0;const res={status(code){assert.equal(code,503);return this;},json(){blocked++;}};
+ for(const [method,path] of [['GET','/api/kits'],['POST','/api/wifi/restore'],['POST','/api/check-login'],['POST','/api/sessions']])guard({method,path},res,()=>allowed++);
+ assert.equal(allowed,3);assert.equal(blocked,1);assert.throws(()=>createWifiRouter({manager:{}}),/authentication/);
 });
-
-test('WifiManager - switchNetwork switches back to saved network', async () => {
-    const saved = await wifiManager.getSavedNetworks();
-    const otherNetwork = saved.find((s) => s.ssid !== 'Test_Kiosk_Hotspot_5G');
-    assert.ok(otherNetwork, 'should have another saved network to switch back to');
-
-    const res = await wifiManager.switchNetwork(otherNetwork.ssid);
-    assert.ok(res.success, 'switchNetwork should return success: true');
-    assert.equal(res.status.ssid, otherNetwork.ssid);
-
-    const statusAfter = await wifiManager.getStatus();
-    assert.equal(statusAfter.ssid, otherNetwork.ssid);
-});
-
-test('WifiManager - disconnectNetwork disconnects Wi-Fi', async () => {
-    const res = await wifiManager.disconnectNetwork();
-    assert.ok(res.success);
-    assert.equal(res.status.connected, false);
-
-    const statusAfter = await wifiManager.getStatus();
-    assert.equal(statusAfter.connected, false);
-});
-
-test('WifiManager - forgetNetwork removes saved profile', async () => {
-    const testSsid = 'Test_Kiosk_Hotspot_5G';
-    const res = await wifiManager.forgetNetwork(testSsid);
-    assert.ok(res.success);
-
-    const saved = await wifiManager.getSavedNetworks();
-    const found = saved.find((s) => s.ssid === testSsid);
-    assert.equal(found, undefined, 'forgotten network should not be in saved list');
-});
-
-test('Express API - Router endpoints and HTML portal respond correctly', async () => {
-    const app = express();
-    app.use(express.json());
-    app.use('/api/wifi', createWifiRouter());
-    app.get('/wifi', wifiPortalHtmlHandler);
-
-    const server = app.listen(0);
-    const port = server.address().port;
-    const baseUrl = `http://127.0.0.1:${port}`;
-
-    try {
-        // Test status endpoint
-        const resStatus = await fetch(`${baseUrl}/api/wifi/status`);
-        assert.equal(resStatus.status, 200);
-        const dataStatus = await resStatus.json();
-        assert.equal(dataStatus.success, true);
-        assert.ok('status' in dataStatus);
-
-        // Test scan endpoint
-        const resScan = await fetch(`${baseUrl}/api/wifi/scan`);
-        assert.equal(resScan.status, 200);
-        const dataScan = await resScan.json();
-        assert.equal(dataScan.success, true);
-        assert.ok(Array.isArray(dataScan.networks));
-
-        // Test saved endpoint
-        const resSaved = await fetch(`${baseUrl}/api/wifi/saved`);
-        assert.equal(resSaved.status, 200);
-        const dataSaved = await resSaved.json();
-        assert.equal(dataSaved.success, true);
-        assert.ok(Array.isArray(dataSaved.saved));
-
-        // Test HTML portal endpoint
-        const resHtml = await fetch(`${baseUrl}/wifi`);
-        assert.equal(resHtml.status, 200);
-        const html = await resHtml.text();
-        assert.ok(html.includes('Reliv Kiosk Wi-Fi Control'));
-        assert.ok(html.includes('Current Connection'));
-        assert.ok(html.includes('Available Networks'));
-    } finally {
-        server.close();
-    }
+test('active customer prevents helper invocation', async () => {
+ let called=false;const manager=new WifiManager({installed:false,checkIdle:()=>{throw new Error('active visit');},request:async()=>{called=true;}});
+ await assert.rejects(manager.connectNetwork({}),/active visit/);assert.equal(called,false);
 });
