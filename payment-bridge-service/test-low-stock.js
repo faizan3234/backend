@@ -136,3 +136,30 @@ test('repeated known failures back off while remaining visible', async () => {
     }
     db.close();
 });
+
+test('paid purchase warns for 3→2, 2→1 and 1→0 without customer receipt', async () => {
+    for (const quantity of [3,2,1]) {
+        const db=fixture();
+        db.exec(`CREATE TABLE inventory(kit_id TEXT,name TEXT,quantity INTEGER,price REAL,updated_at TEXT);`);
+        db.prepare('INSERT INTO inventory VALUES (?,?,?,?,?)').run('MED-1','Medicine A',quantity,12.34,'r1');
+        const snapshot=lowStockSnapshot(db,Date.now(),[{kitId:'MED-1',quantity:1}]);
+        assert.equal(snapshot.length,1);
+        assert.equal(snapshot[0].quantity,quantity);
+        assert.equal(snapshot[0].purchasedQuantity,1);
+        db.prepare('UPDATE payment_v2_orders SET low_stock_json=?').run(JSON.stringify(snapshot));
+        const messages=[];
+        const transporter={sendMail:async m=>{messages.push(m);return {accepted:['admin']};}};
+        await processStockAlertRequest({db,requestId:'r',transporter});
+        await processStockAlertRequest({db,requestId:'r',transporter});
+        assert.equal(messages.length,1);
+        assert.match(messages[0].text,new RegExp(`Expected stock after this order: ${quantity-1}`));
+        assert.match(messages[0].text,/not confirmation of medicine delivery/);
+        assert.equal(db.prepare('SELECT status FROM low_stock_dispatch').get().status,'DONE');
+        db.close();
+    }
+});
+test('reject malformed or non-low paid projections', () => {
+    for (const purchasedQuantity of [0,-1,3,1.5,'1'])
+        assert.throws(()=>validateLowStock([{...item,purchasedQuantity}]));
+    assert.throws(()=>validateLowStock([{...item,quantity:5,purchasedQuantity:1}]));
+});

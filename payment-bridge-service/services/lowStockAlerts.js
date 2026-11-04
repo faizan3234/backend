@@ -5,14 +5,19 @@ export function validateLowStock(value) {
     if (value === undefined || value === null) return [];
     if (!Array.isArray(value) || value.length > 8) throw new Error('Invalid low stock snapshot');
     return value.map(item => {
+        const purchased = item?.purchasedQuantity;
+        const projected = purchased !== undefined;
+        if (projected && (!Number.isSafeInteger(purchased) || purchased <= 0 ||
+            purchased > item.quantity || item.quantity - purchased > 2)) throw new Error('Invalid stock projection');
         if (!item || typeof item.id !== 'string' || !item.id || item.id.length > 80 ||
             typeof item.name !== 'string' || !item.name || item.name.length > 100 ||
-            !Number.isSafeInteger(item.quantity) || item.quantity < 0 || item.quantity > 2 ||
+            !Number.isSafeInteger(item.quantity) || item.quantity < 0 || (!projected && item.quantity > 2) ||
             !Number.isSafeInteger(item.unitPricePaise) || item.unitPricePaise < 0 ||
             typeof item.revision !== 'string' || !item.revision || item.revision.length > 40 ||
             !Number.isSafeInteger(item.observedAt) || item.observedAt <= 0 || item.observedAt > 8640000000000000) throw new Error('Invalid low stock snapshot');
         return { id:item.id, name:item.name, quantity:item.quantity, unitPricePaise:item.unitPricePaise,
-            revision:item.revision, observedAt:item.observedAt };
+            revision:item.revision, observedAt:item.observedAt,
+            ...(projected ? { purchasedQuantity: purchased } : {}) };
     });
 }
 
@@ -34,7 +39,8 @@ export async function sendLowStockAlerts({ db, requestId, transporter = null }) 
     for (const item of stock) {
         // Same inventory revision relayed by many customers sends only once.
         const key = crypto.createHash('sha256').update(JSON.stringify([
-            order.kiosk_id, item.id, item.quantity, item.revision
+            order.kiosk_id, item.id, item.quantity, item.revision,
+            ...(item.purchasedQuantity ? [requestId, item.purchasedQuantity] : [])
         ])).digest('hex');
         const newer = db.prepare(`SELECT 1 FROM payment_v2_orders o,
             json_each(CASE WHEN json_valid(o.low_stock_json) THEN o.low_stock_json ELSE '[]' END) j
@@ -57,11 +63,13 @@ export async function sendLowStockAlerts({ db, requestId, transporter = null }) 
             outcome.retry ||= ['FAILED','SENDING'].includes(previous?.status);
             continue;
         }
+        const expected = item.purchasedQuantity ? item.quantity - item.purchasedQuantity : null;
+        const projection = expected === null ? '' : `Paid order: ${item.purchasedQuantity} item(s).\nExpected stock after this order: ${expected}.\n${expected === 0 ? 'This order uses the last item(s). Refill before further sales.\n' : ''}This is an estimate from the signed stock count, not confirmation of medicine delivery.\n\n`;
         try {
             const result = await mailer.sendMail({
                 from: `"Reliv Stock Alerts" <${sender}>`, to: 'khanfaizan3234@gmail.com',
-                subject: `Reliv: ${item.name} — ${item.quantity === 0 ? 'out of stock' : `only ${item.quantity} left at last check`}`,
-                text: `Please refill ${item.name}.\n\nKiosk: ${order.kiosk_id}\nLast recorded stock: ${item.quantity === 0 ? '0 — out of stock' : `${item.quantity} left`}\nPrice per item: INR ${(item.unitPricePaise/100).toFixed(2)}\n\nThis count was checked before the customer's order was dispensed. There may be fewer items now. Please check the kiosk and refill as needed.\n\nLast check: ${new Date(item.observedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST\nItem reference: ${item.id}`,
+                subject: `Reliv: ${item.name} — ${expected !== null ? `expected ${expected} left after paid order` : item.quantity === 0 ? 'out of stock' : `only ${item.quantity} left at last check`}`,
+                text: `Please refill ${item.name}.\n\n${projection}Kiosk: ${order.kiosk_id}\nLast recorded stock: ${item.quantity === 0 ? '0 — out of stock' : `${item.quantity} left`}\nPrice per item: INR ${(item.unitPricePaise/100).toFixed(2)}\n\nThis count was checked before the customer's order was dispensed. There may be fewer items now. Please check the kiosk and refill as needed.\n\nLast check: ${new Date(item.observedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST\nItem reference: ${item.id}`,
                 messageId: `<stock-${key}@reliv.in>`
             });
             if (Array.isArray(result?.accepted) && !result.accepted.length) {
