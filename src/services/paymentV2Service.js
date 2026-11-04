@@ -581,7 +581,7 @@ export class PaymentV2Service {
                 : {})
         };
 
-        const stockSnapshot = lowStockSnapshot(this.db, now);
+        const stockSnapshot = lowStockSnapshot(this.db, now, itemsSnapshot);
         if (stockSnapshot.length) canonicalPayload.lowStock = stockSnapshot;
 
         // Legacy compatibility fields
