@@ -8,6 +8,8 @@ import dotenv from 'dotenv';
 import Database from 'better-sqlite3';
 import PaymentV2CloudService from './paymentV2Service.js';
 import { createPaymentV2Router } from './paymentV2Routes.js';
+import PushNotificationService from './services/pushNotificationService.js';
+import { createPushNotificationRouter } from './pushNotificationRoutes.js';
 
 dotenv.config();
 
@@ -240,10 +242,16 @@ const paymentV2Service = new PaymentV2CloudService({
 const stockAlertWorker = createStockAlertWorker({ db });
 stockAlertWorker.start();
 
+const pushNotificationService = new PushNotificationService({ db });
+await pushNotificationService.initialize();
+pushNotificationService.start();
+
 app.use('/v2', createPaymentV2Router(paymentV2Service));
 app.use('/api/v2', createPaymentV2Router(paymentV2Service));
+app.use('/api/notifications', createPushNotificationRouter(pushNotificationService));
 
 console.log('✅ Payment V2 cloud routes mounted on /v2 and /api/v2');
+console.log('✅ Push notification routes mounted on /api/notifications');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AUTHORITATIVE ORDER CREATION & BINDING
@@ -624,6 +632,8 @@ app.get('/health', (req, res) => {
 
         paymentV2: paymentV2Service.isConfigured(),
 
+        pushNotifications: pushNotificationService.health(),
+
         database: databaseHealthy,
 
         uptimeSeconds: Math.floor(process.uptime())
@@ -689,6 +699,7 @@ async function shutdown(signal) {
     console.log(`\n⚠️ ${signal} received. Shutting down...`);
 
     try {
+        pushNotificationService.stop();
         await stockAlertWorker.stop();
         if (db) {
             db.close();
