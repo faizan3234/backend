@@ -28,7 +28,7 @@ class SpeakerTTS:
     """
 
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._current_process: Optional[subprocess.Popen] = None
         self._tts_cmd = self._find_available_tts()
         if self._tts_cmd:

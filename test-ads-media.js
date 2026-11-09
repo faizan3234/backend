@@ -6,7 +6,20 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { normalizeAdMedia } from './src/services/adMediaService.js';
 
+function hasFfmpeg() {
+  try {
+    execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 test('real FFmpeg prepares portrait image and video with/without audio', async t => {
+  if (!hasFfmpeg()) {
+    t.skip('ffmpeg is not installed in the environment');
+    return;
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(),'reliv-media-'));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   for (const [name,mime,audio] of [['poster.png','image/png',false],['silent.mp4','video/mp4',false],['audio.mp4','video/mp4',true]]) {
@@ -31,6 +44,10 @@ test('real FFmpeg prepares portrait image and video with/without audio', async t
 });
 
 test('native 16:10 artwork is an exact fit while 16:9 artwork is preserved with background fill', async t => {
+  if (!hasFfmpeg()) {
+    t.skip('ffmpeg is not installed in the environment');
+    return;
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(),'reliv-display-'));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   for (const [size,exact] of [['1280x800',true],['1280x720',false]]) {

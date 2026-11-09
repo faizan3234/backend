@@ -61,10 +61,12 @@ export function initializeDatabase(customPath = null) {
         // Enable WAL mode for better concurrency and crash recovery
         db.pragma('journal_mode = WAL');
         
+        // Wait up to 5000ms on locks before throwing SQLITE_BUSY
+        db.pragma('busy_timeout = 5000');
+        
         // Enable foreign key constraints
         db.pragma('foreign_keys = ON');
 
-        
         // Set reasonable cache size (2MB)
         db.pragma('cache_size = -2000');
         

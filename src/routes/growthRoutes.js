@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
  * ═══════════════════════════════════════════════════════════════════════════
  * RELIV GROWTH, REFERRAL & ANTI-CHEAT ENGINE
  * Policy: "ONE DEVICE ONLY ONE APP"
+ * Multi-layer race condition protection with atomic SQLite transactions
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -125,32 +126,44 @@ export function createGrowthRouter({ getDb }) {
             }
 
             if (db) {
-                const existing = db.prepare('SELECT * FROM growth_referrals WHERE referrer_user_id = ? AND referee_user_id IS NULL').get(effectiveUserId);
-                if (existing) {
-                    return res.json({
+                const txResult = db.transaction(() => {
+                    const existing = db.prepare('SELECT * FROM growth_referrals WHERE referrer_user_id = ? AND referee_user_id IS NULL').get(effectiveUserId);
+                    if (existing) {
+                        return {
+                            ok: true,
+                            referralCode: existing.referrer_code,
+                            userId: effectiveUserId,
+                            publicAlias: publicAlias || `Member ${existing.referrer_code}`,
+                            isExisting: true
+                        };
+                    }
+
+                    const codeTaken = db.prepare('SELECT * FROM growth_referrals WHERE referrer_code = ?').get(effectiveCode);
+                    if (codeTaken && codeTaken.referrer_user_id !== effectiveUserId) {
+                        effectiveCode = generateReferralCode();
+                    }
+
+                    const refId = `REF-REG-${crypto.randomUUID()}`;
+                    db.prepare(`
+                        INSERT INTO growth_referrals (referral_id, referrer_user_id, referrer_code, status, metadata, created_at, updated_at)
+                        VALUES (?, ?, ?, 'QUALIFIED', ?, datetime('now'), datetime('now'))
+                    `).run(
+                        refId,
+                        effectiveUserId,
+                        effectiveCode,
+                        JSON.stringify({ name: name || '', email: email || '', publicAlias: publicAlias || `Member ${effectiveCode}` })
+                    );
+
+                    return {
                         ok: true,
-                        referralCode: existing.referrer_code,
+                        referralCode: effectiveCode,
                         userId: effectiveUserId,
-                        publicAlias: publicAlias || `Member ${existing.referrer_code}`,
-                        isExisting: true
-                    });
-                }
+                        publicAlias: publicAlias || `Member ${effectiveCode}`,
+                        isNew: true
+                    };
+                })();
 
-                const codeTaken = db.prepare('SELECT * FROM growth_referrals WHERE referrer_code = ?').get(effectiveCode);
-                if (codeTaken && codeTaken.referrer_user_id !== effectiveUserId) {
-                    effectiveCode = generateReferralCode();
-                }
-
-                const refId = `REF-REG-${crypto.randomUUID()}`;
-                db.prepare(`
-                    INSERT INTO growth_referrals (referral_id, referrer_user_id, referrer_code, status, metadata, created_at, updated_at)
-                    VALUES (?, ?, ?, 'QUALIFIED', ?, datetime('now'), datetime('now'))
-                `).run(
-                    refId,
-                    effectiveUserId,
-                    effectiveCode,
-                    JSON.stringify({ name: name || '', email: email || '', publicAlias: publicAlias || `Member ${effectiveCode}` })
-                );
+                return res.json(txResult);
             }
 
             return res.json({
@@ -186,48 +199,74 @@ export function createGrowthRouter({ getDb }) {
             const cleanCode = String(referralCode).trim().toUpperCase();
 
             if (db) {
-                const referrer = db.prepare('SELECT * FROM growth_referrals WHERE referrer_code = ?').get(cleanCode);
-                if (!referrer) {
-                    return res.status(404).json({ ok: false, error: 'Referral code not found' });
-                }
-
-                // Anti-cheat: Self referral rejection
-                if (refereeUserId && referrer.referrer_user_id === refereeUserId) {
-                    return res.status(400).json({
-                        ok: false,
-                        error: 'Self-referrals are not permitted',
-                        reason: 'SELF_REFERRAL_DISALLOWED'
-                    });
-                }
-
-                // Anti-cheat: One Device Only One App policy
-                if (deviceSig) {
-                    const existingDevice = db.prepare('SELECT * FROM growth_devices WHERE device_sig = ?').get(deviceSig);
-                    if (existingDevice && existingDevice.bound_user_id !== refereeUserId) {
-                        return res.json({
-                            ok: true,
-                            ignored: true,
-                            reason: 'DEVICE_ALREADY_REGISTERED',
-                            message: 'One device only one app policy: duplicate device reinstallation yields zero referral credit.'
-                        });
+                const txResult = db.transaction(() => {
+                    const referrer = db.prepare('SELECT * FROM growth_referrals WHERE referrer_code = ?').get(cleanCode);
+                    if (!referrer) {
+                        return { status: 404, payload: { ok: false, error: 'Referral code not found' } };
                     }
 
-                    const alreadyClaimed = db.prepare('SELECT * FROM growth_referrals WHERE referrer_code = ? AND referee_device_sig = ?').get(cleanCode, deviceSig);
-                    if (alreadyClaimed) {
-                        return res.json({
-                            ok: true,
-                            ignored: true,
-                            reason: 'REFERRAL_ALREADY_CLAIMED_ON_DEVICE',
-                            message: 'This referral has already been claimed on this device.'
-                        });
+                    // Anti-cheat: Self referral rejection
+                    if (refereeUserId && referrer.referrer_user_id === refereeUserId) {
+                        return {
+                            status: 400,
+                            payload: {
+                                ok: false,
+                                error: 'Self-referrals are not permitted',
+                                reason: 'SELF_REFERRAL_DISALLOWED'
+                            }
+                        };
                     }
-                }
 
-                const claimId = `CLAIM-${crypto.randomUUID()}`;
-                db.prepare(`
-                    INSERT INTO growth_referrals (referral_id, referrer_user_id, referrer_code, referee_user_id, referee_device_sig, status, active_days, reward_claimed, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 'QUALIFIED', 1, 1, datetime('now'), datetime('now'))
-                `).run(claimId, referrer.referrer_user_id, cleanCode, refereeUserId || null, deviceSig || null);
+                    // Anti-cheat: One Device Only One App policy
+                    if (deviceSig) {
+                        const existingDevice = db.prepare('SELECT * FROM growth_devices WHERE device_sig = ?').get(deviceSig);
+                        if (existingDevice && existingDevice.bound_user_id !== refereeUserId) {
+                            return {
+                                status: 200,
+                                payload: {
+                                    ok: true,
+                                    ignored: true,
+                                    reason: 'DEVICE_ALREADY_REGISTERED',
+                                    message: 'One device only one app policy: duplicate device reinstallation yields zero referral credit.'
+                                }
+                            };
+                        }
+
+                        const alreadyClaimed = db.prepare('SELECT * FROM growth_referrals WHERE referrer_code = ? AND referee_device_sig = ?').get(cleanCode, deviceSig);
+                        if (alreadyClaimed) {
+                            return {
+                                status: 200,
+                                payload: {
+                                    ok: true,
+                                    ignored: true,
+                                    reason: 'REFERRAL_ALREADY_CLAIMED_ON_DEVICE',
+                                    message: 'This referral has already been claimed on this device.'
+                                }
+                            };
+                        }
+                    }
+
+                    const claimId = `CLAIM-${crypto.randomUUID()}`;
+                    db.prepare(`
+                        INSERT INTO growth_referrals (referral_id, referrer_user_id, referrer_code, referee_user_id, referee_device_sig, status, active_days, reward_claimed, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, 'QUALIFIED', 1, 1, datetime('now'), datetime('now'))
+                    `).run(claimId, referrer.referrer_user_id, cleanCode, refereeUserId || null, deviceSig || null);
+
+                    return {
+                        status: 200,
+                        payload: {
+                            ok: true,
+                            claimed: true,
+                            reward: {
+                                bonusDays: 7,
+                                streakProtection: 1
+                            },
+                            message: 'Referral reward claimed successfully under One Device Only One App policy.'
+                        }
+                    };
+                })();
+
+                return res.status(txResult.status).json(txResult.payload);
             }
 
             return res.json({
@@ -313,31 +352,42 @@ export function createGrowthRouter({ getDb }) {
             }
 
             if (db) {
-                const existing = db.prepare('SELECT * FROM growth_devices WHERE device_sig = ?').get(deviceSig);
-                if (existing) {
-                    if (existing.bound_user_id !== userId) {
-                        return res.json({
+                const txResult = db.transaction(() => {
+                    const existing = db.prepare('SELECT * FROM growth_devices WHERE device_sig = ?').get(deviceSig);
+                    if (existing) {
+                        if (existing.bound_user_id !== userId) {
+                            return {
+                                ok: true,
+                                bound: false,
+                                reason: 'DEVICE_ALREADY_BOUND',
+                                boundUserId: existing.bound_user_id,
+                                message: 'One device only one app policy: this device is already permanently bound to another Reliv user account.'
+                            };
+                        }
+
+                        db.prepare('UPDATE growth_devices SET updated_at = datetime("now") WHERE device_sig = ?').run(deviceSig);
+                        return {
                             ok: true,
-                            bound: false,
-                            reason: 'DEVICE_ALREADY_BOUND',
-                            boundUserId: existing.bound_user_id,
-                            message: 'One device only one app policy: this device is already permanently bound to another Reliv user account.'
-                        });
+                            bound: true,
+                            existing: true,
+                            message: 'Device binding verified for user account.'
+                        };
                     }
 
-                    db.prepare('UPDATE growth_devices SET updated_at = datetime("now") WHERE device_sig = ?').run(deviceSig);
-                    return res.json({
+                    db.prepare(`
+                        INSERT INTO growth_devices (device_sig, bound_user_id, platform, user_agent, ip_address, risk_score, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, 'LOW', datetime('now'), datetime('now'))
+                    `).run(deviceSig, userId, platform || 'web', userAgent || '', req.ip || '');
+
+                    return {
                         ok: true,
                         bound: true,
-                        existing: true,
-                        message: 'Device binding verified for user account.'
-                    });
-                }
+                        isNewDevice: true,
+                        message: 'Device bound successfully under One Device Only One App policy.'
+                    };
+                })();
 
-                db.prepare(`
-                    INSERT INTO growth_devices (device_sig, bound_user_id, platform, user_agent, ip_address, risk_score, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 'LOW', datetime('now'), datetime('now'))
-                `).run(deviceSig, userId, platform || 'web', userAgent || '', req.ip || '');
+                return res.json(txResult);
             }
 
             return res.json({
@@ -378,46 +428,9 @@ export function createGrowthRouter({ getDb }) {
     router.post('/api/store/order', handleStoreOrder);
     router.post('/store/order', handleStoreOrder);
 
-    // POST /api/store/custom-inquiry & POST /store/custom-inquiry
-    const handleStoreCustomInquiry = (req, res) => {
-        res.set('Cache-Control', 'private, no-store');
-        try {
-            const { inquiry } = req.body || {};
-            const resolvedId = inquiry?.id || `INQ-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-            return res.json({
-                ok: true,
-                inquiryId: resolvedId,
-                status: 'INQUIRY_RECEIVED',
-                message: 'Custom hardware inquiry received successfully.'
-            });
-        } catch (err) {
-            return res.status(500).json({ ok: false, error: err.message || 'Failed to process inquiry' });
-        }
-    };
-    router.post('/api/store/custom-inquiry', handleStoreCustomInquiry);
-    router.post('/store/custom-inquiry', handleStoreCustomInquiry);
-
-    // POST /api/store/ad-campaign & POST /store/ad-campaign
-    const handleStoreAdCampaign = (req, res) => {
-        res.set('Cache-Control', 'private, no-store');
-        try {
-            const { proposal } = req.body || {};
-            const campaignId = proposal?.id || `AD-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-            return res.json({
-                ok: true,
-                campaignId,
-                status: 'PROPOSAL_RECEIVED',
-                message: 'Ad campaign proposal received and queued for review.'
-            });
-        } catch (err) {
-            return res.status(500).json({ ok: false, error: err.message || 'Failed to process ad proposal' });
-        }
-    };
-    router.post('/api/store/ad-campaign', handleStoreAdCampaign);
-    router.post('/store/ad-campaign', handleStoreAdCampaign);
-
     // ─────────────────────────────────────────────────────────────────────────
-    // 6. STREAK RESTORE ORDER & VERIFY & CLAIM
+    // 6. STREAK RESTORE ORDER & VERIFY
+    // POST /api/streak/restore & POST /streak/restore
     // ─────────────────────────────────────────────────────────────────────────
     const handleStreakRestore = (req, res) => {
         res.set('Cache-Control', 'private, no-store');
@@ -427,18 +440,20 @@ export function createGrowthRouter({ getDb }) {
             const restoreId = `STREAK-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
             if (db && userId) {
-                db.prepare(`
-                    INSERT INTO streak_restores (restore_id, user_id, order_id, payment_id, amount, status, streak_before, streak_after, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 'APPLIED', ?, ?, datetime('now'), datetime('now'))
-                `).run(
-                    restoreId,
-                    userId,
-                    orderId || null,
-                    paymentId || null,
-                    amount || 0,
-                    streakBefore || 0,
-                    streakAfter || (streakBefore ? streakBefore + 1 : 1)
-                );
+                db.transaction(() => {
+                    db.prepare(`
+                        INSERT INTO streak_restores (restore_id, user_id, order_id, payment_id, amount, status, streak_before, streak_after, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, 'APPLIED', ?, ?, datetime('now'), datetime('now'))
+                    `).run(
+                        restoreId,
+                        userId,
+                        orderId || null,
+                        paymentId || null,
+                        amount || 0,
+                        streakBefore || 0,
+                        streakAfter || (streakBefore ? streakBefore + 1 : 1)
+                    );
+                })();
             }
 
             return res.json({
@@ -456,53 +471,90 @@ export function createGrowthRouter({ getDb }) {
     router.post('/api/streak/restore', handleStreakRestore);
     router.post('/streak/restore', handleStreakRestore);
 
-    // POST /api/streak/restore/order
-    const handleStreakRestoreOrder = (req, res) => {
+    // ─────────────────────────────────────────────────────────────────────────
+    // 7. CUSTOM HARDWARE INQUIRY & AD CAMPAIGN PROPOSAL DISPATCH
+    // ─────────────────────────────────────────────────────────────────────────
+    const handleCustomInquiry = (req, res) => {
         res.set('Cache-Control', 'private, no-store');
         try {
-            const { streakDays, userId, sessionId, transactionId, amountPaise } = req.body || {};
+            const { inquiry } = req.body || {};
+            const inquiryId = inquiry?.id || `INQ-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+            return res.json({
+                ok: true,
+                inquiryId,
+                status: 'RECEIVED',
+                message: 'Custom hardware inquiry received and queued for review.'
+            });
+        } catch (err) {
+            return res.status(500).json({ ok: false, error: err.message || 'Failed to process inquiry' });
+        }
+    };
+    router.post('/api/store/custom-inquiry', handleCustomInquiry);
+    router.post('/store/custom-inquiry', handleCustomInquiry);
+
+    const handleAdCampaignProposal = (req, res) => {
+        res.set('Cache-Control', 'private, no-store');
+        try {
+            const { proposal } = req.body || {};
+            const campaignId = proposal?.id || `AD-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+            return res.json({
+                ok: true,
+                campaignId,
+                status: 'RECEIVED',
+                message: 'Ad campaign proposal received and queued for review.'
+            });
+        } catch (err) {
+            return res.status(500).json({ ok: false, error: err.message || 'Failed to process proposal' });
+        }
+    };
+    router.post('/api/store/ad-campaign', handleAdCampaignProposal);
+    router.post('/store/ad-campaign', handleAdCampaignProposal);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 8. STREAK RESTORE ORDER, VERIFY, CLAIM & GOAL VERIFY
+    // ─────────────────────────────────────────────────────────────────────────
+    const handleStreakOrder = (req, res) => {
+        res.set('Cache-Control', 'private, no-store');
+        try {
+            const { streakDays, userId, amountPaise } = req.body || {};
             const orderId = `order_streak_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
             return res.json({
                 ok: true,
                 order: {
                     id: orderId,
-                    orderId,
+                    entity: 'order',
                     amount: amountPaise || 4900,
                     currency: 'INR',
-                    keyId: process.env.RAZORPAY_KEY_ID || 'rzp_live_TmBPXz456Ne0Yu',
-                    sessionId: sessionId || 'streak_sess',
-                    transactionId: transactionId || 'streak_txn'
+                    receipt: `rcpt_streak_${Date.now()}`,
+                    status: 'created'
                 }
             });
         } catch (err) {
-            return res.status(500).json({ ok: false, error: err.message || 'Failed to create streak order' });
+            return res.status(500).json({ ok: false, error: err.message || 'Failed to create streak restore order' });
         }
     };
-    router.post('/api/streak/restore/order', handleStreakRestoreOrder);
-    router.post('/streak/restore/order', handleStreakRestoreOrder);
+    router.post('/api/streak/restore/order', handleStreakOrder);
+    router.post('/streak/restore/order', handleStreakOrder);
 
-    // POST /api/streak/restore/verify
-    const handleStreakRestoreVerify = (req, res) => {
+    const handleStreakVerify = (req, res) => {
         res.set('Cache-Control', 'private, no-store');
         try {
             const { razorpay_payment_id, razorpay_order_id, streakDays } = req.body || {};
             return res.json({
                 ok: true,
                 verified: true,
-                paymentId: razorpay_payment_id,
-                orderId: razorpay_order_id,
-                streakDays: streakDays || 1,
-                message: 'Streak restore payment verified successfully.'
+                paymentId: razorpay_payment_id || null,
+                orderId: razorpay_order_id || null,
+                streakDays: streakDays || 1
             });
         } catch (err) {
-            return res.status(500).json({ ok: false, error: err.message || 'Failed to verify streak payment' });
+            return res.status(500).json({ ok: false, error: err.message || 'Failed to verify streak restore' });
         }
     };
-    router.post('/api/streak/restore/verify', handleStreakRestoreVerify);
-    router.post('/streak/restore/verify', handleStreakRestoreVerify);
+    router.post('/api/streak/restore/verify', handleStreakVerify);
+    router.post('/streak/restore/verify', handleStreakVerify);
 
-    // POST /api/streak/restore/claim
-    const handleStreakRestoreClaim = (req, res) => {
+    const handleStreakClaim = (req, res) => {
         res.set('Cache-Control', 'private, no-store');
         try {
             const { streakDays, paymentId } = req.body || {};
@@ -511,31 +563,32 @@ export function createGrowthRouter({ getDb }) {
                 claimed: true,
                 streakDays: streakDays || 1,
                 paymentId: paymentId || null,
-                message: 'Streak claim processed.'
+                message: 'Streak restoration claimed successfully.'
             });
         } catch (err) {
-            return res.status(500).json({ ok: false, error: err.message || 'Failed to process streak claim' });
+            return res.status(500).json({ ok: false, error: err.message || 'Failed to claim streak restore' });
         }
     };
-    router.post('/api/streak/restore/claim', handleStreakRestoreClaim);
-    router.post('/streak/restore/claim', handleStreakRestoreClaim);
+    router.post('/api/streak/restore/claim', handleStreakClaim);
+    router.post('/streak/restore/claim', handleStreakClaim);
 
-    // POST /api/goal/verify-refund
-    const handleGoalVerifyRefund = (req, res) => {
+    const handleGoalRefund = (req, res) => {
         res.set('Cache-Control', 'private, no-store');
         try {
+            const { entriesCount, targetDays } = req.body || {};
             return res.json({
                 ok: true,
                 verified: true,
-                refundEligible: true,
-                message: 'Goal refund verified.'
+                entriesCount: entriesCount || 0,
+                targetDays: targetDays || 5,
+                eligible: true
             });
         } catch (err) {
             return res.status(500).json({ ok: false, error: err.message || 'Failed to verify goal refund' });
         }
     };
-    router.post('/api/goal/verify-refund', handleGoalVerifyRefund);
-    router.post('/goal/verify-refund', handleGoalVerifyRefund);
+    router.post('/api/goal/verify-refund', handleGoalRefund);
+    router.post('/goal/verify-refund', handleGoalRefund);
 
     return router;
 }

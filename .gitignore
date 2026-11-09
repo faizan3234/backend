@@ -56,3 +56,6 @@ voice-service/models/
 ggml-*.bin
 backend-main/
 data/wifi_state.json
+
+data/tts_cache/
+*.mp3
