@@ -77,6 +77,12 @@ export function initializeGrowthTables(db) {
                 evidence_json TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS growth_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
         `);
 
         // Synchronize inventory items to kits table if inventory exists
@@ -297,7 +303,7 @@ export function createGrowthRouter({ getDb }) {
     router.post('/growth/referral/claim', handleReferralClaim);
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 3. ANONYMOUS LEADERBOARD
+    // 3. REAL IDENTITY-AWARE LEADERBOARD (NO ANONYMOUS, SHOWS SETUP NAME & PRIVATE ID)
     // GET /api/growth/leaderboard & GET /api/growth/referral/leaderboard
     // ─────────────────────────────────────────────────────────────────────────
     const handleLeaderboard = (req, res) => {
@@ -306,8 +312,14 @@ export function createGrowthRouter({ getDb }) {
             const db = getSafeDb();
             const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
             let leaderboard = [];
+            let resetEpoch = 0;
 
             if (db) {
+                try {
+                    const epochRow = db.prepare("SELECT value FROM growth_metadata WHERE key = 'leaderboard_last_reset'").get();
+                    if (epochRow?.value) resetEpoch = Number(epochRow.value) || 0;
+                } catch {}
+
                 const rows = db.prepare(`
                     SELECT referrer_user_id, referrer_code, COUNT(*) as qualifiedReferrals, metadata
                     FROM growth_referrals
@@ -318,15 +330,20 @@ export function createGrowthRouter({ getDb }) {
                 `).all(limit);
 
                 leaderboard = rows.map((r, idx) => {
-                    let alias = `Wellness Star ${String(idx + 1).padStart(3, '0')}`;
+                    let meta = {};
                     try {
-                        const meta = JSON.parse(r.metadata || '{}');
-                        if (meta.publicAlias) alias = meta.publicAlias;
+                        meta = JSON.parse(r.metadata || '{}');
                     } catch {}
+                    const realName = meta.name?.trim() || meta.displayName?.trim() || meta.patientName?.trim() || meta.publicAlias?.trim() || `Patient ${r.referrer_user_id}`;
                     return {
                         rank: idx + 1,
-                        publicAlias: alias,
-                        qualifiedReferrals: r.qualifiedReferrals || 0
+                        name: realName,
+                        displayName: realName,
+                        publicAlias: realName,
+                        userId: r.referrer_user_id,
+                        referralCode: r.referrer_code,
+                        qualifiedReferrals: r.qualifiedReferrals || 0,
+                        score: (r.qualifiedReferrals || 0) * 10
                     };
                 });
             }
@@ -335,6 +352,7 @@ export function createGrowthRouter({ getDb }) {
                 ok: true,
                 leaderboard,
                 totalMembers: leaderboard.length,
+                resetEpoch,
                 asOf: new Date().toISOString()
             });
         } catch (err) {
@@ -347,6 +365,60 @@ export function createGrowthRouter({ getDb }) {
     router.get('/growth/referral/leaderboard', handleLeaderboard);
     router.get('/api/growth/leaderboard', handleLeaderboard);
     router.get('/growth/leaderboard', handleLeaderboard);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 3B. ADMIN LEADERBOARD RESET (WIPES LEADERBOARD ACROSS PHONE & ADMIN)
+    // POST /api/growth/referral/reset & POST /api/growth/leaderboard/reset
+    // ─────────────────────────────────────────────────────────────────────────
+    const handleLeaderboardReset = (req, res) => {
+        res.set('Cache-Control', 'private, no-store');
+        try {
+            const db = getSafeDb();
+            const resetEpoch = Date.now();
+            if (db) {
+                db.transaction(() => {
+                    db.exec(`
+                        DELETE FROM growth_referrals;
+                        DELETE FROM streak_restores;
+                        INSERT INTO growth_metadata (key, value, updated_at)
+                        VALUES ('leaderboard_last_reset', '${resetEpoch}', datetime('now'))
+                        ON CONFLICT(key) DO UPDATE SET value = '${resetEpoch}', updated_at = datetime('now');
+                    `);
+                })();
+            }
+
+            return res.json({
+                ok: true,
+                reset: true,
+                resetEpoch,
+                message: 'Leaderboard reset successfully. All ranks wiped and restarted from zero.'
+            });
+        } catch (err) {
+            console.error('[Growth] Leaderboard reset error:', err);
+            return res.status(500).json({ ok: false, error: err.message || 'Failed to reset leaderboard' });
+        }
+    };
+
+    router.post('/api/growth/referral/reset', handleLeaderboardReset);
+    router.post('/growth/referral/reset', handleLeaderboardReset);
+    router.post('/api/growth/leaderboard/reset', handleLeaderboardReset);
+    router.post('/growth/leaderboard/reset', handleLeaderboardReset);
+    router.post('/api/admin/leaderboard/reset', handleLeaderboardReset);
+
+    router.get('/api/growth/reset-epoch', (req, res) => {
+        res.set('Cache-Control', 'private, no-store');
+        try {
+            const db = getSafeDb();
+            let resetEpoch = 0;
+            if (db) {
+                const row = db.prepare("SELECT value FROM growth_metadata WHERE key = 'leaderboard_last_reset'").get();
+                if (row?.value) resetEpoch = Number(row.value) || 0;
+            }
+            return res.json({ ok: true, resetEpoch });
+        } catch {
+            return res.json({ ok: true, resetEpoch: 0 });
+        }
+    });
 
     // ─────────────────────────────────────────────────────────────────────────
     // 4. DEVICE BINDING (ANTI-CHEAT "ONE DEVICE ONLY ONE APP")

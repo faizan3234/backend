@@ -239,7 +239,7 @@ test('Growth: Referral Create, Anti-Cheat Device Bind, and Claim Workflow', asyn
         assert.equal(validClaimData.ok, true);
         assert.equal(validClaimData.claimed, true);
 
-        // 5. Leaderboard verification
+        // 5. Leaderboard verification (Real Name & Reliv ID, not fantasy alias)
         const resLeaderboard = await fetch(`${base}/api/growth/referral/leaderboard`);
         assert.equal(resLeaderboard.status, 200);
         const lbData = await resLeaderboard.json();
@@ -247,6 +247,22 @@ test('Growth: Referral Create, Anti-Cheat Device Bind, and Claim Workflow', asyn
         assert.ok(Array.isArray(lbData.leaderboard));
         assert.ok(lbData.leaderboard.length >= 1);
         assert.equal(lbData.leaderboard[0].qualifiedReferrals, 1);
+        assert.equal(lbData.leaderboard[0].userId, userA);
+        assert.doesNotMatch(lbData.leaderboard[0].name, /Wellness Star/i);
+
+        // 6. Admin Leaderboard Reset verification
+        const resReset = await fetch(`${base}/api/growth/referral/reset`, { method: 'POST' });
+        assert.equal(resReset.status, 200);
+        const resetData = await resReset.json();
+        assert.equal(resetData.ok, true);
+        assert.equal(resetData.reset, true);
+        assert.ok(resetData.resetEpoch > 0);
+
+        // 7. Post-reset Leaderboard must be empty (0 members)
+        const resLbAfter = await fetch(`${base}/api/growth/referral/leaderboard`);
+        const lbAfterData = await resLbAfter.json();
+        assert.equal(lbAfterData.leaderboard.length, 0, 'Leaderboard must be wiped after reset');
+        assert.equal(lbAfterData.resetEpoch, resetData.resetEpoch);
     } finally {
         await new Promise(resolve => server.close(resolve));
         db.close();

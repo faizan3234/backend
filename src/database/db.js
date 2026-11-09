@@ -225,6 +225,12 @@ export function initializeDatabase(customPath = null) {
                     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_streak_restores_user ON streak_restores(user_id);
+
+                CREATE TABLE IF NOT EXISTS growth_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
             `);
         } catch (e) {}
 

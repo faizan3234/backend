@@ -266,9 +266,10 @@ const frontendExpectedEndpoints = [
   { path: '/api/send-health-card', label: 'Health Card Email Delivery (Frontend: HealthCardModal.jsx)', required: false },
   { path: '/api/support-issue', label: 'Direct Support Ticket Submission (Frontend: SupportButton.jsx)', required: false },
 
-  // Growth & Referrals (Currently in frontend localStorage)
+  // Growth & Referrals
   { path: '/growth/referral/create', label: 'Growth: Register Referral Code', required: false },
   { path: '/growth/referral/claim', label: 'Growth: Claim Referral Reward', required: false },
+  { path: '/growth/referral/reset', label: 'Growth: Admin Leaderboard Reset', required: false },
   { path: '/growth/device-bind', label: 'Growth: Anti-Cheat Device Fingerprint', required: false },
 
   // Store & Streak
