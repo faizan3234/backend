@@ -11,6 +11,39 @@ import paymentV2ServiceInstance from '../services/paymentV2Service.js';
 export function createPaymentV2Router(paymentV2Service = paymentV2ServiceInstance) {
     const router = express.Router({ mergeParams: true });
 
+    // Opportunistic client clock synchronization
+    router.use((req, _res, next) => {
+        const clientTs = Number(req.headers['x-client-timestamp'] || req.query?.clientTime);
+        if (Number.isSafeInteger(clientTs) && clientTs > 1700000000000 && typeof paymentV2Service.setClockOffset === 'function') {
+            const offset = clientTs - Date.now();
+            if (Math.abs(offset) > 10000) {
+                paymentV2Service.setClockOffset(offset);
+            }
+        }
+        next();
+    });
+
+    /**
+     * POST /api/sessions/:sessionId/payment-v2/sync-clock
+     * Explicit time synchronization endpoint for kiosk clock alignment
+     */
+    router.post('/sync-clock', (req, res) => {
+        const timestamp = Number(req.body?.timestamp || req.body?.clientTime);
+        if (!Number.isSafeInteger(timestamp) || timestamp < 1700000000000) {
+            return res.status(400).json({ ok: false, message: 'Invalid timestamp. Expected UTC millisecond integer.' });
+        }
+        const offset = timestamp - Date.now();
+        if (typeof paymentV2Service.setClockOffset === 'function') {
+            paymentV2Service.setClockOffset(offset);
+        }
+        return res.json({
+            ok: true,
+            syncedUtc: new Date(timestamp).toISOString(),
+            offsetMs: offset,
+            effectiveKioskTime: new Date(paymentV2Service.getEffectiveNow ? paymentV2Service.getEffectiveNow() : Date.now()).toISOString()
+        });
+    });
+
     /**
      * POST /api/sessions/:sessionId/payment-v2/request
      * Create or retrieve active Payment V2 QR/URL package for this session

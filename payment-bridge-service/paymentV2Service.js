@@ -483,8 +483,12 @@ export class PaymentV2CloudService {
         // payment/report. Signature and full payload fingerprint still have to match.
         const knownPaid = this.db.prepare("SELECT status, payload_fingerprint FROM payment_v2_orders WHERE request_id = ?").get(payload.requestId);
         const exactPaid = knownPaid?.status === 'PAID' && knownPaid.payload_fingerprint === payloadFingerprint;
-        // 5. Expiration Check
+
         const now = Date.now();
+
+        // 5. Expiration & Mathematical Sanity Check
+        // Kiosk operates offline without RTC; timestamps are checked for mathematical
+        // validity on first presentation, while authoritative expiry is bound to server time.
         checkPaymentWindow(payload, now, this.ttlMarginMs, exactPaid);
 
         // 8. Deduplicate concurrent requests for the exact same requestId
@@ -521,6 +525,11 @@ export class PaymentV2CloudService {
                 }
 
                 if (existingOrder.status === 'CREATED') {
+                    // Check authoritative server expiration for existing created order
+                    checkPaymentWindow(payload, now, this.ttlMarginMs, false, {
+                        serverExpiresAt: Number(existingOrder.expires_at)
+                    });
+
                     console.log(`[PaymentV2Cloud] Returning existing Razorpay order ${existingOrder.order_id} for request ${payload.requestId} (idempotent)`);
                     return {
                         ok: true,
@@ -533,6 +542,20 @@ export class PaymentV2CloudService {
                         alreadyCreated: true
                     };
                 }
+
+                if (existingOrder.status === 'EXPIRED') {
+                    const err = new Error('Payment request has expired. Please refresh the QR on the kiosk.');
+                    err.code = 'REQUEST_EXPIRED';
+                    err.paymentTiming = {
+                        requestId: payload.requestId,
+                        kioskId: payload.kioskId,
+                        kioskIssuedAt: payload.issuedAt,
+                        kioskExpiresAt: payload.expiresAt,
+                        serverNow: now,
+                        serverExpiresAt: existingOrder.expires_at
+                    };
+                    throw err;
+                }
             }
 
             // Replay Protection: Check Nonce Uniqueness
@@ -542,6 +565,19 @@ export class PaymentV2CloudService {
                 const err = new Error('Request nonce replay detected');
                 err.code = 'REPLAY_NONCE_DETECTED';
                 throw err;
+            }
+
+            // Authoritative Server-Anchored Validity Window (Independent of Kiosk Clock)
+            const durationMs = Number(payload.expiresAt) - Number(payload.issuedAt);
+            const ttlMs = (Number.isSafeInteger(payload.ttlSeconds) && payload.ttlSeconds >= 60 && payload.ttlSeconds <= 1800)
+                ? payload.ttlSeconds * 1000
+                : Math.min(Math.max(durationMs, 60000), 1800000);
+            const serverCreatedAt = now;
+            const serverExpiresAt = now + ttlMs;
+
+            const clockSkewMs = now - Number(payload.issuedAt);
+            if (Math.abs(clockSkewMs) > 60000) {
+                console.log(`[PaymentV2Cloud] ℹ️ Kiosk ${payload.kioskId} clock discrepancy: ${Math.round(clockSkewMs / 1000)}s ${clockSkewMs > 0 ? 'behind' : 'ahead of'} server. Anchoring payment validity authoritatively to server window [${new Date(serverCreatedAt).toISOString()} - ${new Date(serverExpiresAt).toISOString()}].`);
             }
 
             // Create Authoritative Razorpay Order
@@ -695,8 +731,8 @@ export class PaymentV2CloudService {
                 breakdownJson,
                 encryptedHealthSnapshot,
                 encryptedCode,
-                now,
-                payload.expiresAt,
+                serverCreatedAt,
+                serverExpiresAt,
                 lowStockJson
             );
 
@@ -709,7 +745,10 @@ export class PaymentV2CloudService {
                 currency: 'INR',
                 keyId: this.razorpay?.key_id,
                 requestId: payload.requestId,
-                serviceType: payload.serviceType || 'HEALTH_CHECKUP'
+                serviceType: payload.serviceType || 'HEALTH_CHECKUP',
+                serverTime: now,
+                serverExpiresAt: serverExpiresAt,
+                clockDiscrepancyMs: clockSkewMs
             };
         })();
 

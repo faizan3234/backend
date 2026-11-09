@@ -85,6 +85,18 @@ export class PaymentV2Service {
 
         this._kioskPrivateKey = null;
         this._cloudPublicKey = null;
+        this.clockOffsetMs = 0;
+    }
+
+    setClockOffset(offsetMs) {
+        if (Number.isFinite(offsetMs) && Math.abs(offsetMs) < 864000000000) {
+            this.clockOffsetMs = Math.round(offsetMs);
+            console.log(`[PaymentV2] Kiosk clock offset adjusted by ${this.clockOffsetMs}ms`);
+        }
+    }
+
+    getEffectiveNow() {
+        return Date.now() + (this.clockOffsetMs || 0);
     }
 
     get db() {
@@ -284,7 +296,7 @@ export class PaymentV2Service {
         // Clean up expired requests only after all session gates pass.
         this.expireStaleRequests();
 
-        const now = Date.now();
+        const now = this.getEffectiveNow();
 
         // 1. Resolve or create authoritative transaction with cart-aware idempotency
         let transaction = this.transactionManager.getTransactionBySession(sessionId);
@@ -570,6 +582,7 @@ export class PaymentV2Service {
             currency: 'INR',
             serviceType: effectiveServiceType,
             confirmationCode,
+            ttlSeconds: this.ttlSeconds,
             issuedAt: now,
             expiresAt,
             items: itemsSnapshot,

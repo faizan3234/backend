@@ -377,14 +377,38 @@ v2CloudService._notifyLowStock = async requestId => {
     } catch (e) { unregisteredKiosk = true; }
     assert(unregisteredKiosk, 'Unregistered Kiosk ID rejected');
 
-    // Expired Request
+    // Expired Request (authoritative server expiration)
+    // Pre-register an order whose authoritative server expiration has lapsed
+    const expOrderId = 'order_expired_test_' + Date.now();
+    const expReqPayload = { ...testPayload, requestId: 'REQ-EXP-TEST', requestNonce: 'nonce_exp_unique_1' };
+    const expFingerprint = computePayloadFingerprint(expReqPayload);
+    db.prepare(`
+        INSERT INTO payment_v2_orders (
+            order_id, request_id, request_nonce, payload_fingerprint,
+            session_id, transaction_id, kiosk_id, amount, currency,
+            service_type, encrypted_code, status, created_at, expires_at
+        ) VALUES (?, 'REQ-EXP-TEST', 'nonce_exp_unique_1', ?, 's_exp', 'tx_exp', 'RELIV-001', 50000, 'INR', 'HEALTH_CHECKUP', 'fake', 'CREATED', ?, ?)
+    `).run(expOrderId, expFingerprint, Date.now() - 400000, Date.now() - 100000);
+
     let expiredReq = false;
     try {
-        const invalidP = { ...testPayload, requestId: 'REQ-EXP-TEST', issuedAt: Date.now() - 360000, expiresAt: Date.now() - 60000 };
-        const p = createPiHybridPackage(invalidP, kioskKeys.privateKey, cloudKeys4096.publicKey);
+        const p = createPiHybridPackage(expReqPayload, kioskKeys.privateKey, cloudKeys4096.publicKey);
         await v2CloudService.createOrderFromPackage(p);
     } catch (e) { if (e.code === 'REQUEST_EXPIRED') expiredReq = true; }
-    assert(expiredReq, 'Expired payment request rejected');
+    assert(expiredReq, 'Expired payment request rejected based on authoritative server window');
+
+    // Offline Kiosk Resilience: An authentic request from an offline kiosk with behind clock is accepted on first presentation
+    const behindPayload = {
+        ...testPayload,
+        requestId: 'REQ-OFFLINE-BEHIND-1',
+        requestNonce: 'nonce_behind_unique_1',
+        issuedAt: Date.now() - (14 * 3600 * 1000), // 14 hours behind server!
+        expiresAt: Date.now() - (14 * 3600 * 1000) + 300000
+    };
+    const behindPkg = createPiHybridPackage(behindPayload, kioskKeys.privateKey, cloudKeys4096.publicKey);
+    const behindOrder = await v2CloudService.createOrderFromPackage(behindPkg);
+    assert(behindOrder.ok === true, 'Offline kiosk clock drift is accepted on first presentation');
+    assert(behindOrder.serverExpiresAt > Date.now(), 'Server anchors authoritative future expiry window for offline kiosk');
 
     // ───────────────────────────────────────────────────────────────────────
     // 4. ORDER CREATION, FINGERPRINTING & IDEMPOTENCY
