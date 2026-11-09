@@ -10,6 +10,7 @@ import PaymentV2CloudService from './paymentV2Service.js';
 import { createPaymentV2Router } from './paymentV2Routes.js';
 import PushNotificationService from './services/pushNotificationService.js';
 import { createPushNotificationRouter } from './pushNotificationRoutes.js';
+import { initializeGrowthTables, createGrowthRouter } from '../src/routes/growthRoutes.js';
 
 dotenv.config();
 
@@ -250,8 +251,13 @@ app.use('/v2', createPaymentV2Router(paymentV2Service));
 app.use('/api/v2', createPaymentV2Router(paymentV2Service));
 app.use('/api/notifications', createPushNotificationRouter(pushNotificationService));
 
+// Initialize and mount Growth, Referral, Leaderboard, Anti-Cheat & Store Order routes on Cloud Bridge
+initializeGrowthTables(db);
+app.use(createGrowthRouter({ getDb: () => db }));
+
 console.log('✅ Payment V2 cloud routes mounted on /v2 and /api/v2');
 console.log('✅ Push notification routes mounted on /api/notifications');
+console.log('✅ Growth, Referral, Leaderboard & Store routes mounted on /api/growth and /api/store');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AUTHORITATIVE ORDER CREATION & BINDING
