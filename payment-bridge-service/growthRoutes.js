@@ -736,3 +736,4 @@ export function createGrowthRouter({ getDb }) {
 }
 
 export default createGrowthRouter;
+
