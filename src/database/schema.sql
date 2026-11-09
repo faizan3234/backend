@@ -566,3 +566,87 @@ CREATE TABLE IF NOT EXISTS ad_play_events (
 );
 CREATE INDEX IF NOT EXISTS idx_ad_play_campaign ON ad_play_events(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_ad_play_started ON ad_play_events(started_at);
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- KITS - Synced mirror of inventory items for frontend catalog & diagnostics
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS kits (
+    kit_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    price REAL NOT NULL DEFAULT 0,
+    quantity INTEGER NOT NULL DEFAULT 0,
+    motor_id INTEGER,
+    category TEXT,
+    image_path TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- SUPPORT CASES & NOTES - Patient and kiosk issue reporting
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS support_cases (
+    case_id TEXT PRIMARY KEY,
+    session_id TEXT,
+    kind TEXT NOT NULL DEFAULT 'ISSUE_REPORT',
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    evidence_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS support_notes (
+    note_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id TEXT NOT NULL REFERENCES support_cases(case_id),
+    actor TEXT NOT NULL,
+    status TEXT NOT NULL,
+    note TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- GROWTH, REFERRALS & ANTI-CHEAT - "ONE DEVICE ONLY ONE APP"
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS growth_referrals (
+    referral_id TEXT PRIMARY KEY,
+    referrer_user_id TEXT NOT NULL,
+    referrer_code TEXT NOT NULL,
+    referee_user_id TEXT,
+    referee_device_sig TEXT,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    active_days INTEGER NOT NULL DEFAULT 0,
+    reward_claimed INTEGER NOT NULL DEFAULT 0,
+    metadata TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_growth_referrals_referrer ON growth_referrals(referrer_user_id);
+CREATE INDEX IF NOT EXISTS idx_growth_referrals_code ON growth_referrals(referrer_code);
+CREATE INDEX IF NOT EXISTS idx_growth_referrals_referee ON growth_referrals(referee_user_id);
+
+CREATE TABLE IF NOT EXISTS growth_devices (
+    device_sig TEXT PRIMARY KEY,
+    bound_user_id TEXT NOT NULL,
+    platform TEXT,
+    user_agent TEXT,
+    ip_address TEXT,
+    risk_score TEXT DEFAULT 'LOW',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_growth_devices_user ON growth_devices(bound_user_id);
+
+CREATE TABLE IF NOT EXISTS streak_restores (
+    restore_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    order_id TEXT,
+    payment_id TEXT,
+    amount REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'INITIATED',
+    streak_before INTEGER NOT NULL DEFAULT 0,
+    streak_after INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_streak_restores_user ON streak_restores(user_id);
+

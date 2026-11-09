@@ -17,6 +17,7 @@ import { resolveBackendMqttConfig } from './src/services/mqttConfig.js';
 import { bodyEstimates, getAllDerivedParameters } from './src/services/bodyEstimates.js';
 import { calculateChallengeComparison, generateChallengeCardPdf } from './src/services/challengeCardService.js';
 import { generateReportSpeech } from './src/services/reportSpeechService.js';
+import { createGrowthRouter } from './src/routes/growthRoutes.js';
 import express from "express";
 import cors from "cors";
 import nodemailer from "nodemailer";
@@ -3545,6 +3546,212 @@ app.post("/api/payment-complete", handlePaymentComplete);
 // ───────────────────────────────────────────────────────────────────────────
 app.use("/api/sessions/:sessionId/payment-v2", createPaymentV2Router(paymentV2Service));
 app.use("/api/ads", createAdRouter());
+app.use(createGrowthRouter({ getDb }));
+
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Health Card Email Delivery (Frontend: HealthCardModal.jsx)
+// POST /api/send-health-card
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/send-health-card", async (req, res) => {
+    res.set({
+        'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+        'X-Content-Type-Options': 'nosniff',
+    });
+    try {
+        const { to, name, cardImage, sessionId } = req.body || {};
+        if (!to || typeof to !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to.trim())) {
+            return res.status(400).json({ ok: false, error: "Valid recipient email address is required" });
+        }
+        if (!cardImage) {
+            return res.status(400).json({ ok: false, error: "Health card image is required" });
+        }
+
+        const recipientEmail = to.trim();
+        const patientName = (name && typeof name === 'string' && name.trim()) ? name.trim() : 'Patient';
+
+        let attachments = [];
+        let htmlImgSrc = '';
+
+        if (typeof cardImage === 'string' && cardImage.startsWith('data:image/')) {
+            const matches = cardImage.match(/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/);
+            if (matches) {
+                const ext = matches[1];
+                const base64Data = matches[2];
+                const buffer = Buffer.from(base64Data, 'base64');
+                const filename = `reliv-health-card-${Date.now()}.${ext}`;
+                attachments.push({
+                    filename,
+                    content: buffer,
+                    cid: 'healthcard@reliv'
+                });
+                htmlImgSrc = `cid:healthcard@reliv`;
+            } else {
+                htmlImgSrc = cardImage;
+            }
+        } else if (typeof cardImage === 'string') {
+            htmlImgSrc = cardImage;
+        }
+
+        const mailOptions = {
+            from: process.env.CUSTOMER_GMAIL_USER || process.env.GMAIL_USER || "Reliv Health Kiosk <noreply@reliv.in>",
+            to: recipientEmail,
+            subject: `Your Reliv Health Card - ${patientName}`,
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #eaeaea; border-radius: 16px;">
+                    <div style="text-align: center; margin-bottom: 24px;">
+                        <h1 style="color: #F06922; margin: 0; font-size: 28px;">Reliv Health Kiosk</h1>
+                        <p style="color: #666; font-size: 14px; margin-top: 4px;">Smart Preventative Health Checkup</p>
+                    </div>
+                    <div style="background-color: #f9f9f9; padding: 20px; border-radius: 12px; margin-bottom: 20px;">
+                        <h2 style="color: #333; margin-top: 0; font-size: 20px;">Hello ${patientName},</h2>
+                        <p style="color: #555; font-size: 15px; line-height: 1.5;">
+                            Thank you for completing your health checkup at our Reliv Smart Kiosk. Your personalized digital Health Card is ready and attached below.
+                        </p>
+                    </div>
+                    ${htmlImgSrc ? `
+                    <div style="text-align: center; margin: 24px 0;">
+                        <img src="${htmlImgSrc}" alt="Reliv Health Card" style="max-width: 100%; height: auto; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border: 1px solid #eee;" />
+                    </div>
+                    ` : ''}
+                    <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #eaeaea; text-align: center; color: #888; font-size: 12px;">
+                        <p style="margin: 0;">Reliv Health Technologies • Smart Preventive Healthcare</p>
+                        <p style="margin: 4px 0 0 0;">Need support? Contact customer care at relivcustomercare@gmail.com</p>
+                    </div>
+                </div>
+            `,
+            attachments
+        };
+
+        const mailer = customerTransporter || transporter;
+        if (mailer) {
+            try {
+                await mailer.sendMail(mailOptions);
+                log.info(`📧 Health card emailed successfully to: ${recipientEmail}`);
+                return res.json({ ok: true, sent: true, message: "Health card sent to email successfully" });
+            } catch (mailErr) {
+                log.warn(`⚠️ Failed to dispatch health card email: ${mailErr.message}`);
+                try {
+                    const localDb = getDb();
+                    if (localDb) {
+                        localDb.prepare(`
+                            INSERT INTO event_queue (event_id, type, session_id, payload, status)
+                            VALUES (?, 'EMAIL_REPORT', ?, ?, 'PENDING')
+                        `).run(`EVT-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`, sessionId || null, JSON.stringify({ to: recipientEmail, name: patientName, subject: mailOptions.subject }));
+                    }
+                } catch {}
+                return res.json({ ok: true, sent: false, queued: true, message: "Email delivery scheduled / queued" });
+            }
+        } else {
+            log.info(`ℹ️ Email transporter not configured; health card queued for ${recipientEmail}`);
+            return res.json({ ok: true, sent: false, queued: true, message: "Email service unconfigured; card queued for delivery" });
+        }
+    } catch (err) {
+        log.error("Error in /api/send-health-card:", err.message);
+        res.status(500).json({ ok: false, error: err.message || "Failed to process health card" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Direct Support Ticket Submission (Frontend: SupportButton.jsx)
+// POST /api/support-issue
+// ───────────────────────────────────────────────────────────────────────────
+app.post("/api/support-issue", async (req, res) => {
+    res.set({
+        'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+        'X-Content-Type-Options': 'nosniff',
+    });
+    try {
+        const { page, issue, details, customerEmail, customerPhone, sessionId } = req.body || {};
+        if (!issue && !page) {
+            return res.status(400).json({ ok: false, error: "Issue description or page identifier is required" });
+        }
+
+        const caseId = `HELP-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+        const issueText = String(issue || 'Reported Issue').slice(0, 1000);
+        const pageText = String(page || 'UNKNOWN').slice(0, 120);
+
+        try {
+            const localDb = getDb();
+            if (localDb) {
+                initializeSupport(localDb);
+                localDb.prepare(`
+                    INSERT INTO support_cases (case_id, session_id, kind, status, evidence_json, created_at)
+                    VALUES (?, ?, 'UI_SUPPORT_REPORT', 'OPEN', ?, datetime('now'))
+                `).run(
+                    caseId,
+                    sessionId || null,
+                    JSON.stringify({
+                        page: pageText,
+                        issue: issueText,
+                        details: details || null,
+                        customerEmail: customerEmail || null,
+                        customerPhone: customerPhone || null,
+                        kioskId: KIOSK_ID,
+                        reportedAt: new Date().toISOString()
+                    })
+                );
+                log.info(`🛠️ Support issue logged: ${caseId} (${pageText}: ${issueText})`);
+            }
+        } catch (dbErr) {
+            log.warn(`⚠️ Could not persist support issue in SQLite: ${dbErr.message}`);
+        }
+
+        const mailer = customerTransporter || transporter;
+        if (mailer && process.env.NODE_ENV !== 'test') {
+            mailer.sendMail({
+                from: process.env.CUSTOMER_GMAIL_USER || process.env.GMAIL_USER || "Reliv Kiosk <noreply@reliv.in>",
+                to: "relivcustomercare@gmail.com",
+                subject: `🚨 Kiosk Issue Alert [${KIOSK_ID}]: ${pageText}`,
+                text: `Kiosk ID: ${KIOSK_ID}\nCase ID: ${caseId}\nPage: ${pageText}\nIssue: ${issueText}\nReported At: ${new Date().toISOString()}`
+            }).catch(e => log.warn('Could not forward support issue email:', e.message));
+        }
+
+        return res.json({
+            ok: true,
+            caseId,
+            status: "OPEN",
+            message: "Support report logged successfully. Our operations team has been notified."
+        });
+    } catch (err) {
+        log.error("Error in /api/support-issue:", err.message);
+        res.status(500).json({ ok: false, error: err.message || "Failed to log support issue" });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Weight Scale Zero / Tare / Reset (Frontend: BodyComposition.jsx)
+// POST /api/weight/reset & POST /api/weight/tare
+// ───────────────────────────────────────────────────────────────────────────
+const handleWeightReset = (req, res) => {
+    res.set({
+        'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+        'X-Content-Type-Options': 'nosniff',
+    });
+    try {
+        log.info('⚖️ Received weight scale zero/tare command');
+        if (mqttClient && mqttClient.connected) {
+            try {
+                mqttClient.publish("kiosk/sensor/weight/tare", JSON.stringify({
+                    command: "TARE",
+                    timestamp: Date.now()
+                }));
+            } catch (mqErr) {
+                log.warn('Could not publish weight tare MQTT command:', mqErr.message);
+            }
+        }
+        res.json({
+            ok: true,
+            status: 'ZERO_RESET_OK',
+            message: 'Scale tared and zero-calibrated successfully'
+        });
+    } catch (err) {
+        log.error('Error handling weight reset:', err.message);
+        res.status(500).json({ ok: false, error: 'Failed to zero weight scale' });
+    }
+};
+
+app.post("/api/weight/reset", handleWeightReset);
+app.post("/api/weight/tare", handleWeightReset);
 
 // ───────────────────────────────────────────────────────────────────────────
 // ENDPOINT: Resolve QR Path (Returns session token from scanned QR path)

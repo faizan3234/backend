@@ -147,6 +147,85 @@ export function initializeDatabase(customPath = null) {
             `);
         } catch (e) {}
 
+        // Migration helper: ensure support_cases, kits, growth and streak tables exist
+        try {
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS support_cases (
+                    case_id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    kind TEXT NOT NULL DEFAULT 'ISSUE_REPORT',
+                    status TEXT NOT NULL DEFAULT 'OPEN',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    evidence_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS support_notes (
+                    note_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    case_id TEXT NOT NULL REFERENCES support_cases(case_id),
+                    actor TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    note TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS kits (
+                    kit_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    price REAL NOT NULL DEFAULT 0,
+                    quantity INTEGER NOT NULL DEFAULT 0,
+                    motor_id INTEGER,
+                    category TEXT,
+                    image_path TEXT DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT OR IGNORE INTO kits (kit_id, name, description, price, quantity, motor_id, image_path, updated_at)
+                SELECT kit_id, name, description, price, quantity, motor_id, image_path, updated_at FROM inventory;
+
+                CREATE TABLE IF NOT EXISTS growth_referrals (
+                    referral_id TEXT PRIMARY KEY,
+                    referrer_user_id TEXT NOT NULL,
+                    referrer_code TEXT NOT NULL,
+                    referee_user_id TEXT,
+                    referee_device_sig TEXT,
+                    status TEXT NOT NULL DEFAULT 'PENDING',
+                    active_days INTEGER NOT NULL DEFAULT 0,
+                    reward_claimed INTEGER NOT NULL DEFAULT 0,
+                    metadata TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_growth_referrals_referrer ON growth_referrals(referrer_user_id);
+                CREATE INDEX IF NOT EXISTS idx_growth_referrals_code ON growth_referrals(referrer_code);
+                CREATE INDEX IF NOT EXISTS idx_growth_referrals_referee ON growth_referrals(referee_user_id);
+
+                CREATE TABLE IF NOT EXISTS growth_devices (
+                    device_sig TEXT PRIMARY KEY,
+                    bound_user_id TEXT NOT NULL,
+                    platform TEXT,
+                    user_agent TEXT,
+                    ip_address TEXT,
+                    risk_score TEXT DEFAULT 'LOW',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_growth_devices_user ON growth_devices(bound_user_id);
+
+                CREATE TABLE IF NOT EXISTS streak_restores (
+                    restore_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    order_id TEXT,
+                    payment_id TEXT,
+                    amount REAL NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'INITIATED',
+                    streak_before INTEGER NOT NULL DEFAULT 0,
+                    streak_after INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_streak_restores_user ON streak_restores(user_id);
+            `);
+        } catch (e) {}
+
         // Run schema initialization
         const schema = readFileSync(SCHEMA_PATH, 'utf-8');
         db.exec(uniqueFulfillmentSafe ? schema : schema.replace(
