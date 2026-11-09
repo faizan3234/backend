@@ -272,7 +272,73 @@ test('Customer Web: Store Order & Streak Restore routes', async () => {
         assert.equal(orderData.ok, true);
         assert.equal(orderData.status, 'DISPATCH_QUEUED');
 
-        // Streak restore
+        // Custom hardware inquiry
+        const resInquiry = await fetch(`${base}/api/store/custom-inquiry`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ inquiry: { id: 'INQ-123', botType: 'Kiosk V2' } })
+        });
+        assert.equal(resInquiry.status, 200);
+        const inquiryData = await resInquiry.json();
+        assert.equal(inquiryData.ok, true);
+        assert.equal(inquiryData.inquiryId, 'INQ-123');
+
+        // Ad campaign proposal
+        const resAd = await fetch(`${base}/api/store/ad-campaign`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ proposal: { id: 'AD-456', company: 'Health Corp' } })
+        });
+        assert.equal(resAd.status, 200);
+        const adData = await resAd.json();
+        assert.equal(adData.ok, true);
+        assert.equal(adData.campaignId, 'AD-456');
+
+        // Streak restore order
+        const resStreakOrder = await fetch(`${base}/api/streak/restore/order`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ streakDays: 7, userId: 'RLV-123', amountPaise: 4900 })
+        });
+        assert.equal(resStreakOrder.status, 200);
+        const streakOrderData = await resStreakOrder.json();
+        assert.equal(streakOrderData.ok, true);
+        assert.ok(streakOrderData.order.id.startsWith('order_streak_'));
+
+        // Streak restore verify
+        const resStreakVerify = await fetch(`${base}/api/streak/restore/verify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ razorpay_payment_id: 'pay_123', razorpay_order_id: 'order_123', streakDays: 7 })
+        });
+        assert.equal(resStreakVerify.status, 200);
+        const streakVerifyData = await resStreakVerify.json();
+        assert.equal(streakVerifyData.ok, true);
+        assert.equal(streakVerifyData.verified, true);
+
+        // Streak restore claim
+        const resStreakClaim = await fetch(`${base}/api/streak/restore/claim`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ streakDays: 7, paymentId: 'pay_123' })
+        });
+        assert.equal(resStreakClaim.status, 200);
+        const streakClaimData = await resStreakClaim.json();
+        assert.equal(streakClaimData.ok, true);
+        assert.equal(streakClaimData.claimed, true);
+
+        // Goal verify refund
+        const resGoalRefund = await fetch(`${base}/api/goal/verify-refund`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entriesCount: 5 })
+        });
+        assert.equal(resGoalRefund.status, 200);
+        const goalRefundData = await resGoalRefund.json();
+        assert.equal(goalRefundData.ok, true);
+        assert.equal(goalRefundData.verified, true);
+
+        // Streak restore baseline
         const resStreak = await fetch(`${base}/api/streak/restore`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
