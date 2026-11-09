@@ -86,6 +86,7 @@ export class PaymentV2Service {
         this._kioskPrivateKey = null;
         this._cloudPublicKey = null;
         this.clockOffsetMs = 0;
+        this._activeRequestsMonotonic = new Map();
     }
 
     setClockOffset(offsetMs) {
@@ -151,7 +152,15 @@ export class PaymentV2Service {
      */
     expireStaleRequests() {
         try {
-            const now = Date.now();
+            const now = this.getEffectiveNow();
+            if (this._activeRequestsMonotonic) {
+                const currentMono = process.hrtime.bigint();
+                for (const [reqId, mono] of this._activeRequestsMonotonic.entries()) {
+                    if (Number(currentMono - mono.createdAtMonotonic) / 1e6 > mono.ttlMs + 60000) {
+                        this._activeRequestsMonotonic.delete(reqId);
+                    }
+                }
+            }
             const stmt = this.db.prepare(`
                 UPDATE payment_v2_requests
                 SET status = 'EXPIRED'
@@ -380,6 +389,12 @@ export class PaymentV2Service {
         const requestNonce = generateRequestNonce();
         const confirmationCode = generateConfirmationCode();
         const expiresAt = now + (this.ttlSeconds * 1000);
+        if (this._activeRequestsMonotonic) {
+            this._activeRequestsMonotonic.set(requestId, {
+                createdAtMonotonic: process.hrtime.bigint(),
+                ttlMs: this.ttlSeconds * 1000
+            });
+        }
 
         // Calculate HMAC code verifier (never store plaintext code in DB)
         const codeHmac = calculateCodeHmac(this.pepper, {
@@ -908,7 +923,25 @@ export class PaymentV2Service {
             };
         }
 
-        if (request.status === 'EXPIRED' || Date.now() > request.expires_at) {
+        // Monotonic Physical Time Guard: protects against RTC jumps and clock skew
+        const now = this.getEffectiveNow();
+        let isExpired = request.status === 'EXPIRED';
+        if (!isExpired) {
+            const mono = this._activeRequestsMonotonic?.get(request.request_id);
+            if (mono) {
+                const elapsedMs = Number(process.hrtime.bigint() - mono.createdAtMonotonic) / 1e6;
+                // If monotonic physical timer proves real elapsed time < TTL + grace margin, it is valid!
+                if (elapsedMs <= mono.ttlMs + 30000) {
+                    isExpired = false;
+                } else {
+                    isExpired = true;
+                }
+            } else {
+                isExpired = now > request.expires_at;
+            }
+        }
+
+        if (isExpired) {
             this.db.prepare("UPDATE payment_v2_requests SET status = 'EXPIRED' WHERE request_id = ?").run(request.request_id);
             return {
                 ok: false,
@@ -970,12 +1003,12 @@ export class PaymentV2Service {
         }
 
         // 7. Handle Correct Code (Atomic state update)
-        const now = Date.now();
+        const verifiedNow = this.getEffectiveNow();
         const updateResult = this.db.prepare(`
             UPDATE payment_v2_requests
             SET status = 'VERIFIED', verified_at = ?, consumed_at = ?
             WHERE request_id = ? AND status = 'ACTIVE'
-        `).run(now, now, request.request_id);
+        `).run(verifiedNow, verifiedNow, request.request_id);
 
         if (updateResult.changes === 0) {
             // Concurrent request already changed the status
