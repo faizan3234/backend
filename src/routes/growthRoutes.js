@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * RELIV GROWTH, REFERRAL & ANTI-CHEAT ENGINE
+ * RELIV GROWTH, REFERRAL & ANTI-CHEAT ENGINE (CLOUD BRIDGE & KIOSK COMPATIBLE)
  * Policy: "ONE DEVICE ONLY ONE APP"
  * Multi-layer race condition protection with atomic SQLite transactions
  * ═══════════════════════════════════════════════════════════════════════════
@@ -67,6 +67,15 @@ export function initializeGrowthTables(db) {
                 image_path TEXT DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS support_cases (
+                case_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                kind TEXT,
+                status TEXT DEFAULT 'OPEN',
+                evidence_json TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
         `);
 
@@ -289,7 +298,7 @@ export function createGrowthRouter({ getDb }) {
 
     // ─────────────────────────────────────────────────────────────────────────
     // 3. ANONYMOUS LEADERBOARD
-    // GET /api/growth/referral/leaderboard & GET /growth/referral/leaderboard
+    // GET /api/growth/leaderboard & GET /api/growth/referral/leaderboard
     // ─────────────────────────────────────────────────────────────────────────
     const handleLeaderboard = (req, res) => {
         res.set('Cache-Control', 'private, no-store');
@@ -336,6 +345,8 @@ export function createGrowthRouter({ getDb }) {
 
     router.get('/api/growth/referral/leaderboard', handleLeaderboard);
     router.get('/growth/referral/leaderboard', handleLeaderboard);
+    router.get('/api/growth/leaderboard', handleLeaderboard);
+    router.get('/growth/leaderboard', handleLeaderboard);
 
     // ─────────────────────────────────────────────────────────────────────────
     // 4. DEVICE BINDING (ANTI-CHEAT "ONE DEVICE ONLY ONE APP")
@@ -406,13 +417,151 @@ export function createGrowthRouter({ getDb }) {
     router.post('/growth/device-bind', handleDeviceBind);
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 5. CUSTOMER WEB STORE DISPATCH
+    // 5. REFERRAL LANDING TRACK & PUBLIC QUERY ENDPOINT
+    // ALL-IN-ONE compatibility with customer-web/api/growth/referrals.js
+    // ─────────────────────────────────────────────────────────────────────────
+    const handleReferralsUnified = (req, res) => {
+        res.set('Cache-Control', 'private, no-store');
+        const action = req.query?.action || (req.body && req.body.action) || 'leaderboard';
+
+        if (action === 'leaderboard') {
+            return handleLeaderboard(req, res);
+        }
+
+        if (action === 'track') {
+            try {
+                const db = getSafeDb();
+                const body = req.body || {};
+                const targetRef = req.query?.refCode || body.refCode;
+                const visitorId = req.query?.userId || body.userId;
+                const deviceSig = body.hardwareHash || body.deviceSignature || body.deviceSig;
+
+                if (!targetRef) {
+                    return res.status(400).json({ ok: false, error: 'Missing refCode' });
+                }
+
+                if (db && deviceSig) {
+                    const existingDevice = db.prepare('SELECT * FROM growth_devices WHERE device_sig = ?').get(deviceSig);
+                    if (existingDevice) {
+                        return res.status(200).json({
+                            ok: true,
+                            ignored: true,
+                            reason: 'DEVICE_ALREADY_REGISTERED',
+                            message: 'One device only one app policy: duplicate device reinstallation yields zero referral credit.'
+                        });
+                    }
+
+                    if (visitorId) {
+                        db.prepare(`
+                            INSERT OR IGNORE INTO growth_devices (device_sig, bound_user_id, platform, risk_score, created_at, updated_at)
+                            VALUES (?, ?, 'web', 'LOW', datetime('now'), datetime('now'))
+                        `).run(deviceSig, visitorId);
+                    }
+                }
+
+                return res.status(200).json({ ok: true, tracked: true, refCode: targetRef });
+            } catch (err) {
+                return res.status(500).json({ ok: false, error: err.message || 'Failed to track referral' });
+            }
+        }
+
+        if (action === 'stats') {
+            const db = getSafeDb();
+            const targetId = req.query?.userId || req.body?.userId;
+            let qualified = 0;
+            if (db && targetId) {
+                try {
+                    const row = db.prepare('SELECT COUNT(*) as count FROM growth_referrals WHERE referrer_user_id = ? AND referee_user_id IS NOT NULL').get(targetId);
+                    qualified = row?.count || 0;
+                } catch {}
+            }
+            return res.json({
+                ok: true,
+                stats: {
+                    trackedOpens: 0,
+                    acceptedReferrals: qualified,
+                    qualifiedReferrals: qualified
+                }
+            });
+        }
+
+        return handleLeaderboard(req, res);
+    };
+
+    router.get('/api/growth/referrals', handleReferralsUnified);
+    router.post('/api/growth/referrals', handleReferralsUnified);
+    router.get('/growth/referrals', handleReferralsUnified);
+    router.post('/growth/referrals', handleReferralsUnified);
+
+    const handleReferralTrack = (req, res) => {
+        req.query = req.query || {};
+        req.query.action = 'track';
+        return handleReferralsUnified(req, res);
+    };
+    router.post('/api/growth/track', handleReferralTrack);
+    router.post('/growth/track', handleReferralTrack);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 6. ADMIN GROWTH INTELLIGENCE (/yuewyue)
+    // GET /api/growth/admin & GET /growth/admin
+    // ─────────────────────────────────────────────────────────────────────────
+    const handleGrowthAdmin = (req, res) => {
+        res.set('Cache-Control', 'private, no-store');
+        const authHeader = req.headers?.authorization || '';
+        const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+        const passkey = req.query?.passkey || token;
+
+        const isAuthorized =
+            passkey === 'reliv-admin-2026' ||
+            token.toLowerCase() === 'relivcustomercare@gmail.com' ||
+            token.toLowerCase() === 'faizan3234@gmail.com';
+
+        if (!isAuthorized) {
+            return res.status(403).json({
+                ok: false,
+                error: 'UNAUTHORIZED_ADMIN_ACCESS',
+                message: 'Access to growth admin intelligence requires authorized credentials.'
+            });
+        }
+
+        const db = getSafeDb();
+        let totalUsers = 0;
+        let totalDevices = 0;
+        let totalReferrals = 0;
+
+        if (db) {
+            try {
+                totalUsers = db.prepare('SELECT COUNT(DISTINCT referrer_user_id) as c FROM growth_referrals').get()?.c || 0;
+                totalDevices = db.prepare('SELECT COUNT(*) as c FROM growth_devices').get()?.c || 0;
+                totalReferrals = db.prepare('SELECT COUNT(*) as c FROM growth_referrals WHERE referee_user_id IS NOT NULL').get()?.c || 0;
+            } catch {}
+        }
+
+        return res.json({
+            ok: true,
+            overview: {
+                uniqueRegisteredUsers: totalUsers,
+                totalQualifiedReferrals: totalReferrals,
+                deviceSecurity: {
+                    policy: 'ONE_DEVICE_ONLY_ONE_APP',
+                    enforced: true,
+                    totalRegisteredDevices: totalDevices,
+                    totalBlockedDuplicateLoops: 0
+                }
+            }
+        });
+    };
+    router.get('/api/growth/admin', handleGrowthAdmin);
+    router.get('/growth/admin', handleGrowthAdmin);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 7. CUSTOMER WEB STORE DISPATCH
     // POST /api/store/order & POST /store/order
     // ─────────────────────────────────────────────────────────────────────────
     const handleStoreOrder = (req, res) => {
         res.set('Cache-Control', 'private, no-store');
         try {
-            const { orderId, product, quantity, customer, totalAmount } = req.body || {};
+            const { orderId } = req.body || {};
             const resolvedOrderId = orderId || `ORD-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
             return res.json({
                 ok: true,
@@ -429,14 +578,13 @@ export function createGrowthRouter({ getDb }) {
     router.post('/store/order', handleStoreOrder);
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 6. STREAK RESTORE ORDER & VERIFY
-    // POST /api/streak/restore & POST /streak/restore
+    // 8. STREAK RESTORE ORDER, VERIFY, CLAIM & GOAL VERIFY
     // ─────────────────────────────────────────────────────────────────────────
     const handleStreakRestore = (req, res) => {
         res.set('Cache-Control', 'private, no-store');
         try {
             const db = getSafeDb();
-            const { userId, orderId, paymentId, amount, streakBefore, streakAfter } = req.body || {};
+            const { userId, orderId, paymentId, amount, streakBefore } = req.body || {};
             const restoreId = `STREAK-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
             if (db && userId) {
@@ -451,7 +599,7 @@ export function createGrowthRouter({ getDb }) {
                         paymentId || null,
                         amount || 0,
                         streakBefore || 0,
-                        streakAfter || (streakBefore ? streakBefore + 1 : 1)
+                        streakBefore ? streakBefore + 1 : 1
                     );
                 })();
             }
@@ -471,9 +619,6 @@ export function createGrowthRouter({ getDb }) {
     router.post('/api/streak/restore', handleStreakRestore);
     router.post('/streak/restore', handleStreakRestore);
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 7. CUSTOM HARDWARE INQUIRY & AD CAMPAIGN PROPOSAL DISPATCH
-    // ─────────────────────────────────────────────────────────────────────────
     const handleCustomInquiry = (req, res) => {
         res.set('Cache-Control', 'private, no-store');
         try {
@@ -510,13 +655,10 @@ export function createGrowthRouter({ getDb }) {
     router.post('/api/store/ad-campaign', handleAdCampaignProposal);
     router.post('/store/ad-campaign', handleAdCampaignProposal);
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 8. STREAK RESTORE ORDER, VERIFY, CLAIM & GOAL VERIFY
-    // ─────────────────────────────────────────────────────────────────────────
     const handleStreakOrder = (req, res) => {
         res.set('Cache-Control', 'private, no-store');
         try {
-            const { streakDays, userId, amountPaise } = req.body || {};
+            const { amountPaise } = req.body || {};
             const orderId = `order_streak_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
             return res.json({
                 ok: true,

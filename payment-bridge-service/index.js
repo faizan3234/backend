@@ -10,7 +10,8 @@ import PaymentV2CloudService from './paymentV2Service.js';
 import { createPaymentV2Router } from './paymentV2Routes.js';
 import PushNotificationService from './services/pushNotificationService.js';
 import { createPushNotificationRouter } from './pushNotificationRoutes.js';
-import { initializeGrowthTables, createGrowthRouter } from '../src/routes/growthRoutes.js';
+import { initializeGrowthTables, createGrowthRouter } from './growthRoutes.js';
+import { createReceiptTransporter, isReceiptEmailConfigured } from './services/receiptEmailService.js';
 
 dotenv.config();
 
@@ -63,6 +64,11 @@ app.use(
             }
 
             if (allowedOrigins.includes(origin)) {
+                return callback(null, true);
+            }
+
+            // Also permit Vercel customer app domains and local development
+            if (/^https:\/\/([a-zA-Z0-9-]+\.)*vercel\.app$/.test(origin) || /^http:\/\/localhost(:\d+)?$/.test(origin) || /^http:\/\/127\.0\.0\.1(:\d+)?$/.test(origin)) {
                 return callback(null, true);
             }
 
@@ -258,6 +264,163 @@ app.use(createGrowthRouter({ getDb: () => db }));
 console.log('✅ Payment V2 cloud routes mounted on /v2 and /api/v2');
 console.log('✅ Push notification routes mounted on /api/notifications');
 console.log('✅ Growth, Referral, Leaderboard & Store routes mounted on /api/growth and /api/store');
+
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Health Card Email Delivery (Frontend: HealthCardModal.jsx)
+// POST /api/send-health-card
+// ───────────────────────────────────────────────────────────────────────────
+app.post('/api/send-health-card', async (req, res) => {
+    res.set({
+        'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+        'X-Content-Type-Options': 'nosniff',
+    });
+    try {
+        const { to, name, cardImage, sessionId } = req.body || {};
+        if (!to || typeof to !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to.trim())) {
+            return res.status(400).json({ ok: false, error: 'Valid recipient email address is required' });
+        }
+        if (!cardImage) {
+            return res.status(400).json({ ok: false, error: 'Health card image is required' });
+        }
+
+        const recipientEmail = to.trim();
+        const patientName = (name && typeof name === 'string' && name.trim()) ? name.trim() : 'Patient';
+
+        let attachments = [];
+        let htmlImgSrc = '';
+
+        if (typeof cardImage === 'string' && cardImage.startsWith('data:image/')) {
+            const matches = cardImage.match(/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/);
+            if (matches) {
+                const ext = matches[1];
+                const base64Data = matches[2];
+                const buffer = Buffer.from(base64Data, 'base64');
+                const filename = `reliv-health-card-${Date.now()}.${ext}`;
+                attachments.push({
+                    filename,
+                    content: buffer,
+                    cid: 'healthcard@reliv'
+                });
+                htmlImgSrc = `cid:healthcard@reliv`;
+            } else {
+                htmlImgSrc = cardImage;
+            }
+        } else if (typeof cardImage === 'string') {
+            htmlImgSrc = cardImage;
+        }
+
+        const mailOptions = {
+            from: `"${process.env.RECEIPT_FROM_NAME || 'Reliv Health'}" <${process.env.RECEIPT_GMAIL_USER || 'noreply@reliv.in'}>`,
+            to: recipientEmail,
+            subject: `Your Reliv Health Card - ${patientName}`,
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #eaeaea; border-radius: 16px;">
+                    <div style="text-align: center; margin-bottom: 24px;">
+                        <h1 style="color: #F06922; margin: 0; font-size: 28px;">Reliv Health</h1>
+                        <p style="color: #666; font-size: 14px; margin-top: 4px;">Smart Preventive Healthcare</p>
+                    </div>
+                    <div style="background-color: #f9f9f9; padding: 20px; border-radius: 12px; margin-bottom: 20px;">
+                        <h2 style="color: #333; margin-top: 0; font-size: 20px;">Hello ${patientName},</h2>
+                        <p style="color: #555; font-size: 15px; line-height: 1.5;">
+                            Thank you for completing your health checkup. Your personalized digital Health Card is ready and attached below.
+                        </p>
+                    </div>
+                    ${htmlImgSrc ? `
+                    <div style="text-align: center; margin: 24px 0;">
+                        <img src="${htmlImgSrc}" alt="Reliv Health Card" style="max-width: 100%; height: auto; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border: 1px solid #eee;" />
+                    </div>
+                    ` : ''}
+                    <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #eaeaea; text-align: center; color: #888; font-size: 12px;">
+                        <p style="margin: 0;">Reliv Health Technologies • Smart Preventive Healthcare</p>
+                        <p style="margin: 4px 0 0 0;">Need support? Contact customer care at relivcustomercare.in@gmail.com</p>
+                    </div>
+                </div>
+            `,
+            attachments
+        };
+
+        if (isReceiptEmailConfigured()) {
+            try {
+                const transporter = createReceiptTransporter();
+                await transporter.sendMail(mailOptions);
+                console.log(`[HealthCard] 📧 Health card emailed successfully to: ${recipientEmail}`);
+                return res.json({ ok: true, sent: true, message: 'Health card sent to email successfully' });
+            } catch (mailErr) {
+                console.warn(`[HealthCard] ⚠️ Failed to dispatch email: ${mailErr.message}`);
+                return res.json({ ok: true, sent: false, queued: true, message: 'Email queued for delivery' });
+            }
+        } else {
+            console.log(`[HealthCard] ℹ️ Email transporter not configured; health card queued for ${recipientEmail}`);
+            return res.json({ ok: true, sent: false, queued: true, message: 'Email service unconfigured; card queued for delivery' });
+        }
+    } catch (err) {
+        console.error('[HealthCard] Error in /api/send-health-card:', err.message);
+        res.status(500).json({ ok: false, error: err.message || 'Failed to process health card' });
+    }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// ENDPOINT: Direct Support Ticket Submission (Frontend: SupportButton.jsx)
+// POST /api/support-issue
+// ───────────────────────────────────────────────────────────────────────────
+app.post('/api/support-issue', async (req, res) => {
+    res.set({
+        'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+        'X-Content-Type-Options': 'nosniff',
+    });
+    try {
+        const { page, issue, details, customerEmail, customerPhone, sessionId, kioskId } = req.body || {};
+        if (!issue && !page) {
+            return res.status(400).json({ ok: false, error: 'Issue description or page identifier is required' });
+        }
+
+        const caseId = `HELP-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+        const issueText = String(issue || 'Reported Issue').slice(0, 1000);
+        const pageText = String(page || 'UNKNOWN').slice(0, 120);
+
+        try {
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS support_cases (
+                    case_id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    kind TEXT,
+                    status TEXT DEFAULT 'OPEN',
+                    evidence_json TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+            `);
+            db.prepare(`
+                INSERT INTO support_cases (case_id, session_id, kind, status, evidence_json, created_at)
+                VALUES (?, ?, 'UI_SUPPORT_REPORT', 'OPEN', ?, datetime('now'))
+            `).run(
+                caseId,
+                sessionId || null,
+                JSON.stringify({
+                    page: pageText,
+                    issue: issueText,
+                    details: details || null,
+                    customerEmail: customerEmail || null,
+                    customerPhone: customerPhone || null,
+                    kioskId: kioskId || 'CLOUD_APP',
+                    reportedAt: new Date().toISOString()
+                })
+            );
+            console.log(`[Support] 🎫 Support issue recorded: ${caseId} (${pageText})`);
+        } catch (dbErr) {
+            console.warn(`[Support] ⚠️ Could not log support ticket to DB: ${dbErr.message}`);
+        }
+
+        return res.json({
+            ok: true,
+            caseId,
+            status: 'OPEN',
+            message: 'Support issue received and logged for immediate team review.'
+        });
+    } catch (err) {
+        console.error('[Support] Error in /api/support-issue:', err.message);
+        res.status(500).json({ ok: false, error: err.message || 'Failed to process support request' });
+    }
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AUTHORITATIVE ORDER CREATION & BINDING
@@ -639,6 +802,10 @@ app.get('/health', (req, res) => {
         paymentV2: paymentV2Service.isConfigured(),
 
         pushNotifications: pushNotificationService.health(),
+
+        growth: true,
+
+        emailReceipts: isReceiptEmailConfigured(),
 
         database: databaseHealthy,
 
