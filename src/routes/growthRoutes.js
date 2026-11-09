@@ -144,11 +144,17 @@ export function createGrowthRouter({ getDb }) {
                 const txResult = db.transaction(() => {
                     const existing = db.prepare('SELECT * FROM growth_referrals WHERE referrer_user_id = ? AND referee_user_id IS NULL').get(effectiveUserId);
                     if (existing) {
+                        if (name && (!existing.metadata || !existing.metadata.includes(name))) {
+                            try {
+                                db.prepare('UPDATE growth_referrals SET metadata = ?, updated_at = datetime("now") WHERE referrer_user_id = ? AND referee_user_id IS NULL')
+                                    .run(JSON.stringify({ name, displayName: name, publicAlias: name || `Member ${existing.referrer_code}` }), effectiveUserId);
+                            } catch {}
+                        }
                         return {
                             ok: true,
                             referralCode: existing.referrer_code,
                             userId: effectiveUserId,
-                            publicAlias: publicAlias || `Member ${existing.referrer_code}`,
+                            publicAlias: name || publicAlias || `Member ${existing.referrer_code}`,
                             isExisting: true
                         };
                     }
@@ -166,14 +172,14 @@ export function createGrowthRouter({ getDb }) {
                         refId,
                         effectiveUserId,
                         effectiveCode,
-                        JSON.stringify({ name: name || '', email: email || '', publicAlias: publicAlias || `Member ${effectiveCode}` })
+                        JSON.stringify({ name: name || '', displayName: name || '', publicAlias: name || publicAlias || `Member ${effectiveCode}` })
                     );
 
                     return {
                         ok: true,
                         referralCode: effectiveCode,
                         userId: effectiveUserId,
-                        publicAlias: publicAlias || `Member ${effectiveCode}`,
+                        publicAlias: name || publicAlias || `Member ${effectiveCode}`,
                         isNew: true
                     };
                 })();
@@ -215,9 +221,21 @@ export function createGrowthRouter({ getDb }) {
 
             if (db) {
                 const txResult = db.transaction(() => {
-                    const referrer = db.prepare('SELECT * FROM growth_referrals WHERE referrer_code = ?').get(cleanCode);
+                    let referrer = db.prepare('SELECT * FROM growth_referrals WHERE referrer_code = ?').get(cleanCode);
                     if (!referrer) {
-                        return { status: 404, payload: { ok: false, error: 'Referral code not found' } };
+                        if (/^RLV-[A-Z0-9]{4,10}$/.test(cleanCode)) {
+                            const syntheticUserId = `RLV-${cleanCode.replace('RLV-', '')}`;
+                            const refRegId = `REF-REG-${crypto.randomUUID()}`;
+                            const fallbackName = (req.body && req.body.referrerName) ? req.body.referrerName : `Member ${cleanCode}`;
+                            const refMeta = JSON.stringify({ name: fallbackName, displayName: fallbackName, publicAlias: fallbackName });
+                            db.prepare(`
+                                INSERT INTO growth_referrals (referral_id, referrer_user_id, referrer_code, status, metadata, created_at, updated_at)
+                                VALUES (?, ?, ?, 'QUALIFIED', ?, datetime('now'), datetime('now'))
+                            `).run(refRegId, syntheticUserId, cleanCode, refMeta);
+                            referrer = { referrer_user_id: syntheticUserId, referrer_code: cleanCode, metadata: refMeta };
+                        } else {
+                            return { status: 404, payload: { ok: false, error: 'Referral code not found' } };
+                        }
                     }
 
                     // Anti-cheat: Self referral rejection
@@ -262,10 +280,15 @@ export function createGrowthRouter({ getDb }) {
                     }
 
                     const claimId = `CLAIM-${crypto.randomUUID()}`;
+                    const claimMeta = JSON.stringify({
+                        refereeName: (req.body && (req.body.refereeName || req.body.name)) || '',
+                        refereeUserId: refereeUserId || '',
+                        deviceSig: deviceSig || ''
+                    });
                     db.prepare(`
-                        INSERT INTO growth_referrals (referral_id, referrer_user_id, referrer_code, referee_user_id, referee_device_sig, status, active_days, reward_claimed, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, 'QUALIFIED', 1, 1, datetime('now'), datetime('now'))
-                    `).run(claimId, referrer.referrer_user_id, cleanCode, refereeUserId || null, deviceSig || null);
+                        INSERT INTO growth_referrals (referral_id, referrer_user_id, referrer_code, referee_user_id, referee_device_sig, status, active_days, reward_claimed, metadata, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, 'QUALIFIED', 1, 1, ?, datetime('now'), datetime('now'))
+                    `).run(claimId, referrer.referrer_user_id, cleanCode, refereeUserId || null, deviceSig || null, claimMeta);
 
                     return {
                         status: 200,
@@ -321,20 +344,29 @@ export function createGrowthRouter({ getDb }) {
                 } catch {}
 
                 const rows = db.prepare(`
-                    SELECT referrer_user_id, referrer_code, COUNT(*) as qualifiedReferrals, metadata
-                    FROM growth_referrals
-                    WHERE referee_user_id IS NOT NULL AND status IN ('QUALIFIED', 'ACCEPTED')
-                    GROUP BY referrer_user_id
-                    ORDER BY qualifiedReferrals DESC
+                    SELECT 
+                        reg.referrer_user_id, 
+                        reg.referrer_code, 
+                        reg.metadata as reg_metadata,
+                        COUNT(c.referral_id) as acceptedReferrals,
+                        SUM(CASE WHEN c.status = 'QUALIFIED' THEN 1 ELSE 0 END) as qualifiedReferrals
+                    FROM growth_referrals reg
+                    LEFT JOIN growth_referrals c ON c.referrer_user_id = reg.referrer_user_id AND c.referee_user_id IS NOT NULL
+                    WHERE reg.referee_user_id IS NULL
+                    GROUP BY reg.referrer_user_id
+                    ORDER BY (SUM(CASE WHEN c.status = 'QUALIFIED' THEN 10 ELSE 1 END)) DESC
                     LIMIT ?
                 `).all(limit);
 
                 leaderboard = rows.map((r, idx) => {
                     let meta = {};
                     try {
-                        meta = JSON.parse(r.metadata || '{}');
+                        meta = JSON.parse(r.reg_metadata || '{}');
                     } catch {}
-                    const realName = meta.name?.trim() || meta.displayName?.trim() || meta.patientName?.trim() || meta.publicAlias?.trim() || `Patient ${r.referrer_user_id}`;
+                    const realName = meta.name?.trim() || meta.displayName?.trim() || meta.patientName?.trim() || meta.publicAlias?.trim() || (r.referrer_user_id ? `Member ${r.referrer_user_id}` : `Member ${r.referrer_code}`);
+                    const accepted = Number(r.acceptedReferrals) || 0;
+                    const qualified = Number(r.qualifiedReferrals) || 0;
+                    const score = (qualified * 10) + accepted;
                     return {
                         rank: idx + 1,
                         name: realName,
@@ -342,8 +374,9 @@ export function createGrowthRouter({ getDb }) {
                         publicAlias: realName,
                         userId: r.referrer_user_id,
                         referralCode: r.referrer_code,
-                        qualifiedReferrals: r.qualifiedReferrals || 0,
-                        score: (r.qualifiedReferrals || 0) * 10
+                        acceptedReferrals: accepted,
+                        qualifiedReferrals: qualified,
+                        score
                     };
                 });
             }
