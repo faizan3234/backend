@@ -40,6 +40,8 @@ function normalizeSettings(settings = {}) {
 
   return {
     enabled: source.enabled === true,
+    sound: source.sound !== false,
+    vibrate: source.vibrate !== false,
     meals,
     weight: normalizeTimedReminder(source.weight, 'Morning Weight Check-in'),
     shake: normalizeTimedReminder(source.shake, 'Shake Reminder'),
@@ -221,9 +223,10 @@ export default class PushNotificationService {
     }
 
     try {
+      const settings = normalizeSettings(JSON.parse(row.settings_json || '{}'));
       const response = await this.webpush.sendNotification(
         recordSubscription(row),
-        JSON.stringify(payload),
+        JSON.stringify({ ...payload, sound: settings.sound, vibrate: settings.vibrate }),
         { TTL: 3600, urgency: 'high' }
       );
       return { ok: true, statusCode: response?.statusCode || 201 };
@@ -281,7 +284,8 @@ export default class PushNotificationService {
     let state;
     try {
       settings = normalizeSettings(JSON.parse(row.settings_json || '{}'));
-      state = JSON.parse(row.last_dispatched_json || '{}');
+      const stored = JSON.parse(row.last_dispatched_json || '{}');
+      state = stored && typeof stored === 'object' && !Array.isArray(stored) ? Object.fromEntries(Object.entries(stored).filter(([,at]) => Number.isFinite(at) && now.getTime() - at < 7 * 86400000)) : {};
     } catch {
       return 0;
     }

@@ -2,7 +2,7 @@
 // Keep the provision version across later password resets so they are not undone.
 export const ownerAdminProvision = {
   "email": "khanfaizan3234@gmail.com",
-  "version": "owner-2026-09-22",
+  "version": "owner-2026-11-05",
   "record": {
     "algorithm": "pbkdf2",
     "salt": "c261bc2256169e0ff72f5de8bccf89a3",

@@ -21,3 +21,28 @@ export function assertKitCanBeReassigned(db,kitId) {
       AND (t.status='VERIFIED' OR EXISTS (SELECT 1 FROM sessions s WHERE s.session_id=t.session_id AND julianday(s.expires_at)>julianday('now'))) LIMIT 1`).get(kitId);
     if (reserved||jobs||pending) throw conflict('An order still references this item. Finish or reconcile it before renaming, moving or deleting this slot.');
 }
+
+// An absolute count from an old admin form must not undo a completed sale.
+export function assertExpectedStock(item, expectedQuantity) {
+    if (expectedQuantity === undefined) {
+        throw Object.assign(new Error('Refresh inventory before changing stock. This admin page needs the latest stock count.'), {status:428,code:'STOCK_REFRESH_REQUIRED'});
+    }
+    const expected = stockInteger(expectedQuantity);
+    if (expected !== item.quantity) {
+        throw Object.assign(new Error('Stock changed while this form was open. Close the form, refresh inventory, and check the current count before saving.'), {status:409,code:'STOCK_CHANGED'});
+    }
+}
+export function medicineText(value, label, maxLength, {optional=false}={}) {
+    if (typeof value !== 'string' || (!optional && !value.trim()) || value.trim().length > maxLength)
+        throw Object.assign(new Error(`${label} must be ${optional ? 'text' : 'non-empty text'} of at most ${maxLength} characters.`), {status:400});
+    return value.trim();
+}
+export function medicinePrice(value) {
+    if ((typeof value !== 'number' && typeof value !== 'string') || String(value).trim() === '')
+        throw Object.assign(new Error('Enter a valid medicine price.'), {status:400});
+    const price = Number(value);
+    // Keep ten-item cart arithmetic exact in integer paise.
+    if (!Number.isFinite(price) || price < 0 || !Number.isSafeInteger(Math.round(price * 100) * 10))
+        throw Object.assign(new Error('Enter a valid medicine price.'), {status:400});
+    return price;
+}
