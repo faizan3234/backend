@@ -90,3 +90,16 @@ test('scheduled reminder is deduplicated for the same local date', async () => {
   assert.equal(service.webpush.sent.length, 1);
   db.close();
 });
+
+test('cloud hydration matches the phone 90-minute schedule and respects sound preferences', async () => {
+ const { service, db } = makeService();
+ try {
+  service.registerSubscription({subscription:{endpoint:'https://push.example/90',keys:{p256dh:'key',auth:'auth'}},timezone:'Asia/Kolkata',settings:{enabled:true,sound:false,vibrate:false,water:{enabled:true,startHour:9,endHour:21,intervalMinutes:90}}});
+  const row=db.prepare('SELECT * FROM push_subscriptions').get();
+  assert.equal(await service.evaluateRow(row,new Date('2026-11-07T04:30:00Z')),0);
+  assert.equal(await service.evaluateRow(row,new Date('2026-11-07T05:00:00Z')),1);
+  assert.equal(service.webpush.sent[0].payload.sound,false);assert.equal(service.webpush.sent[0].payload.vibrate,false);
+  db.prepare("UPDATE push_subscriptions SET last_dispatched_json='null'").run();
+  assert.equal(await service.evaluateRow(db.prepare('SELECT * FROM push_subscriptions').get(),new Date('2026-11-07T06:30:00Z')),1);
+ } finally {db.close();}
+});

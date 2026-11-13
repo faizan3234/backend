@@ -6,13 +6,14 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check growthRoutes.js && node --check paymentV2Crypto.js && node --check paymentV2Service.js && node --check paymentV2Routes.js && node --check paymentV2Db.js && node --check generate-payment-v2-cloud-key.js && node --check services/receiptEmailService.js && node --check services/receiptPdfBuilder.js && node --check pushNotificationRoutes.js && node --check services/pushNotificationService.js && node --check generate-vapid-keys.js",
-    "test": "node --test test-app-record.js test-low-stock.js test-email-failure.js test-receipt-concurrency.js && node test-payment-v2-cloud.js && node test-health-report-cloud.js && node --test test-story-card.js test-push-notifications.js test-growth-cloud.js",
+    "check": "node --check index.js && node --check paymentV2Crypto.js && node --check paymentV2Service.js && node --check paymentV2Routes.js && node --check paymentV2Db.js && node --check generate-payment-v2-cloud-key.js && node --check services/receiptEmailService.js && node --check services/receiptPdfBuilder.js && node --check pushNotificationRoutes.js && node --check services/pushNotificationService.js && node --check generate-vapid-keys.js && node --check growthRoutes.js && node --check services/growthService.js && node --check services/growthIdentity.js && node --check services/growthRateLimit.js && node --check legacyCustomerRoutes.js && node --check customerSupportRoutes.js",
+    "test": "node --test test-app-record.js test-low-stock.js test-email-failure.js test-receipt-concurrency.js && node test-payment-v2-cloud.js && node test-health-report-cloud.js && node --test test-story-card.js test-push-notifications.js && node --test test-growth.js test-growth-cloud.js test-payment-window.js",
     "dev": "node --watch index.js",
     "generate-keys": "node generate-keys.js",
     "generate-v2-keys": "node generate-payment-v2-cloud-key.js",
     "init-db": "node init-db.js",
-    "email:check": "node check-email.js"
+    "email:check": "node check-email.js",
+    "test:growth": "node --test test-growth.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
@@ -22,7 +23,8 @@
     "nodemailer": "^9.0.5",
     "pdfkit": "^0.17.2",
     "razorpay": "^2.9.2",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "web-push": "3.6.7"
   },
   "engines": {
     "node": ">=18.0.0"
