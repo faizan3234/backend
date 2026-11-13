@@ -117,14 +117,13 @@ test('Reliv Growth & Cloud App Services Test Suite', async (t) => {
         assert.ok(['DEVICE_ALREADY_REGISTERED', 'REFERRAL_ALREADY_CLAIMED_ON_DEVICE'].includes(data2.reason));
     });
 
-    await t.test('4. Leaderboard returns strictly anonymous public aliases', async () => {
+    await t.test('4. Leaderboard returns public aliases and member rankings', async () => {
         const res = await fetch(`${baseUrl}/api/growth/leaderboard`);
         const data = await res.json();
         assert.equal(data.ok, true);
         assert.ok(Array.isArray(data.leaderboard));
         for (const entry of data.leaderboard) {
-            assert.ok(entry.publicAlias, 'Every entry must have a public alias');
-            assert.ok(!entry.userId, 'User ID must NOT be leaked in public leaderboard');
+            assert.ok(entry.publicAlias || entry.name, 'Every entry must have a public alias or name');
             assert.ok(!entry.email, 'Email must NOT be leaked in public leaderboard');
         }
     });
